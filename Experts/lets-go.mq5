@@ -9,15 +9,20 @@
 //|   - Signal clock = TF1 new bar (no intrabar repaint).            |
 //|   - Each TF has its OWN on/off modules. Disabled = ignored.      |
 //|   - TRIGGERS (OR if any enabled): StochCross, StochClassic,      |
-//|     SrBounce, SrBreakRetest. If none enabled, filters alone can  |
-//|     form the signal (same idea as 2nd-strategy with stoch off).  |
-//|   - FILTERS (AND if enabled): MacdBias, RsiBias, EmaTrend.       |
+//|     SrBounce, SrBreakRetest, FibZone. If none enabled, filters   |
+//|     alone can form the signal (same idea as 2nd with stoch off). |
+//|   - FILTERS (AND if enabled): MacdBias, RsiBias, EmaTrend, Bos.  |
+//|   - Fib/BOS are independent toggles (not forced as a pair).      |
+//|   - BOS base = fibo-gun zigzag pivots (Depth/ATR), not choch-bos. |
 //|   - Live MA gate + virtual MA SL stay on TF1 (skeleton risk).    |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.00"
+#property version   "4.10"
+// v4.10: Per-TF FibZone (trigger) + Bos (filter) toggles, independent —
+//        use fib alone, BOS alone, both, or neither. BOS = fibo-gun
+//        zigzag structural break (NOT choch-bos indicator).
 // v4.00: Full rewrite onto 2nd/3rd skeleton. Modular 1/2-TF confluence
 //        entry with per-TF toggles (Stoch / MACD / RSI / S/R / EMA).
 //        Replaces the old ATR martingale always-on grid (v3).
@@ -47,18 +52,22 @@ input bool TF1_UseStochCross     = true;   // TRIGGER: %K crosses %D
 input bool TF1_UseStochClassic   = false;  // TRIGGER: %K in OS/OB zone (no cross)
 input bool TF1_UseSrBounce       = false;  // TRIGGER: wick into S/R + reject
 input bool TF1_UseSrBreakRetest  = false;  // TRIGGER: break + retest reject
+input bool TF1_UseFibZone        = false;  // TRIGGER: price in fib golden zone of zigzag leg
 input bool TF1_UseMacdBias       = true;   // FILTER: MACD main >0 buy / <0 sell
 input bool TF1_UseRsiBias        = true;   // FILTER: RSI above/below mid
 input bool TF1_UseEmaTrend       = false;  // FILTER: fast vs slow EMA side
+input bool TF1_UseBos            = false;  // FILTER: zigzag structural BOS (fibo-gun style)
 
 input group "===== TF2 Modules (ON = use, OFF = ignore) ====="
 input bool TF2_UseStochCross     = false;
 input bool TF2_UseStochClassic   = false;
 input bool TF2_UseSrBounce       = false;
 input bool TF2_UseSrBreakRetest  = false;
+input bool TF2_UseFibZone        = false;
 input bool TF2_UseMacdBias       = true;
 input bool TF2_UseRsiBias        = false;
 input bool TF2_UseEmaTrend       = true;
+input bool TF2_UseBos            = false;
 
 input group "===== Stochastic (shared params, per-TF handles) ====="
 input int                 StochKPeriod       = 5;
@@ -104,6 +113,16 @@ input int    LevelsLookback    = 200;
 input double TouchPips         = 50;
 input bool   RequireRejectCandle = true;
 input int    BreakLookbackBars = 12;
+
+input group "===== Fib / BOS Zigzag (shared params, per-TF scan) ====="
+// Same pivot engine as fibo-gun / fibo.mq5 (ATR-deviation zigzag).
+// NOT the MetaQuotes ZigZag indicator and NOT choch-bos.mq5.
+input double FibDeviationMult = 3.0;   // Deviation multiplier (ATR-based %)
+input int    FibDepth         = 6;     // Depth (left/right confirm = Depth/2)
+input int    FibATRPeriod     = 10;    // ATR period for zigzag deviation
+input int    FibLookbackBars  = 100;   // Bars scanned for the current leg
+input double FibZoneLevelMin  = 0.382; // Shallow edge of golden zone
+input double FibZoneLevelMax  = 0.618; // Deep edge of golden zone
 
 input group "===== Moving Average Filter (TF1 live gate + virtual SL) ====="
 enum ENUM_MA_CHECK
@@ -181,9 +200,9 @@ ENUM_TIMEFRAMES g_tf1;
 ENUM_TIMEFRAMES g_tf2;
 
 int g_stoch1 = INVALID_HANDLE, g_rsi1 = INVALID_HANDLE, g_macd1 = INVALID_HANDLE;
-int g_emaF1  = INVALID_HANDLE, g_emaS1 = INVALID_HANDLE;
+int g_emaF1  = INVALID_HANDLE, g_emaS1 = INVALID_HANDLE, g_atr1 = INVALID_HANDLE;
 int g_stoch2 = INVALID_HANDLE, g_rsi2 = INVALID_HANDLE, g_macd2 = INVALID_HANDLE;
-int g_emaF2  = INVALID_HANDLE, g_emaS2 = INVALID_HANDLE;
+int g_emaF2  = INVALID_HANDLE, g_emaS2 = INVALID_HANDLE, g_atr2 = INVALID_HANDLE;
 int g_ma     = INVALID_HANDLE; // TF1 live MA filter + virtual SL
 
 double   g_pip = 0;
@@ -231,7 +250,8 @@ bool TfNeedsSr(const bool bounce, const bool retest) { return (bounce || retest)
 bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
                      const bool useCross, const bool useClassic,
                      const bool useMacd, const bool useRsi, const bool useEma,
-                     int &hStoch, int &hRsi, int &hMacd, int &hEmaF, int &hEmaS,
+                     const bool useFib, const bool useBos,
+                     int &hStoch, int &hRsi, int &hMacd, int &hEmaF, int &hEmaS, int &hAtr,
                      const string label)
 {
    if(TfNeedsStoch(useCross, useClassic))
@@ -275,6 +295,16 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
          return false;
       }
    }
+   if(useFib || useBos)
+   {
+      hAtr = iATR(_Symbol, tf, MathMax(1, FibATRPeriod));
+      if(hAtr == INVALID_HANDLE)
+      {
+         LogInfo("INIT FAILED - " + label + " ATR (fib/BOS zigzag)");
+         NotifyPush(Tag() + ": INIT FAILED - " + label + " ATR");
+         return false;
+      }
+   }
    return true;
 }
 
@@ -307,7 +337,8 @@ int OnInit()
    }
 
    const bool tf1Any = (TF1_UseStochCross || TF1_UseStochClassic || TF1_UseSrBounce ||
-                        TF1_UseSrBreakRetest || TF1_UseMacdBias || TF1_UseRsiBias || TF1_UseEmaTrend);
+                        TF1_UseSrBreakRetest || TF1_UseFibZone || TF1_UseMacdBias ||
+                        TF1_UseRsiBias || TF1_UseEmaTrend || TF1_UseBos);
    if(!tf1Any)
    {
       LogInfo("INIT FAILED - TF1 has no modules enabled");
@@ -317,7 +348,8 @@ int OnInit()
    if(ConfluenceMode == CONF_TF1_AND_TF2)
    {
       const bool tf2Any = (TF2_UseStochCross || TF2_UseStochClassic || TF2_UseSrBounce ||
-                           TF2_UseSrBreakRetest || TF2_UseMacdBias || TF2_UseRsiBias || TF2_UseEmaTrend);
+                           TF2_UseSrBreakRetest || TF2_UseFibZone || TF2_UseMacdBias ||
+                           TF2_UseRsiBias || TF2_UseEmaTrend || TF2_UseBos);
       if(!tf2Any)
       {
          LogInfo("INIT FAILED - TF2 has no modules enabled (required for AND confluence)");
@@ -329,7 +361,8 @@ int OnInit()
    if(!CreateTfHandles(g_tf1,
                        TF1_UseStochCross, TF1_UseStochClassic,
                        TF1_UseMacdBias, TF1_UseRsiBias, TF1_UseEmaTrend,
-                       g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1, "TF1"))
+                       TF1_UseFibZone, TF1_UseBos,
+                       g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1, g_atr1, "TF1"))
       return(INIT_FAILED);
 
    if(ConfluenceMode == CONF_TF1_AND_TF2)
@@ -337,7 +370,8 @@ int OnInit()
       if(!CreateTfHandles(g_tf2,
                           TF2_UseStochCross, TF2_UseStochClassic,
                           TF2_UseMacdBias, TF2_UseRsiBias, TF2_UseEmaTrend,
-                          g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2, "TF2"))
+                          TF2_UseFibZone, TF2_UseBos,
+                          g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2, g_atr2, "TF2"))
          return(INIT_FAILED);
       if(PeriodSeconds(g_tf2) == PeriodSeconds(g_tf1))
          Print(Tag(), " | NOTE TF1 and TF2 are the same period — confluence adds no extra info.");
@@ -363,11 +397,13 @@ int OnInit()
          " TF2=", EnumToString(g_tf2),
          " | modules TF1[stX=", (int)TF1_UseStochCross, " stC=", (int)TF1_UseStochClassic,
          " srB=", (int)TF1_UseSrBounce, " srR=", (int)TF1_UseSrBreakRetest,
-         " macd=", (int)TF1_UseMacdBias, " rsi=", (int)TF1_UseRsiBias,
-         " ema=", (int)TF1_UseEmaTrend, "] TF2[stX=", (int)TF2_UseStochCross,
+         " fib=", (int)TF1_UseFibZone, " macd=", (int)TF1_UseMacdBias,
+         " rsi=", (int)TF1_UseRsiBias, " ema=", (int)TF1_UseEmaTrend,
+         " bos=", (int)TF1_UseBos, "] TF2[stX=", (int)TF2_UseStochCross,
          " stC=", (int)TF2_UseStochClassic, " srB=", (int)TF2_UseSrBounce,
-         " srR=", (int)TF2_UseSrBreakRetest, " macd=", (int)TF2_UseMacdBias,
-         " rsi=", (int)TF2_UseRsiBias, " ema=", (int)TF2_UseEmaTrend, "]");
+         " srR=", (int)TF2_UseSrBreakRetest, " fib=", (int)TF2_UseFibZone,
+         " macd=", (int)TF2_UseMacdBias, " rsi=", (int)TF2_UseRsiBias,
+         " ema=", (int)TF2_UseEmaTrend, " bos=", (int)TF2_UseBos, "]");
 
    if(_Period != g_tf1)
       Print(Tag(), " | NOTE chart TF differs from TF1 (", EnumToString(g_tf1),
@@ -380,9 +416,9 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    ReleaseHandle(g_stoch1); ReleaseHandle(g_rsi1); ReleaseHandle(g_macd1);
-   ReleaseHandle(g_emaF1);  ReleaseHandle(g_emaS1);
+   ReleaseHandle(g_emaF1);  ReleaseHandle(g_emaS1); ReleaseHandle(g_atr1);
    ReleaseHandle(g_stoch2); ReleaseHandle(g_rsi2); ReleaseHandle(g_macd2);
-   ReleaseHandle(g_emaF2);  ReleaseHandle(g_emaS2);
+   ReleaseHandle(g_emaF2);  ReleaseHandle(g_emaS2); ReleaseHandle(g_atr2);
    ReleaseHandle(g_ma);
 }
 
@@ -741,31 +777,198 @@ bool EvalSr(const ENUM_TIMEFRAMES tf, const bool useBounce, const bool useRetest
    return true;
 }
 
+
+//====================== FIB / BOS ZIGZAG (fibo-gun engine, per-TF) ======================
+// Custom ATR-deviation zigzag pivots (same as fibo-gun / fibo.mq5).
+// BOS = leg endpoint broke the PREVIOUS same-side swing.
+// This is NOT choch-bos.mq5 (fractal CHoCH/BOS labels) and NOT iCustom ZigZag.
+
+bool IsFibPivotHigh(const double &h[], int idx, int total, int prd)
+{
+   if(idx - prd < 0 || idx + prd >= total) return false;
+   double v = h[idx];
+   for(int j = idx - prd; j <= idx + prd; j++)
+   { if(j == idx) continue; if(h[j] >= v) return false; }
+   return true;
+}
+
+bool IsFibPivotLow(const double &l[], int idx, int total, int prd)
+{
+   if(idx - prd < 0 || idx + prd >= total) return false;
+   double v = l[idx];
+   for(int j = idx - prd; j <= idx + prd; j++)
+   { if(j == idx) continue; if(l[j] <= v) return false; }
+   return true;
+}
+
+void FibProcessPivot(double price, int pivType, double devPct,
+                     bool &haveLastZZ, double &lastZZPrice, int &lastZZType,
+                     bool &havePrevZZ, double &olderPrice, double &newerPrice,
+                     bool &havePrevSwing, double &prevSwing)
+{
+   if(!haveLastZZ)
+   { lastZZPrice = price; lastZZType = pivType; haveLastZZ = true; return; }
+
+   if(pivType == lastZZType)
+   {
+      bool better = (pivType == 1) ? (price > lastZZPrice) : (price < lastZZPrice);
+      if(better)
+      { lastZZPrice = price; if(havePrevZZ) newerPrice = lastZZPrice; }
+      return;
+   }
+
+   if(devPct <= 0) return;
+   double dev = (lastZZPrice != 0.0)
+                ? MathAbs(price - lastZZPrice) / MathAbs(lastZZPrice) * 100.0 : 0.0;
+   if(dev >= devPct)
+   {
+      if(havePrevZZ) { prevSwing = olderPrice; havePrevSwing = true; }
+      olderPrice  = lastZZPrice;
+      lastZZPrice = price; lastZZType = pivType;
+      newerPrice  = lastZZPrice;
+      havePrevZZ  = true;
+   }
+}
+
+// Scan zigzag leg on tf. Returns false only on data failure.
+bool ScanFibLeg(const ENUM_TIMEFRAMES tf, const int hAtr,
+                bool &haveLeg, bool &bullishLeg,
+                double &olderPrice, double &newerPrice,
+                bool &bosConfirmed)
+{
+   haveLeg = false; bullishLeg = false;
+   olderPrice = 0; newerPrice = 0; bosConfirmed = false;
+   if(hAtr == INVALID_HANDLE) return false;
+
+   int prd  = MathMax(1, FibDepth / 2);
+   int bars = (int)MathMin((long)FibLookbackBars, (long)Bars(_Symbol, tf));
+   if(bars < 2 * prd + 3) return false;
+
+   double high[], low[], close[], atr[];
+   ArraySetAsSeries(high,  false);
+   ArraySetAsSeries(low,   false);
+   ArraySetAsSeries(close, false);
+   ArraySetAsSeries(atr,   false);
+
+   if(CopyHigh (_Symbol, tf, 0, bars, high)  < bars) return false;
+   if(CopyLow  (_Symbol, tf, 0, bars, low)   < bars) return false;
+   if(CopyClose(_Symbol, tf, 0, bars, close) < bars) return false;
+   if(CopyBuffer(hAtr, 0, 0, bars, atr)      < bars) return false;
+
+   bool haveLastZZ = false, havePrevZZ = false, havePrevSwing = false;
+   double lastZZPrice = 0, prevSwing = 0;
+   int lastZZType = -1;
+   olderPrice = 0; newerPrice = 0;
+
+   for(int i = 2 * prd; i < bars; i++)
+   {
+      int pivotIdx = i - prd;
+      if(pivotIdx < prd) continue;
+
+      double atrVal = atr[pivotIdx];
+      double devPct = (close[pivotIdx] != 0.0 && atrVal > 0.0)
+                      ? (atrVal / close[pivotIdx]) * 100.0 * FibDeviationMult : 0.0;
+
+      bool ph = IsFibPivotHigh(high, pivotIdx, bars, prd);
+      bool pl = IsFibPivotLow (low,  pivotIdx, bars, prd);
+
+      if(ph) FibProcessPivot(high[pivotIdx], 1, devPct,
+                             haveLastZZ, lastZZPrice, lastZZType,
+                             havePrevZZ, olderPrice, newerPrice,
+                             havePrevSwing, prevSwing);
+      if(pl) FibProcessPivot(low[pivotIdx],  0, devPct,
+                             haveLastZZ, lastZZPrice, lastZZType,
+                             havePrevZZ, olderPrice, newerPrice,
+                             havePrevSwing, prevSwing);
+   }
+
+   if(!havePrevZZ) return true;
+   haveLeg    = true;
+   bullishLeg = (newerPrice > olderPrice);
+
+   if(havePrevSwing)
+   {
+      if(bullishLeg) bosConfirmed = (newerPrice > prevSwing);
+      else           bosConfirmed = (newerPrice < prevSwing);
+   }
+   return true;
+}
+
+bool EvalFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
+                 bool &buyOK, bool &sellOK)
+{
+   buyOK = false; sellOK = false;
+   if(!useIt) { buyOK = true; sellOK = true; return true; }
+
+   bool haveLeg = false, bullish = false, bos = false;
+   double olderP = 0, newerP = 0;
+   if(!ScanFibLeg(tf, hAtr, haveLeg, bullish, olderP, newerP, bos)) return false;
+   if(!haveLeg) return true;
+
+   double height = MathAbs(newerP - olderP);
+   if(height <= 0) return true;
+
+   double zLow, zHigh;
+   if(bullish)
+   {
+      zLow  = newerP - height * FibZoneLevelMax;
+      zHigh = newerP - height * FibZoneLevelMin;
+   }
+   else
+   {
+      zLow  = newerP + height * FibZoneLevelMin;
+      zHigh = newerP + height * FibZoneLevelMax;
+   }
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double px  = bullish ? ask : bid;
+   if(px < zLow || px > zHigh) return true; // not in zone
+
+   if(bullish) buyOK = true;
+   else        sellOK = true;
+   return true;
+}
+
+bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
+             bool &buyOK, bool &sellOK)
+{
+   buyOK = true; sellOK = true;
+   if(!useIt) return true;
+
+   bool haveLeg = false, bullish = false, bos = false;
+   double olderP = 0, newerP = 0;
+   if(!ScanFibLeg(tf, hAtr, haveLeg, bullish, olderP, newerP, bos)) return false;
+   if(!haveLeg || !bos) { buyOK = false; sellOK = false; return true; }
+
+   buyOK  = bullish;
+   sellOK = !bullish;
+   return true;
+}
+
 // Evaluate one TF. Triggers OR among enabled; filters AND among enabled.
 // If no triggers enabled, enabled filters alone may form the signal.
 bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useCross, const bool useClassic,
-            const bool useBounce, const bool useRetest,
-            const bool useMacd, const bool useRsi, const bool useEma,
+            const bool useBounce, const bool useRetest, const bool useFib,
+            const bool useMacd, const bool useRsi, const bool useEma, const bool useBos,
             const int hStoch, const int hRsi, const int hMacd,
-            const int hEmaF, const int hEmaS,
+            const int hEmaF, const int hEmaS, const int hAtr,
             bool &outBuy, bool &outSell)
 {
    outBuy = false; outSell = false;
 
-   bool anyTrigger = (useCross || useClassic || useBounce || useRetest);
-   bool anyFilter  = (useMacd || useRsi || useEma);
+   bool anyTrigger = (useCross || useClassic || useBounce || useRetest || useFib);
+   bool anyFilter  = (useMacd || useRsi || useEma || useBos);
    if(!anyTrigger && !anyFilter) return true; // nothing enabled -> neutral (caller skips)
 
-   bool stBuy = true, stSell = true;
-   bool srBuy = true, srSell = true;
+   bool trigBuy = true, trigSell = true;
    if(anyTrigger)
    {
-      stBuy = false; stSell = false;
-      srBuy = false; srSell = false;
+      trigBuy = false; trigSell = false;
 
-      bool gotStoch = false, gotSr = false;
-      bool stB = false, stS = false, srB = false, srS = false;
+      bool stB = false, stS = false, srB = false, srS = false, fibB = false, fibS = false;
+      bool gotStoch = false, gotSr = false, gotFib = false;
 
       if(useCross || useClassic)
       {
@@ -777,23 +980,29 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
          if(!EvalSr(tf, useBounce, useRetest, srB, srS)) return false;
          gotSr = true;
       }
+      if(useFib)
+      {
+         if(!EvalFibZone(tf, hAtr, true, fibB, fibS)) return false;
+         gotFib = true;
+      }
 
       // OR across enabled trigger families
-      bool buyTrig = false, sellTrig = false;
-      if(gotStoch) { buyTrig |= stB; sellTrig |= stS; }
-      if(gotSr)    { buyTrig |= srB; sellTrig |= srS; }
-      stBuy = buyTrig; stSell = sellTrig;
+      if(gotStoch) { trigBuy |= stB; trigSell |= stS; }
+      if(gotSr)    { trigBuy |= srB; trigSell |= srS; }
+      if(gotFib)   { trigBuy |= fibB; trigSell |= fibS; }
    }
 
    bool macdBuy = true, macdSell = true;
    bool rsiBuy  = true, rsiSell  = true;
    bool emaBuy  = true, emaSell  = true;
+   bool bosBuy  = true, bosSell  = true;
    if(!EvalMacd(hMacd, useMacd, macdBuy, macdSell)) return false;
    if(!EvalRsi(hRsi, useRsi, rsiBuy, rsiSell)) return false;
    if(!EvalEmaTrend(hEmaF, hEmaS, useEma, emaBuy, emaSell)) return false;
+   if(!EvalBos(tf, hAtr, useBos, bosBuy, bosSell)) return false;
 
-   outBuy  = stBuy  && macdBuy  && rsiBuy  && emaBuy;
-   outSell = stSell && macdSell && rsiSell && emaSell;
+   outBuy  = trigBuy  && macdBuy  && rsiBuy  && emaBuy  && bosBuy;
+   outSell = trigSell && macdSell && rsiSell && emaSell && bosSell;
    return true;
 }
 
@@ -805,9 +1014,9 @@ void UpdateSignal()
    bool b1 = false, s1 = false;
    if(!EvalTf(g_tf1,
               TF1_UseStochCross, TF1_UseStochClassic,
-              TF1_UseSrBounce, TF1_UseSrBreakRetest,
-              TF1_UseMacdBias, TF1_UseRsiBias, TF1_UseEmaTrend,
-              g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1,
+              TF1_UseSrBounce, TF1_UseSrBreakRetest, TF1_UseFibZone,
+              TF1_UseMacdBias, TF1_UseRsiBias, TF1_UseEmaTrend, TF1_UseBos,
+              g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1, g_atr1,
               b1, s1))
       return;
 
@@ -817,9 +1026,9 @@ void UpdateSignal()
       b2 = false; s2 = false;
       if(!EvalTf(g_tf2,
                  TF2_UseStochCross, TF2_UseStochClassic,
-                 TF2_UseSrBounce, TF2_UseSrBreakRetest,
-                 TF2_UseMacdBias, TF2_UseRsiBias, TF2_UseEmaTrend,
-                 g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2,
+                 TF2_UseSrBounce, TF2_UseSrBreakRetest, TF2_UseFibZone,
+                 TF2_UseMacdBias, TF2_UseRsiBias, TF2_UseEmaTrend, TF2_UseBos,
+                 g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2, g_atr2,
                  b2, s2))
          return;
    }
