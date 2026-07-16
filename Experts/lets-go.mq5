@@ -13,16 +13,18 @@
 //|     alone can form the signal (same idea as 2nd with stoch off). |
 //|   - FILTERS (AND if enabled): MacdBias, RsiBias, EmaTrend, Bos.  |
 //|   - Fib/BOS are independent toggles (not forced as a pair).      |
-//|   - BOS base = fibo-gun zigzag pivots (Depth/ATR), not choch-bos. |
+//|   - BosMode: ZIGZAG (fibo-gun), FRACTAL (choch-bos style), or     |
+//|     BOTH_AND (both engines must agree). No OR mode.              |
 //|   - Live MA gate + virtual MA SL stay on TF1 (skeleton risk).    |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.10"
+#property version   "4.20"
+// v4.20: BosMode chooser: ZIGZAG / FRACTAL / BOTH_AND (no OR — clear which
+//        engines must pass). Fractal = choch-bos style structure bias.
 // v4.10: Per-TF FibZone (trigger) + Bos (filter) toggles, independent —
-//        use fib alone, BOS alone, both, or neither. BOS = fibo-gun
-//        zigzag structural break (NOT choch-bos indicator).
+//        use fib alone, BOS alone, both, or neither.
 // v4.00: Full rewrite onto 2nd/3rd skeleton. Modular 1/2-TF confluence
 //        entry with per-TF toggles (Stoch / MACD / RSI / S/R / EMA).
 //        Replaces the old ATR martingale always-on grid (v3).
@@ -56,7 +58,7 @@ input bool TF1_UseFibZone        = false;  // TRIGGER: price in fib golden zone 
 input bool TF1_UseMacdBias       = true;   // FILTER: MACD main >0 buy / <0 sell
 input bool TF1_UseRsiBias        = true;   // FILTER: RSI above/below mid
 input bool TF1_UseEmaTrend       = false;  // FILTER: fast vs slow EMA side
-input bool TF1_UseBos            = false;  // FILTER: zigzag structural BOS (fibo-gun style)
+input bool TF1_UseBos            = false;  // FILTER: BOS (engine chosen by BosMode below)
 
 input group "===== TF2 Modules (ON = use, OFF = ignore) ====="
 input bool TF2_UseStochCross     = false;
@@ -114,15 +116,32 @@ input double TouchPips         = 50;
 input bool   RequireRejectCandle = true;
 input int    BreakLookbackBars = 12;
 
-input group "===== Fib / BOS Zigzag (shared params, per-TF scan) ====="
-// Same pivot engine as fibo-gun / fibo.mq5 (ATR-deviation zigzag).
-// NOT the MetaQuotes ZigZag indicator and NOT choch-bos.mq5.
-input double FibDeviationMult = 3.0;   // Deviation multiplier (ATR-based %)
-input int    FibDepth         = 6;     // Depth (left/right confirm = Depth/2)
-input int    FibATRPeriod     = 10;    // ATR period for zigzag deviation
-input int    FibLookbackBars  = 100;   // Bars scanned for the current leg
-input double FibZoneLevelMin  = 0.382; // Shallow edge of golden zone
-input double FibZoneLevelMax  = 0.618; // Deep edge of golden zone
+input group "===== Fib / BOS (shared params, per-TF scan) ====="
+enum ENUM_BOS_MODE
+{
+   BOS_ZIGZAG,    // fibo-gun zigzag structural BOS only
+   BOS_FRACTAL,   // choch-bos style fractal structure bias only
+   BOS_BOTH_AND   // both must agree (strict)
+};
+input ENUM_BOS_MODE BosMode = BOS_ZIGZAG; // Which BOS engine(s) when UseBos is ON
+
+// --- Zigzag engine (fibo-gun / fibo.mq5) ---
+input double FibDeviationMult = 3.0;   // Zigzag: deviation multiplier (ATR-based %)
+input int    FibDepth         = 6;     // Zigzag: depth (left/right confirm = Depth/2)
+input int    FibATRPeriod     = 10;    // Zigzag: ATR period
+input int    FibLookbackBars  = 100;   // Zigzag: bars scanned for current leg
+input double FibZoneLevelMin  = 0.382; // FibZone trigger: shallow edge
+input double FibZoneLevelMax  = 0.618; // FibZone trigger: deep edge
+
+// --- Fractal engine (choch-bos style) ---
+enum ENUM_BOS_BREAK_MODE
+{
+   BOS_BREAK_CLOSE, // Fractal BOS: candle CLOSE must break level
+   BOS_BREAK_WICK   // Fractal BOS: wick/shadow may break level
+};
+input int                BosFractalPeriod = 2;              // Fractal: bars each side to confirm swing
+input ENUM_BOS_BREAK_MODE BosBreakMode    = BOS_BREAK_CLOSE; // Fractal: break confirmation
+input int                BosFractalLookback = 200;          // Fractal: bars scanned
 
 input group "===== Moving Average Filter (TF1 live gate + virtual SL) ====="
 enum ENUM_MA_CHECK
@@ -295,12 +314,13 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
          return false;
       }
    }
-   if(useFib || useBos)
+   // ATR needed for FibZone and/or zigzag BOS (not for fractal-only BOS)
+   if(useFib || (useBos && BosMode != BOS_FRACTAL))
    {
       hAtr = iATR(_Symbol, tf, MathMax(1, FibATRPeriod));
       if(hAtr == INVALID_HANDLE)
       {
-         LogInfo("INIT FAILED - " + label + " ATR (fib/BOS zigzag)");
+         LogInfo("INIT FAILED - " + label + " ATR (fib/zigzag BOS)");
          NotifyPush(Tag() + ": INIT FAILED - " + label + " ATR");
          return false;
       }
@@ -394,7 +414,7 @@ int OnInit()
 
    string mode = (ConfluenceMode == CONF_TF1_ONLY) ? "TF1_ONLY" : "TF1_AND_TF2";
    Print(Tag(), " | INIT ", mode, " TF1=", EnumToString(g_tf1),
-         " TF2=", EnumToString(g_tf2),
+         " TF2=", EnumToString(g_tf2), " BosMode=", EnumToString(BosMode),
          " | modules TF1[stX=", (int)TF1_UseStochCross, " stC=", (int)TF1_UseStochClassic,
          " srB=", (int)TF1_UseSrBounce, " srR=", (int)TF1_UseSrBreakRetest,
          " fib=", (int)TF1_UseFibZone, " macd=", (int)TF1_UseMacdBias,
@@ -778,10 +798,11 @@ bool EvalSr(const ENUM_TIMEFRAMES tf, const bool useBounce, const bool useRetest
 }
 
 
-//====================== FIB / BOS ZIGZAG (fibo-gun engine, per-TF) ======================
-// Custom ATR-deviation zigzag pivots (same as fibo-gun / fibo.mq5).
-// BOS = leg endpoint broke the PREVIOUS same-side swing.
-// This is NOT choch-bos.mq5 (fractal CHoCH/BOS labels) and NOT iCustom ZigZag.
+//====================== FIB / BOS ENGINES (per-TF) ======================
+// Zigzag: ATR-deviation pivots (fibo-gun / fibo.mq5). Structural BOS =
+// leg endpoint broke previous same-side swing.
+// Fractal: choch-bos style fractal swings + close/wick break → trend bias.
+// BosMode selects ZIGZAG / FRACTAL / BOTH_AND (no OR).
 
 bool IsFibPivotHigh(const double &h[], int idx, int total, int prd)
 {
@@ -930,19 +951,119 @@ bool EvalFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
    return true;
 }
 
+// Replay choch-bos style fractal structure on closed bars.
+// Returns current structure bias: buyOK if last break set bullish trend,
+// sellOK if bearish. Pure function of history (no chart objects).
+bool ScanFractalBos(const ENUM_TIMEFRAMES tf, bool &buyOK, bool &sellOK)
+{
+   buyOK = false; sellOK = false;
+
+   int period = MathMax(1, BosFractalPeriod);
+   int bars   = MathMax(BosFractalLookback, period * 4 + 10);
+   bars = (int)MathMin((long)bars, (long)Bars(_Symbol, tf));
+   if(bars < period * 2 + 3) return false;
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, false);
+   int copied = CopyRates(_Symbol, tf, 0, bars, rates);
+   if(copied <= period * 2 + 2) return false;
+
+   bool highValid = false, highBroken = false;
+   bool lowValid  = false, lowBroken  = false;
+   double highPrice = 0, lowPrice = 0;
+   int trend = 0; // +1 bull, -1 bear, 0 neutral
+
+   int lastClosed = copied - 2;
+   for(int i = period; i <= lastClosed; i++)
+   {
+      double breakHighPrice = (BosBreakMode == BOS_BREAK_CLOSE) ? rates[i].close : rates[i].high;
+      double breakLowPrice  = (BosBreakMode == BOS_BREAK_CLOSE) ? rates[i].close : rates[i].low;
+
+      if(highValid && !highBroken && breakHighPrice > highPrice)
+      {
+         highBroken = true;
+         trend = 1;
+         lowValid = false; // re-anchor after break (same as choch-bos)
+      }
+      else if(lowValid && !lowBroken && breakLowPrice < lowPrice)
+      {
+         lowBroken = true;
+         trend = -1;
+         highValid = false;
+      }
+
+      int pivot = i - period;
+      if(pivot < period) continue;
+
+      // fractal high
+      bool isFH = true;
+      for(int k = pivot - period; k <= pivot + period; k++)
+      {
+         if(k == pivot) continue;
+         if(k < 0 || k >= copied || rates[k].high >= rates[pivot].high) { isFH = false; break; }
+      }
+      if(isFH)
+      {
+         if(!highValid || rates[pivot].high > highPrice || highBroken)
+         {
+            highValid = true; highBroken = false;
+            highPrice = rates[pivot].high;
+         }
+      }
+
+      // fractal low
+      bool isFL = true;
+      for(int k = pivot - period; k <= pivot + period; k++)
+      {
+         if(k == pivot) continue;
+         if(k < 0 || k >= copied || rates[k].low <= rates[pivot].low) { isFL = false; break; }
+      }
+      if(isFL)
+      {
+         if(!lowValid || rates[pivot].low < lowPrice || lowBroken)
+         {
+            lowValid = true; lowBroken = false;
+            lowPrice = rates[pivot].low;
+         }
+      }
+   }
+
+   if(trend > 0) buyOK = true;
+   if(trend < 0) sellOK = true;
+   return true;
+}
+
+bool EvalZigzagBos(const ENUM_TIMEFRAMES tf, const int hAtr,
+                   bool &buyOK, bool &sellOK)
+{
+   buyOK = false; sellOK = false;
+   bool haveLeg = false, bullish = false, bos = false;
+   double olderP = 0, newerP = 0;
+   if(!ScanFibLeg(tf, hAtr, haveLeg, bullish, olderP, newerP, bos)) return false;
+   if(!haveLeg || !bos) return true;
+   buyOK  = bullish;
+   sellOK = !bullish;
+   return true;
+}
+
 bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
              bool &buyOK, bool &sellOK)
 {
    buyOK = true; sellOK = true;
    if(!useIt) return true;
 
-   bool haveLeg = false, bullish = false, bos = false;
-   double olderP = 0, newerP = 0;
-   if(!ScanFibLeg(tf, hAtr, haveLeg, bullish, olderP, newerP, bos)) return false;
-   if(!haveLeg || !bos) { buyOK = false; sellOK = false; return true; }
+   if(BosMode == BOS_ZIGZAG)
+      return EvalZigzagBos(tf, hAtr, buyOK, sellOK);
 
-   buyOK  = bullish;
-   sellOK = !bullish;
+   if(BosMode == BOS_FRACTAL)
+      return ScanFractalBos(tf, buyOK, sellOK);
+
+   // BOS_BOTH_AND — both engines must agree on the same side
+   bool zBuy = false, zSell = false, fBuy = false, fSell = false;
+   if(!EvalZigzagBos(tf, hAtr, zBuy, zSell)) return false;
+   if(!ScanFractalBos(tf, fBuy, fSell)) return false;
+   buyOK  = (zBuy  && fBuy);
+   sellOK = (zSell && fSell);
    return true;
 }
 
