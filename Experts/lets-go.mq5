@@ -15,12 +15,17 @@
 //|   - Fib/BOS are independent toggles (not forced as a pair).      |
 //|   - BosMode: ZIGZAG (fibo-gun), FRACTAL (choch-bos style), or     |
 //|     BOTH_AND (both engines must agree). No OR mode.              |
-//|   - Live MA gate + virtual MA SL stay on TF1 (skeleton risk).    |
+//|   - Live MA gate + virtual exits stay on TF1 (InpTF1).           |
+//|   - Exits: broker pip-cap always; optional virtual MA SL and/or  |
+//|     virtual swing/last-low SL — first hit closes the basket.     |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.20"
+#property version   "4.30"
+// v4.30: Exit toggles — broker pip-cap always; optional virtual MA SL and
+//        optional virtual swing/last-low SL (TF1 zigzag anchor). All can be
+//        ON; whichever hits first closes the basket. No clash.
 // v4.20: BosMode chooser: ZIGZAG / FRACTAL / BOTH_AND (no OR — clear which
 //        engines must pass). Fractal = choch-bos style structure bias.
 // v4.10: Per-TF FibZone (trigger) + Bos (filter) toggles, independent —
@@ -157,14 +162,13 @@ input int                MA_Shift        = 0;
 input ENUM_APPLIED_PRICE MA_AppliedPrice = PRICE_CLOSE;
 input double             MABufferPips    = 100;
 
-input group "===== Stop Loss Type ====="
-enum ENUM_SL_TYPE
-{
-   SL_FIXED,      // Fixed only: broker pip-cap SL, no MA exit
-   SL_MA_VIRTUAL  // Fixed cap on broker + VIRTUAL MA exit watched by the EA
-};
-input ENUM_SL_TYPE SLType         = SL_MA_VIRTUAL;
-input double       SLMABufferPips = 50;
+input group "===== Stop / Exit (broker pip-cap always; virtuals optional) ====="
+// Broker SL line = MaxStopLossPips from avg entry (offline backup) — always.
+// Virtual exits are EA-side only; turn on any combo — first hit closes basket.
+input bool   UseVirtualMaSL     = true;  // Virtual MA exit on TF1 (InpTF1)
+input double SLMABufferPips     = 50;    // MA exit: room beyond MA (0 = at MA touch)
+input bool   UseSwingVirtualSL  = false; // Virtual swing/last-low exit (TF1 zigzag anchor)
+input double SwingSLBufferPips  = 0;     // Swing exit: room beyond swing (0 = at swing)
 
 input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
 input double LotSize         = 0.01;
@@ -397,13 +401,25 @@ int OnInit()
          Print(Tag(), " | NOTE TF1 and TF2 are the same period — confluence adds no extra info.");
    }
 
-   if(UseMAFilter || SLType == SL_MA_VIRTUAL)
+   if(UseMAFilter || UseVirtualMaSL)
    {
       g_ma = iMA(_Symbol, g_tf1, MathMax(1, MA_Period), MA_Shift, MA_Method, MA_AppliedPrice);
       if(g_ma == INVALID_HANDLE)
       {
-         LogInfo("INIT FAILED - TF1 MA handle (live filter / virtual SL)");
+         LogInfo("INIT FAILED - TF1 MA handle (live filter / virtual MA SL)");
          NotifyPush(Tag() + ": INIT FAILED - TF1 MA handle");
+         return(INIT_FAILED);
+      }
+   }
+
+   // Swing virtual SL needs TF1 ATR zigzag even if Fib/BOS modules are off
+   if(UseSwingVirtualSL && g_atr1 == INVALID_HANDLE)
+   {
+      g_atr1 = iATR(_Symbol, g_tf1, MathMax(1, FibATRPeriod));
+      if(g_atr1 == INVALID_HANDLE)
+      {
+         LogInfo("INIT FAILED - TF1 ATR (swing virtual SL)");
+         NotifyPush(Tag() + ": INIT FAILED - TF1 ATR for swing SL");
          return(INIT_FAILED);
       }
    }
@@ -464,6 +480,7 @@ void OnTick()
 
    ManageBasket();
    CheckVirtualMASL();
+   CheckSwingVirtualSL();
 
    if(!g_haveSignal) return;
    if(!InSession()) return;
@@ -1352,7 +1369,7 @@ void OpenLayer(const bool isFirstLayer)
    if(g_signalIsBuy)
    {
       if(sl <= 0)
-         sl = ask - MaxStopLossPips * g_pip;             // broker line = fixed pip cap in BOTH SL types
+         sl = ask - MaxStopLossPips * g_pip;             // broker line = fixed pip cap (offline backup)
       if(ask - sl < minStop) sl = ask - minStop;
       if(tp <= 0 && TakeProfitPips > 0) tp = ask + TakeProfitPips * g_pip;
       if(tp > 0 && tp - ask < minStop) tp = ask + minStop;
@@ -1373,7 +1390,7 @@ void OpenLayer(const bool isFirstLayer)
    else
    {
       if(sl <= 0)
-         sl = bid + MaxStopLossPips * g_pip;             // broker line = fixed pip cap in BOTH SL types
+         sl = bid + MaxStopLossPips * g_pip;             // broker line = fixed pip cap (offline backup)
       if(sl - bid < minStop) sl = bid + minStop;
       if(tp <= 0 && TakeProfitPips > 0) tp = bid - TakeProfitPips * g_pip;
       if(tp > 0 && bid - tp < minStop) tp = bid - minStop;
@@ -1573,10 +1590,9 @@ void ResetBasketLines()
    g_pendingTP     = 0;
 }
 
-//====================== VIRTUAL MA SL (EA-side, never sent to broker) ======================
-// Exit line from the CURRENT MA value: BUY = MA - buffer, SELL = MA + buffer.
-// Returns false if the MA can't be read (handle missing / no data yet) —
-// then no virtual exit fires this tick; the broker pip-cap SL is the backup.
+//====================== VIRTUAL EXITS (EA-side, never sent to broker) ======================
+// Broker pip-cap SL always stays as offline backup.
+// Optional virtual MA and/or swing exits — first one that hits closes the basket.
 bool GetMASLAnchor(const bool isBuy, double &anchor)
 {
    anchor = 0;
@@ -1591,14 +1607,9 @@ bool GetMASLAnchor(const bool isBuy, double &anchor)
    return true;
 }
 
-// Watched every tick, exactly like the basket pip trail: when price breaks
-// the MA by the buffer, the WHOLE basket is closed at market by the EA.
-// Nothing is ever written to the broker — the broker SL stays the fixed
-// pip cap as offline backup. The line moves with the MA on its own, both
-// directions, because it's recomputed fresh from the MA each tick.
 void CheckVirtualMASL()
 {
-   if(SLType != SL_MA_VIRTUAL) return;
+   if(!UseVirtualMaSL) return;
 
    int layers; double deepest; bool isBuy;
    CountLayers(layers, deepest, isBuy);
@@ -1614,8 +1625,47 @@ void CheckVirtualMASL()
    if(!breached) return;
 
    LogGuardOnce("EXIT virtual MA SL hit " + (isBuy ? "bid " + DoubleToString(bid, _Digits) + " <= " : "ask " + DoubleToString(ask, _Digits) + " >= ") +
-                DoubleToString(maSL, _Digits) + " (MA " + (isBuy ? "-" : "+") + " " + DoubleToString(SLMABufferPips, 1) + " pips) — closing basket");
+                DoubleToString(maSL, _Digits) + " (TF1 MA " + (isBuy ? "-" : "+") + " " + DoubleToString(SLMABufferPips, 1) + " pips) — closing basket");
    CloseAllEA("virtual MA SL");
+}
+
+// Swing / last-low(high): TF1 zigzag leg start (olderPrice), same as fibo-gun
+// structural anchor. BUY exits if bid <= swingLow - buffer; SELL if ask >= swingHigh + buffer.
+void CheckSwingVirtualSL()
+{
+   if(!UseSwingVirtualSL) return;
+
+   int layers; double deepest; bool isBuy;
+   CountLayers(layers, deepest, isBuy);
+   if(layers == 0) return;
+
+   bool haveLeg = false, bullish = false, bos = false;
+   double olderP = 0, newerP = 0;
+   if(!ScanFibLeg(g_tf1, g_atr1, haveLeg, bullish, olderP, newerP, bos)) return;
+   if(!haveLeg || olderP <= 0) return;
+
+   // For an open BUY basket use swing low anchor; for SELL use swing high.
+   // Prefer the leg that matches basket direction when available.
+   double swing = olderP;
+   if(isBuy && !bullish)
+   {
+      // bearish leg's older is a high — not a buy stop; skip until a bullish leg exists
+      return;
+   }
+   if(!isBuy && bullish)
+      return;
+
+   double buffer = MathMax(0.0, SwingSLBufferPips) * g_pip;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   bool breached = isBuy ? (bid <= swing - buffer) : (ask >= swing + buffer);
+   if(!breached) return;
+
+   LogGuardOnce("EXIT virtual swing SL hit " + (isBuy ? "bid " + DoubleToString(bid, _Digits) + " <= " : "ask " + DoubleToString(ask, _Digits) + " >= ") +
+                DoubleToString(isBuy ? (swing - buffer) : (swing + buffer), _Digits) +
+                " (TF1 zigzag swing " + DoubleToString(swing, _Digits) + ") — closing basket");
+   CloseAllEA("virtual swing SL");
 }
 
 //====================== BASKET PROFIT (pips, trailing) ======================
