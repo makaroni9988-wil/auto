@@ -16,16 +16,17 @@
 //|   - BosMode: ZIGZAG (fibo-gun), FRACTAL (choch-bos style), or     |
 //|     BOTH_AND (both engines must agree). No OR mode.              |
 //|   - Live MA gate + virtual exits stay on TF1 (InpTF1).           |
-//|   - Exits: broker pip-cap always; optional virtual MA SL and/or  |
-//|     virtual swing/last-low SL — first hit closes the basket.     |
+//|   - Exits: broker pip-cap always; optional virtual MA SL (live)  |
+//|     and/or swing SL (BosMode + tighten-only) — first hit closes. |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.30"
+#property version   "4.40"
+// v4.40: Swing virtual SL follows BosMode (zigzag / fractal / both-AND),
+//        ratchet tighten-only. Virtual MA stays live follow both ways.
 // v4.30: Exit toggles — broker pip-cap always; optional virtual MA SL and
-//        optional virtual swing/last-low SL (TF1 zigzag anchor). All can be
-//        ON; whichever hits first closes the basket. No clash.
+//        optional virtual swing/last-low SL. All can be ON; first hit closes.
 // v4.20: BosMode chooser: ZIGZAG / FRACTAL / BOTH_AND (no OR — clear which
 //        engines must pass). Fractal = choch-bos style structure bias.
 // v4.10: Per-TF FibZone (trigger) + Bos (filter) toggles, independent —
@@ -167,7 +168,7 @@ input group "===== Stop / Exit (broker pip-cap always; virtuals optional) ====="
 // Virtual exits are EA-side only; turn on any combo — first hit closes basket.
 input bool   UseVirtualMaSL     = true;  // Virtual MA exit on TF1 (InpTF1)
 input double SLMABufferPips     = 50;    // MA exit: room beyond MA (0 = at MA touch)
-input bool   UseSwingVirtualSL  = false; // Virtual swing/last-low exit (TF1 zigzag anchor)
+input bool   UseSwingVirtualSL  = false; // Virtual swing/last-low exit (follows BosMode, tighten-only)
 input double SwingSLBufferPips  = 0;     // Swing exit: room beyond swing (0 = at swing)
 
 input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
@@ -240,6 +241,10 @@ double g_basketPeak  = 0;
 
 double g_basketSL = 0;
 double g_basketTP = 0;
+
+// Swing virtual SL ratchet (tighten-only while basket is open)
+bool   g_haveSwingSL = false;
+double g_swingSL     = 0;
 
 datetime g_lastEntryFailTime = 0;
 datetime g_lastCloseFailTime = 0;
@@ -412,13 +417,13 @@ int OnInit()
       }
    }
 
-   // Swing virtual SL needs TF1 ATR zigzag even if Fib/BOS modules are off
-   if(UseSwingVirtualSL && g_atr1 == INVALID_HANDLE)
+   // Swing virtual SL needs TF1 ATR when BosMode uses zigzag (not fractal-only)
+   if(UseSwingVirtualSL && BosMode != BOS_FRACTAL && g_atr1 == INVALID_HANDLE)
    {
       g_atr1 = iATR(_Symbol, g_tf1, MathMax(1, FibATRPeriod));
       if(g_atr1 == INVALID_HANDLE)
       {
-         LogInfo("INIT FAILED - TF1 ATR (swing virtual SL)");
+         LogInfo("INIT FAILED - TF1 ATR (swing virtual SL / zigzag)");
          NotifyPush(Tag() + ": INIT FAILED - TF1 ATR for swing SL");
          return(INIT_FAILED);
       }
@@ -969,11 +974,14 @@ bool EvalFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
 }
 
 // Replay choch-bos style fractal structure on closed bars.
-// Returns current structure bias: buyOK if last break set bullish trend,
-// sellOK if bearish. Pure function of history (no chart objects).
-bool ScanFractalBos(const ENUM_TIMEFRAMES tf, bool &buyOK, bool &sellOK)
+// buyOK/sellOK = current structure bias after last break.
+// swingHigh/swingLow = latest active fractal levels (0 if none).
+bool ScanFractalStructure(const ENUM_TIMEFRAMES tf,
+                          bool &buyOK, bool &sellOK,
+                          double &swingHigh, double &swingLow)
 {
    buyOK = false; sellOK = false;
+   swingHigh = 0; swingLow = 0;
 
    int period = MathMax(1, BosFractalPeriod);
    int bars   = MathMax(BosFractalLookback, period * 4 + 10);
@@ -1000,7 +1008,7 @@ bool ScanFractalBos(const ENUM_TIMEFRAMES tf, bool &buyOK, bool &sellOK)
       {
          highBroken = true;
          trend = 1;
-         lowValid = false; // re-anchor after break (same as choch-bos)
+         lowValid = false;
       }
       else if(lowValid && !lowBroken && breakLowPrice < lowPrice)
       {
@@ -1012,7 +1020,6 @@ bool ScanFractalBos(const ENUM_TIMEFRAMES tf, bool &buyOK, bool &sellOK)
       int pivot = i - period;
       if(pivot < period) continue;
 
-      // fractal high
       bool isFH = true;
       for(int k = pivot - period; k <= pivot + period; k++)
       {
@@ -1028,7 +1035,6 @@ bool ScanFractalBos(const ENUM_TIMEFRAMES tf, bool &buyOK, bool &sellOK)
          }
       }
 
-      // fractal low
       bool isFL = true;
       for(int k = pivot - period; k <= pivot + period; k++)
       {
@@ -1047,7 +1053,15 @@ bool ScanFractalBos(const ENUM_TIMEFRAMES tf, bool &buyOK, bool &sellOK)
 
    if(trend > 0) buyOK = true;
    if(trend < 0) sellOK = true;
+   if(highValid) swingHigh = highPrice;
+   if(lowValid)  swingLow  = lowPrice;
    return true;
+}
+
+bool ScanFractalBos(const ENUM_TIMEFRAMES tf, bool &buyOK, bool &sellOK)
+{
+   double sh = 0, sl = 0;
+   return ScanFractalStructure(tf, buyOK, sellOK, sh, sl);
 }
 
 bool EvalZigzagBos(const ENUM_TIMEFRAMES tf, const int hAtr,
@@ -1588,6 +1602,8 @@ void ResetBasketLines()
    g_modifyPending = false;
    g_pendingSL     = 0;
    g_pendingTP     = 0;
+   g_haveSwingSL   = false;
+   g_swingSL       = 0;
 }
 
 //====================== VIRTUAL EXITS (EA-side, never sent to broker) ======================
@@ -1629,42 +1645,111 @@ void CheckVirtualMASL()
    CloseAllEA("virtual MA SL");
 }
 
-// Swing / last-low(high): TF1 zigzag leg start (olderPrice), same as fibo-gun
-// structural anchor. BUY exits if bid <= swingLow - buffer; SELL if ask >= swingHigh + buffer.
+// Resolve TF1 swing anchor for the open basket direction, following BosMode.
+// Zigzag: fibo-gun leg start (olderPrice) when leg matches basket side.
+// Fractal: active fractal low (buy) / high (sell) from choch-bos style scan.
+// BOTH_AND: both must be available; use the TIGHTER of the two.
+bool GetSwingAnchorByBosMode(const bool isBuy, double &swing, string &engineTag)
+{
+   swing = 0;
+   engineTag = "";
+
+   bool needZ = (BosMode == BOS_ZIGZAG || BosMode == BOS_BOTH_AND);
+   bool needF = (BosMode == BOS_FRACTAL || BosMode == BOS_BOTH_AND);
+
+   double zSwing = 0;
+   bool   haveZ  = false;
+   if(needZ)
+   {
+      bool haveLeg = false, bullish = false, bos = false;
+      double olderP = 0, newerP = 0;
+      if(!ScanFibLeg(g_tf1, g_atr1, haveLeg, bullish, olderP, newerP, bos))
+         return false;
+      if(haveLeg && olderP > 0)
+      {
+         if(isBuy && bullish)  { zSwing = olderP; haveZ = true; }
+         if(!isBuy && !bullish){ zSwing = olderP; haveZ = true; }
+      }
+   }
+
+   double fSwing = 0;
+   bool   haveF  = false;
+   if(needF)
+   {
+      bool bOK = false, sOK = false;
+      double sh = 0, sl = 0;
+      if(!ScanFractalStructure(g_tf1, bOK, sOK, sh, sl))
+         return false;
+      if(isBuy && sl > 0)  { fSwing = sl; haveF = true; }
+      if(!isBuy && sh > 0) { fSwing = sh; haveF = true; }
+   }
+
+   if(BosMode == BOS_ZIGZAG)
+   {
+      if(!haveZ) return false;
+      swing = zSwing; engineTag = "zigzag";
+      return true;
+   }
+   if(BosMode == BOS_FRACTAL)
+   {
+      if(!haveF) return false;
+      swing = fSwing; engineTag = "fractal";
+      return true;
+   }
+
+   // BOTH_AND — both required, then tighter wins
+   if(!haveZ || !haveF) return false;
+   if(isBuy) swing = MathMax(zSwing, fSwing); // higher stop = tighter for buys
+   else      swing = MathMin(zSwing, fSwing); // lower stop = tighter for sells
+   engineTag = "both-AND";
+   return true;
+}
+
+// Swing / last-low(high): virtual, follows BosMode, ratchet tighten-only.
+// BUY exits if bid <= swingSL; SELL if ask >= swingSL (buffer baked into line).
 void CheckSwingVirtualSL()
 {
    if(!UseSwingVirtualSL) return;
 
    int layers; double deepest; bool isBuy;
    CountLayers(layers, deepest, isBuy);
-   if(layers == 0) return;
-
-   bool haveLeg = false, bullish = false, bos = false;
-   double olderP = 0, newerP = 0;
-   if(!ScanFibLeg(g_tf1, g_atr1, haveLeg, bullish, olderP, newerP, bos)) return;
-   if(!haveLeg || olderP <= 0) return;
-
-   // For an open BUY basket use swing low anchor; for SELL use swing high.
-   // Prefer the leg that matches basket direction when available.
-   double swing = olderP;
-   if(isBuy && !bullish)
+   if(layers == 0)
    {
-      // bearish leg's older is a high — not a buy stop; skip until a bullish leg exists
+      g_haveSwingSL = false;
+      g_swingSL = 0;
       return;
    }
-   if(!isBuy && bullish)
-      return;
+
+   double rawSwing = 0;
+   string engineTag = "";
+   if(!GetSwingAnchorByBosMode(isBuy, rawSwing, engineTag)) return;
+   if(rawSwing <= 0) return;
 
    double buffer = MathMax(0.0, SwingSLBufferPips) * g_pip;
+   double cand   = isBuy ? (rawSwing - buffer) : (rawSwing + buffer);
+
+   // Tighten-only ratchet while basket is open
+   if(!g_haveSwingSL)
+   {
+      g_swingSL = cand;
+      g_haveSwingSL = true;
+   }
+   else
+   {
+      if(isBuy) g_swingSL = MathMax(g_swingSL, cand); // only up
+      else      g_swingSL = MathMin(g_swingSL, cand); // only down
+   }
+
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-   bool breached = isBuy ? (bid <= swing - buffer) : (ask >= swing + buffer);
+   bool breached = isBuy ? (bid <= g_swingSL) : (ask >= g_swingSL);
    if(!breached) return;
 
    LogGuardOnce("EXIT virtual swing SL hit " + (isBuy ? "bid " + DoubleToString(bid, _Digits) + " <= " : "ask " + DoubleToString(ask, _Digits) + " >= ") +
-                DoubleToString(isBuy ? (swing - buffer) : (swing + buffer), _Digits) +
-                " (TF1 zigzag swing " + DoubleToString(swing, _Digits) + ") — closing basket");
+                DoubleToString(g_swingSL, _Digits) +
+                " (TF1 " + engineTag + " BosMode=" + EnumToString(BosMode) +
+                ", raw swing " + DoubleToString(rawSwing, _Digits) + ", tighten-only) — closing basket");
    CloseAllEA("virtual swing SL");
 }
 
@@ -1712,6 +1797,8 @@ void ResetBasket()
 {
    g_basketArmed = false;
    g_basketPeak  = 0;
+   g_haveSwingSL = false;
+   g_swingSL     = 0;
 }
 
 //====================== HELPERS ======================
