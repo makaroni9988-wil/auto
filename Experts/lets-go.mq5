@@ -1,375 +1,1430 @@
 //+------------------------------------------------------------------+
-//|                                 ATR_Grid_Martingale_Hedge.mq5    |
-//|  Grid martingale EA for MT5 HEDGING accounts.                    |
+//|                                                      lets-go.mq5 |
+//|  Modular dual-TF confluence grid EA. Skeleton (grid layering,    |
+//|  basket SL/TP, virtual MA SL, session/weekend/news/market guards,|
+//|  modify-retry) forked from 3rd-strategy / 2nd-strategy.          |
 //|                                                                  |
-//|  NEW in v3:                                                      |
-//|  - Auto trend filter (EMA fast/slow, higher TF). In an uptrend   |
-//|    only BUY grid opens new entries; downtrend -> only SELL.      |
-//|    Existing baskets still get managed/closed either way.         |
-//|  - TP_PERCENT_GLOBAL mode: TP as % of balance, SAME unit as the  |
-//|    SL cut-off (InpMaxLossPct), so you can directly compare them. |
+//|  Entry:                                                          |
+//|   - ConfluenceMode: TF1 only, or TF1 AND TF2 (both must agree).  |
+//|   - Signal clock = TF1 new bar (no intrabar repaint).            |
+//|   - Each TF has its OWN on/off modules. Disabled = ignored.      |
+//|   - TRIGGERS (OR if any enabled): StochCross, StochClassic,      |
+//|     SrBounce, SrBreakRetest. If none enabled, filters alone can  |
+//|     form the signal (same idea as 2nd-strategy with stoch off).  |
+//|   - FILTERS (AND if enabled): MacdBias, RsiBias, EmaTrend.       |
+//|   - Live MA gate + virtual MA SL stay on TF1 (skeleton risk).    |
+//|                                                                  |
+//|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
-#property copyright "Custom EA"
-#property version   "3.00"
-#property strict
+#property copyright "2026"
+#property version   "4.00"
+// v4.00: Full rewrite onto 2nd/3rd skeleton. Modular 1/2-TF confluence
+//        entry with per-TF toggles (Stoch / MACD / RSI / S/R / EMA).
+//        Replaces the old ATR martingale always-on grid (v3).
 
 #include <Trade\Trade.mqh>
+CTrade trade;
 
+#define EA_LABEL "lets-go"
+
+//====================== INPUTS ======================
+input group "===== Confluence (1 or 2 TF) ====="
+enum ENUM_CONF_MODE
+{
+   CONF_TF1_ONLY,     // TF1 only
+   CONF_TF1_AND_TF2   // TF1 AND TF2 (both must agree on direction)
+};
+input ENUM_CONF_MODE   ConfluenceMode = CONF_TF1_AND_TF2; // How many TFs must agree
+input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M5;        // TF1 (signal clock + live MA / virtual SL)
+input ENUM_TIMEFRAMES  InpTF2         = PERIOD_H1;        // TF2 (used only when AND mode)
+
+input group "===== Direction Master ====="
+input bool TradeBuy  = true;  // Allow BUY signals
+input bool TradeSell = true;  // Allow SELL signals
+
+input group "===== TF1 Modules (ON = use, OFF = ignore) ====="
+input bool TF1_UseStochCross     = true;   // TRIGGER: %K crosses %D
+input bool TF1_UseStochClassic   = false;  // TRIGGER: %K in OS/OB zone (no cross)
+input bool TF1_UseSrBounce       = false;  // TRIGGER: wick into S/R + reject
+input bool TF1_UseSrBreakRetest  = false;  // TRIGGER: break + retest reject
+input bool TF1_UseMacdBias       = true;   // FILTER: MACD main >0 buy / <0 sell
+input bool TF1_UseRsiBias        = true;   // FILTER: RSI above/below mid
+input bool TF1_UseEmaTrend       = false;  // FILTER: fast vs slow EMA side
+
+input group "===== TF2 Modules (ON = use, OFF = ignore) ====="
+input bool TF2_UseStochCross     = false;
+input bool TF2_UseStochClassic   = false;
+input bool TF2_UseSrBounce       = false;
+input bool TF2_UseSrBreakRetest  = false;
+input bool TF2_UseMacdBias       = true;
+input bool TF2_UseRsiBias        = false;
+input bool TF2_UseEmaTrend       = true;
+
+input group "===== Stochastic (shared params, per-TF handles) ====="
+input int                 StochKPeriod       = 5;
+input int                 StochDPeriod       = 3;
+input int                 StochSlowing       = 3;
+input ENUM_MA_METHOD      StochMAMethod      = MODE_SMA;
+input ENUM_STO_PRICE      StochPriceField    = STO_LOWHIGH;
+enum ENUM_STOCH_CROSS_MODE
+{
+   STOCH_CROSS_PULLBACK, // Cross must land below/above pullback level
+   STOCH_CROSS_ANY,      // Any %K/%D cross
+   STOCH_CROSS_OSOB      // Cross must come FROM OS (buy) / OB (sell)
+};
+input ENUM_STOCH_CROSS_MODE StochCrossMode     = STOCH_CROSS_OSOB;
+input double              StochPullbackLevel   = 50;
+input double              StochOversoldLevel   = 20;
+input double              StochOverboughtLevel = 80;
+
+input group "===== RSI / MACD (shared params) ====="
+input int                 RSIPeriod        = 14;
+input ENUM_APPLIED_PRICE  RSIAppliedPrice  = PRICE_CLOSE;
+input double              RSIMidLevel      = 50;
+input int                 MACDFastEMA      = 12;
+input int                 MACDSlowEMA      = 26;
+input int                 MACDSignalPeriod = 9;
+input ENUM_APPLIED_PRICE  MACDAppliedPrice = PRICE_CLOSE;
+
+input group "===== EMA Trend Filter (shared params) ====="
 enum ENUM_TREND_MODE
-  {
-   TREND_FOLLOW   = 0,  // Trade WITH trend: buy in uptrend, sell in downtrend
-   TREND_REVERSAL = 1   // Trade AGAINST trend: buy in downtrend, sell in uptrend
-  };
+{
+   TREND_FOLLOW,    // Buy when fast>slow, sell when fast<slow
+   TREND_REVERSAL   // Fade: buy when fast<slow, sell when fast>slow
+};
+input ENUM_TREND_MODE     EmaTrendMode     = TREND_FOLLOW;
+input int                 EmaFastPeriod    = 50;
+input int                 EmaSlowPeriod    = 200;
+input double              EmaMinDiffPips   = 0;   // 0 = any separation counts
 
-enum ENUM_TP_MODE
-  {
-   TP_ATR_BASKET     = 0,  // ATR basket   (breakeven +/- ATR x value, per side)
-   TP_PIPS_BASKET    = 1,  // Pips basket  (breakeven +/- value pips, per side)
-   TP_MONEY_BASKET   = 2,  // Money basket (side profit >= value $, per side)
-   TP_MONEY_GLOBAL   = 3,  // Money global (total profit >= value $, close ALL)
-   TP_PERCENT_GLOBAL = 4   // Percent global (total profit >= value % of balance, close ALL)
-  };
+input group "===== S/R Pivot Entry (shared params, per-TF levels) ====="
+input int    PivotLeftBars     = 5;
+input int    PivotRightBars    = 5;
+input int    LevelsLookback    = 200;
+input double TouchPips         = 50;
+input bool   RequireRejectCandle = true;
+input int    BreakLookbackBars = 12;
 
-//--- Inputs
-input group             "=== Grid / Martingale ==="
-input double            InpInitialLot     = 0.01;       // Initial lot size
-input double            InpLotMultiplier  = 2.0;        // Martingale lot multiplier
-input int               InpATRPeriod      = 14;         // ATR period
-input ENUM_TIMEFRAMES   InpATRTimeframe   = PERIOD_H1;  // ATR timeframe
-input double            InpGridATRMult    = 1.0;        // Grid distance = ATR x this
-input bool              InpTradeBuy       = true;       // Enable BUY grid (master switch)
-input bool              InpTradeSell      = true;       // Enable SELL grid (master switch)
+input group "===== Moving Average Filter (TF1 live gate + virtual SL) ====="
+enum ENUM_MA_CHECK
+{
+   MA_CHECK_RUNNING,      // Running: live price vs MA right now (+/- buffer)
+   MA_CHECK_CANDLE_CLOSE  // Candle close: last close must confirm too (tighter)
+};
+input bool               UseMAFilter     = true;
+input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_RUNNING;
+input ENUM_MA_METHOD     MA_Method       = MODE_EMA;
+input int                MA_Period       = 34;
+input int                MA_Shift        = 0;
+input ENUM_APPLIED_PRICE MA_AppliedPrice = PRICE_CLOSE;
+input double             MABufferPips    = 100;
 
-input group             "=== Auto Trend Filter (0/false = off, trades both ways) ==="
-input bool              InpUseTrendFilter = false;      // Auto-detect trend, filter entries
-input ENUM_TREND_MODE   InpTrendMode      = TREND_FOLLOW; // Follow trend or fade it (reversal)
-input ENUM_TIMEFRAMES   InpTrendTimeframe = PERIOD_H4;  // Timeframe for trend detection
-input int               InpTrendFastEMA   = 50;         // Fast EMA period
-input int               InpTrendSlowEMA   = 200;        // Slow EMA period
-input double            InpTrendMinDiffPips = 20;       // Min EMA separation (pips) to call it a trend
+input group "===== Stop Loss Type ====="
+enum ENUM_SL_TYPE
+{
+   SL_FIXED,      // Fixed only: broker pip-cap SL, no MA exit
+   SL_MA_VIRTUAL  // Fixed cap on broker + VIRTUAL MA exit watched by the EA
+};
+input ENUM_SL_TYPE SLType         = SL_MA_VIRTUAL;
+input double       SLMABufferPips = 50;
 
-input group             "=== Take Profit (pick ONE mode) ==="
-input ENUM_TP_MODE      InpTPMode         = TP_ATR_BASKET; // TP mode
-input double            InpTPValue        = 1.0;        // TP value (ATR mult / pips / money / percent)
+input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
+input double LotSize         = 0.01;
+input int    MaxStopLossPips = 300;
+input int    TakeProfitPips  = 3000;
+input int    MaxSpreadPips   = 0;
+input int    SlippagePoints  = 20;
+input long   MagicNumber     = 777;
 
-input group             "=== Safety (0 = disabled) ==="
-input int               InpMaxGridLevels  = 10;         // Max positions per side (0 = unlimited)
-input double            InpMaxLossMoney   = 0;          // Cut-off: close all at floating loss >= this $ (0 = off)
-input double            InpMaxLossPct     = 0;          // Cut-off: close all at floating loss >= this % of balance (0 = off)
+input group "===== Grid Layering ====="
+input int    MaxLayers       = 2;
+input int    LayerStepPips   = 200;
 
-input group             "=== Misc ==="
-input ulong             InpMagic          = 20260716;   // Magic number
-input int               InpSlippagePoints = 30;         // Max slippage (points)
+input group "===== Basket Take-Profit (pips, trailing) ====="
+input bool   UseBasketTP         = true;
+input double BasketStartPips     = 200;
+input double BasketGivebackPips  = 50;
 
-//--- Globals
-CTrade   trade;
-int      g_atrHandle    = INVALID_HANDLE;
-int      g_maFastHandle = INVALID_HANDLE;
-int      g_maSlowHandle = INVALID_HANDLE;
-bool     g_halted       = false;
+input group "===== Session Filter (WIB / Jakarta time) ====="
+input int  SessionTZOffset       = 7;
+input bool UseSession            = true;
+input int  SessionStartHour      = 6;
+input int  SessionEndHour        = 3;
+input bool CloseAtSessionEnd     = true;
+input bool UseWeekendFilter      = true;
+input int  WeekendStopDayWIB     = 6;
+input int  WeekendStopHourWIB    = 3;
+input int  WeekendStartDayWIB    = 1;
+input int  WeekendStartHourWIB   = 6;
+input bool CloseAtWeekend        = true;
+
+input group "===== News Filter (economic calendar) ====="
+input bool   UseNewsFilter        = true;
+input ENUM_CALENDAR_EVENT_IMPORTANCE NewsMinImportance = CALENDAR_IMPORTANCE_MODERATE;
+input string NewsCurrency         = "USD";
+input int    NewsMinutesBefore    = 15;
+input int    NewsMinutesAfter     = 15;
+input bool   CloseAtNews          = true;
+
+input group "===== Market Guard (holidays / early close) ====="
+input bool UseBrokerSessionGuard = true;
+input int  MaxStaleTickSeconds   = 120;
+input int  OrderRetryCooldownSec = 60;
+
+input group "===== Basket SL/TP Modify Retry ====="
+input int ModifyRetryMax                = 3;
+input int ModifyRetryDelayMs            = 500;
+input int MaxConsecutiveRetryCooldownMs = 2000;
+
+//====================== GLOBALS ======================
+ENUM_TIMEFRAMES g_tf1;
+ENUM_TIMEFRAMES g_tf2;
+
+int g_stoch1 = INVALID_HANDLE, g_rsi1 = INVALID_HANDLE, g_macd1 = INVALID_HANDLE;
+int g_emaF1  = INVALID_HANDLE, g_emaS1 = INVALID_HANDLE;
+int g_stoch2 = INVALID_HANDLE, g_rsi2 = INVALID_HANDLE, g_macd2 = INVALID_HANDLE;
+int g_emaF2  = INVALID_HANDLE, g_emaS2 = INVALID_HANDLE;
+int g_ma     = INVALID_HANDLE; // TF1 live MA filter + virtual SL
+
+double   g_pip = 0;
+datetime g_lastBarTime  = 0;
+datetime g_lastEntryBar = 0;
+
+bool   g_haveSignal  = false;
+bool   g_signalIsBuy = false;
+
+bool   g_basketArmed = false;
+double g_basketPeak  = 0;
+
+double g_basketSL = 0;
+double g_basketTP = 0;
+
+datetime g_lastEntryFailTime = 0;
+datetime g_lastCloseFailTime = 0;
+datetime g_lastGuardLogTime  = 0;
+datetime g_lastDiagBar       = 0;
+
+bool  g_newsBlackoutCached = false;
+ulong g_newsLastCheckMs    = 0;
+
+bool   g_modifyPending     = false;
+double g_pendingSL         = 0;
+double g_pendingTP         = 0;
+ulong  g_lastModifyBurstMs = 0;
+
+//====================== PUSH NOTIFICATIONS ======================
+string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
+void LogInfo(const string msg) { Print(Tag(), " | ", msg); }
+
+void NotifyPush(const string msg)
+{
+   if(!SendNotification(msg))
+      LogInfo("PUSH FAILED - " + msg);
+}
+
+bool TfNeedsStoch(const bool cross, const bool classic) { return (cross || classic); }
+bool TfNeedsMacd(const bool on)  { return on; }
+bool TfNeedsRsi(const bool on)   { return on; }
+bool TfNeedsEma(const bool on)   { return on; }
+bool TfNeedsSr(const bool bounce, const bool retest) { return (bounce || retest); }
+
+bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
+                     const bool useCross, const bool useClassic,
+                     const bool useMacd, const bool useRsi, const bool useEma,
+                     int &hStoch, int &hRsi, int &hMacd, int &hEmaF, int &hEmaS,
+                     const string label)
+{
+   if(TfNeedsStoch(useCross, useClassic))
+   {
+      hStoch = iStochastic(_Symbol, tf, StochKPeriod, StochDPeriod, StochSlowing, StochMAMethod, StochPriceField);
+      if(hStoch == INVALID_HANDLE)
+      {
+         LogInfo("INIT FAILED - " + label + " Stochastic");
+         NotifyPush(Tag() + ": INIT FAILED - " + label + " Stochastic");
+         return false;
+      }
+   }
+   if(TfNeedsRsi(useRsi))
+   {
+      hRsi = iRSI(_Symbol, tf, RSIPeriod, RSIAppliedPrice);
+      if(hRsi == INVALID_HANDLE)
+      {
+         LogInfo("INIT FAILED - " + label + " RSI");
+         NotifyPush(Tag() + ": INIT FAILED - " + label + " RSI");
+         return false;
+      }
+   }
+   if(TfNeedsMacd(useMacd))
+   {
+      hMacd = iMACD(_Symbol, tf, MACDFastEMA, MACDSlowEMA, MACDSignalPeriod, MACDAppliedPrice);
+      if(hMacd == INVALID_HANDLE)
+      {
+         LogInfo("INIT FAILED - " + label + " MACD");
+         NotifyPush(Tag() + ": INIT FAILED - " + label + " MACD");
+         return false;
+      }
+   }
+   if(TfNeedsEma(useEma))
+   {
+      hEmaF = iMA(_Symbol, tf, MathMax(1, EmaFastPeriod), 0, MODE_EMA, PRICE_CLOSE);
+      hEmaS = iMA(_Symbol, tf, MathMax(1, EmaSlowPeriod), 0, MODE_EMA, PRICE_CLOSE);
+      if(hEmaF == INVALID_HANDLE || hEmaS == INVALID_HANDLE)
+      {
+         LogInfo("INIT FAILED - " + label + " EMA trend");
+         NotifyPush(Tag() + ": INIT FAILED - " + label + " EMA trend");
+         return false;
+      }
+   }
+   return true;
+}
+
+void ReleaseHandle(int &h)
+{
+   if(h != INVALID_HANDLE) { IndicatorRelease(h); h = INVALID_HANDLE; }
+}
 
 //+------------------------------------------------------------------+
 int OnInit()
-  {
-   trade.SetExpertMagicNumber(InpMagic);
-   trade.SetDeviationInPoints(InpSlippagePoints);
-   trade.SetTypeFillingBySymbol(_Symbol);
+{
+   g_tf1 = (InpTF1 == PERIOD_CURRENT) ? (ENUM_TIMEFRAMES)_Period : InpTF1;
+   g_tf2 = (InpTF2 == PERIOD_CURRENT) ? (ENUM_TIMEFRAMES)_Period : InpTF2;
 
-   g_atrHandle = iATR(_Symbol, InpATRTimeframe, InpATRPeriod);
-   if(g_atrHandle == INVALID_HANDLE)
-     {
-      Print("Failed to create ATR handle");
+   if(MaxLayers < 1)
+   {
+      LogInfo("INIT FAILED - MaxLayers must be >= 1");
+      NotifyPush(Tag() + ": INIT FAILED - MaxLayers must be >= 1");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(PivotLeftBars < 1 || PivotRightBars < 1)
+   {
+      LogInfo("INIT FAILED - PivotLeftBars/PivotRightBars must be >= 1");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(!TradeBuy && !TradeSell)
+   {
+      LogInfo("INIT FAILED - TradeBuy and TradeSell both false");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+
+   const bool tf1Any = (TF1_UseStochCross || TF1_UseStochClassic || TF1_UseSrBounce ||
+                        TF1_UseSrBreakRetest || TF1_UseMacdBias || TF1_UseRsiBias || TF1_UseEmaTrend);
+   if(!tf1Any)
+   {
+      LogInfo("INIT FAILED - TF1 has no modules enabled");
+      NotifyPush(Tag() + ": INIT FAILED - TF1 has no modules enabled");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(ConfluenceMode == CONF_TF1_AND_TF2)
+   {
+      const bool tf2Any = (TF2_UseStochCross || TF2_UseStochClassic || TF2_UseSrBounce ||
+                           TF2_UseSrBreakRetest || TF2_UseMacdBias || TF2_UseRsiBias || TF2_UseEmaTrend);
+      if(!tf2Any)
+      {
+         LogInfo("INIT FAILED - TF2 has no modules enabled (required for AND confluence)");
+         NotifyPush(Tag() + ": INIT FAILED - TF2 has no modules enabled");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+   }
+
+   if(!CreateTfHandles(g_tf1,
+                       TF1_UseStochCross, TF1_UseStochClassic,
+                       TF1_UseMacdBias, TF1_UseRsiBias, TF1_UseEmaTrend,
+                       g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1, "TF1"))
       return(INIT_FAILED);
-     }
 
-   if(InpUseTrendFilter)
-     {
-      g_maFastHandle = iMA(_Symbol, InpTrendTimeframe, InpTrendFastEMA, 0, MODE_EMA, PRICE_CLOSE);
-      g_maSlowHandle = iMA(_Symbol, InpTrendTimeframe, InpTrendSlowEMA, 0, MODE_EMA, PRICE_CLOSE);
-      if(g_maFastHandle == INVALID_HANDLE || g_maSlowHandle == INVALID_HANDLE)
-        {
-         Print("Failed to create trend EMA handles");
+   if(ConfluenceMode == CONF_TF1_AND_TF2)
+   {
+      if(!CreateTfHandles(g_tf2,
+                          TF2_UseStochCross, TF2_UseStochClassic,
+                          TF2_UseMacdBias, TF2_UseRsiBias, TF2_UseEmaTrend,
+                          g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2, "TF2"))
          return(INIT_FAILED);
-        }
-     }
+      if(PeriodSeconds(g_tf2) == PeriodSeconds(g_tf1))
+         Print(Tag(), " | NOTE TF1 and TF2 are the same period — confluence adds no extra info.");
+   }
 
-   if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
-      Print("WARNING: account is NOT in hedging mode. Buy and sell grids will offset each other.");
+   if(UseMAFilter || SLType == SL_MA_VIRTUAL)
+   {
+      g_ma = iMA(_Symbol, g_tf1, MathMax(1, MA_Period), MA_Shift, MA_Method, MA_AppliedPrice);
+      if(g_ma == INVALID_HANDLE)
+      {
+         LogInfo("INIT FAILED - TF1 MA handle (live filter / virtual SL)");
+         NotifyPush(Tag() + ": INIT FAILED - TF1 MA handle");
+         return(INIT_FAILED);
+      }
+   }
+
+   g_pip = PipSize();
+   trade.SetExpertMagicNumber((ulong)MagicNumber);
+   trade.SetDeviationInPoints(SlippagePoints);
+
+   string mode = (ConfluenceMode == CONF_TF1_ONLY) ? "TF1_ONLY" : "TF1_AND_TF2";
+   Print(Tag(), " | INIT ", mode, " TF1=", EnumToString(g_tf1),
+         " TF2=", EnumToString(g_tf2),
+         " | modules TF1[stX=", (int)TF1_UseStochCross, " stC=", (int)TF1_UseStochClassic,
+         " srB=", (int)TF1_UseSrBounce, " srR=", (int)TF1_UseSrBreakRetest,
+         " macd=", (int)TF1_UseMacdBias, " rsi=", (int)TF1_UseRsiBias,
+         " ema=", (int)TF1_UseEmaTrend, "] TF2[stX=", (int)TF2_UseStochCross,
+         " stC=", (int)TF2_UseStochClassic, " srB=", (int)TF2_UseSrBounce,
+         " srR=", (int)TF2_UseSrBreakRetest, " macd=", (int)TF2_UseMacdBias,
+         " rsi=", (int)TF2_UseRsiBias, " ema=", (int)TF2_UseEmaTrend, "]");
+
+   if(_Period != g_tf1)
+      Print(Tag(), " | NOTE chart TF differs from TF1 (", EnumToString(g_tf1),
+            "). Signal clock runs on TF1.");
 
    return(INIT_SUCCEEDED);
-  }
+}
+
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
-  {
-   if(g_atrHandle    != INVALID_HANDLE) IndicatorRelease(g_atrHandle);
-   if(g_maFastHandle != INVALID_HANDLE) IndicatorRelease(g_maFastHandle);
-   if(g_maSlowHandle != INVALID_HANDLE) IndicatorRelease(g_maSlowHandle);
-  }
-//+------------------------------------------------------------------+
-double GetATR()
-  {
-   double buf[1];
-   if(CopyBuffer(g_atrHandle, 0, 1, 1, buf) != 1) return(0.0);
-   return(buf[0]);
-  }
-//+------------------------------------------------------------------+
-double GetMAValue(int handle)
-  {
-   double buf[1];
-   if(CopyBuffer(handle, 0, 1, 1, buf) != 1) return(0.0);
-   return(buf[0]);
-  }
-//+------------------------------------------------------------------+
-double PipSize()
-  {
-   return((_Digits == 3 || _Digits == 5) ? 10 * _Point : _Point);
-  }
-//+------------------------------------------------------------------+
-//| Returns +1 uptrend, -1 downtrend, 0 ranging / filter off          |
-//+------------------------------------------------------------------+
-int GetTrendDirection()
-  {
-   if(!InpUseTrendFilter) return(0);
-   double fast = GetMAValue(g_maFastHandle);
-   double slow = GetMAValue(g_maSlowHandle);
-   if(fast == 0.0 || slow == 0.0) return(0);
-   double diff      = fast - slow;
-   double threshold = InpTrendMinDiffPips * PipSize();
-   if(diff >  threshold) return(1);
-   if(diff < -threshold) return(-1);
-   return(0);
-  }
-//+------------------------------------------------------------------+
-double NormalizeLot(double lot)
-  {
-   double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   lot = MathFloor(lot / lotStep + 0.5) * lotStep;
-   return(MathMax(minLot, MathMin(maxLot, lot)));
-  }
-//+------------------------------------------------------------------+
-void GetBasketInfo(const ENUM_POSITION_TYPE side,
-                   int &count, double &totalLots, double &breakeven,
-                   double &extremePrice, double &sideProfit)
-  {
-   count = 0; totalLots = 0.0; breakeven = 0.0; sideProfit = 0.0;
-   double sumLotPrice = 0.0;
-   extremePrice = (side == POSITION_TYPE_BUY) ? DBL_MAX : -DBL_MAX;
+{
+   ReleaseHandle(g_stoch1); ReleaseHandle(g_rsi1); ReleaseHandle(g_macd1);
+   ReleaseHandle(g_emaF1);  ReleaseHandle(g_emaS1);
+   ReleaseHandle(g_stoch2); ReleaseHandle(g_rsi2); ReleaseHandle(g_macd2);
+   ReleaseHandle(g_emaF2);  ReleaseHandle(g_emaS2);
+   ReleaseHandle(g_ma);
+}
 
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
-      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != side) continue;
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   datetime bt[];
+   if(CopyTime(_Symbol, g_tf1, 0, 1, bt) == 1 && bt[0] != g_lastBarTime)
+   {
+      g_lastBarTime = bt[0];
+      UpdateSignal();
+   }
 
-      double lot   = PositionGetDouble(POSITION_VOLUME);
-      double price = PositionGetDouble(POSITION_PRICE_OPEN);
+   if(ShouldCloseForSchedule())
+   {
+      CloseAllEA("session/weekend schedule");
+      return;
+   }
 
-      count++;
-      totalLots   += lot;
-      sumLotPrice += lot * price;
-      sideProfit  += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+   if(g_modifyPending &&
+      GetTickCount64() - g_lastModifyBurstMs >= (ulong)MathMax(0, MaxConsecutiveRetryCooldownMs))
+      ProcessBasketModify();
 
-      if(side == POSITION_TYPE_BUY)  extremePrice = MathMin(extremePrice, price);
-      else                           extremePrice = MathMax(extremePrice, price);
-     }
+   ManageBasket();
+   CheckVirtualMASL();
 
-   if(totalLots > 0.0) breakeven = sumLotPrice / totalLots;
-  }
-//+------------------------------------------------------------------+
-double GetEAFloatingPL(int &positions)
-  {
-   double pl = 0.0;
-   positions = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
-      pl += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-      positions++;
-     }
-   return(pl);
-  }
-//+------------------------------------------------------------------+
-void CloseSide(const ENUM_POSITION_TYPE side)
-  {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
-      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != side) continue;
-      trade.PositionClose(ticket);
-     }
-  }
-//+------------------------------------------------------------------+
-void CloseAll()
-  {
-   CloseSide(POSITION_TYPE_BUY);
-   CloseSide(POSITION_TYPE_SELL);
-  }
-//+------------------------------------------------------------------+
-//| Manage one side. allowEntries gates NEW trades only (initial +   |
-//| grid adds) so trend flips don't orphan an existing basket -- it  |
-//| still gets tracked and closed at TP normally.                    |
-//+------------------------------------------------------------------+
-void ManageSide(const ENUM_POSITION_TYPE side, const double atr, const bool allowEntries)
-  {
+   if(!g_haveSignal) return;
+   if(!InSession()) return;
+   TryEnter();
+}
+
+//====================== SESSION (WIB inputs, broker clock) ======================
+void GetWIBTime(MqlDateTime &dt)
+{
+   TimeToStruct(TimeCurrent() + SessionTZOffset * 3600, dt);
+}
+
+bool InWeekendBlock()
+{
+   if(!UseWeekendFilter) return false;
+
+   MqlDateTime dt;
+   GetWIBTime(dt);
+
+   int stopDow  = MathMax(0, MathMin(6, WeekendStopDayWIB));
+   int stopHr   = MathMax(0, MathMin(23, WeekendStopHourWIB));
+   int startDow = MathMax(0, MathMin(6, WeekendStartDayWIB));
+   int startHr  = MathMax(0, MathMin(23, WeekendStartHourWIB));
+
+   int nowMin   = dt.day_of_week * 1440 + dt.hour * 60 + dt.min;
+   int stopMin  = stopDow * 1440 + stopHr * 60;
+   int startMin = startDow * 1440 + startHr * 60;
+
+   if(stopMin == startMin) return false;
+   if(stopMin < startMin)
+      return (nowMin >= stopMin && nowMin < startMin);
+   return (nowMin >= stopMin || nowMin < startMin);
+}
+
+bool ComputeNewsBlackout()
+{
+   datetime now  = TimeCurrent();
+   datetime from = now - NewsMinutesAfter * 60;
+   datetime to   = now + NewsMinutesBefore * 60;
+
+   MqlCalendarValue values[];
+   if(CalendarValueHistory(values, from, to, NULL, NewsCurrency) <= 0)
+      return false;
+
+   for(int i = 0; i < ArraySize(values); i++)
+   {
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(values[i].event_id, ev)) continue;
+      if(ev.importance < NewsMinImportance) continue;
+
+      datetime t = values[i].time;
+      if(now >= t - NewsMinutesBefore * 60 && now <= t + NewsMinutesAfter * 60)
+         return true;
+   }
+   return false;
+}
+
+bool InNewsBlackout()
+{
+   if(!UseNewsFilter) return false;
+
+   ulong nowMs = GetTickCount64();
+   if(nowMs - g_newsLastCheckMs >= 60000)
+   {
+      g_newsLastCheckMs    = nowMs;
+      g_newsBlackoutCached = ComputeNewsBlackout();
+   }
+   return g_newsBlackoutCached;
+}
+
+bool InDailySession()
+{
+   if(!UseSession) return true;
+
+   int s = MathMax(0, MathMin(23, SessionStartHour));
+   int e = MathMax(1, MathMin(24, SessionEndHour));
+   if(s == e) return false;
+
+   MqlDateTime dt;
+   GetWIBTime(dt);
+   int h = dt.hour;
+
+   if(s < e) return (h >= s && h < e);
+   return (h >= s || h < e);
+}
+
+bool InSession()
+{
+   if(InWeekendBlock()) return false;
+   if(InNewsBlackout()) return false;
+   return InDailySession();
+}
+
+bool ShouldCloseForSchedule()
+{
+   if(UseWeekendFilter && CloseAtWeekend && InWeekendBlock()) return true;
+   if(UseSession && CloseAtSessionEnd && !InDailySession()) return true;
+   if(UseNewsFilter && CloseAtNews && InNewsBlackout()) return true;
+   return false;
+}
+
+//====================== SIGNAL ENGINE (modular per-TF) ======================
+bool IsPivotHighAt_Rates(const MqlRates &rates[], int idx, int total, int leftBars, int rightBars)
+{
+   if(idx - leftBars < 0 || idx + rightBars >= total) return false;
+   double val = rates[idx].high;
+   for(int j = idx - leftBars; j <= idx + rightBars; j++)
+   {
+      if(j == idx) continue;
+      if(rates[j].high >= val) return false;
+   }
+   return true;
+}
+
+bool IsPivotLowAt_Rates(const MqlRates &rates[], int idx, int total, int leftBars, int rightBars)
+{
+   if(idx - leftBars < 0 || idx + rightBars >= total) return false;
+   double val = rates[idx].low;
+   for(int j = idx - leftBars; j <= idx + rightBars; j++)
+   {
+      if(j == idx) continue;
+      if(rates[j].low <= val) return false;
+   }
+   return true;
+}
+
+bool GetActiveSR(const ENUM_TIMEFRAMES tf, double &support, double &resistance)
+{
+   support = 0; resistance = 0;
+
+   int need = MathMax(LevelsLookback, PivotLeftBars + PivotRightBars + 5);
+   MqlRates rates[];
+   int got = CopyRates(_Symbol, tf, 0, need, rates);
+   if(got < PivotLeftBars + PivotRightBars + 3) return false;
+
+   int total = got;
+   int lastCompleted = total - 2;
+   int startBar = MathMax(PivotLeftBars, total - LevelsLookback);
+
+   double curHigh = EMPTY_VALUE;
+   double curLow  = EMPTY_VALUE;
+
+   for(int i = startBar; i <= lastCompleted; i++)
+   {
+      int pivotIdx = i - PivotRightBars;
+      if(pivotIdx < PivotLeftBars) continue;
+      if(pivotIdx + PivotRightBars > lastCompleted) continue;
+
+      if(IsPivotHighAt_Rates(rates, pivotIdx, total, PivotLeftBars, PivotRightBars))
+         curHigh = rates[pivotIdx].high;
+      if(IsPivotLowAt_Rates(rates, pivotIdx, total, PivotLeftBars, PivotRightBars))
+         curLow = rates[pivotIdx].low;
+   }
+
+   if(curHigh == EMPTY_VALUE || curLow == EMPTY_VALUE) return false;
+   resistance = curHigh;
+   support    = curLow;
+   return true;
+}
+
+bool HadRecentBreakUp(const double &close[], int barsAvailable, double level, int lookback)
+{
+   int lb = MathMax(2, lookback);
+   for(int i = 2; i <= lb + 1; i++)
+   {
+      if(i >= barsAvailable) break;
+      if(close[i] <= level && close[i - 1] > level)
+         return true;
+   }
+   return false;
+}
+
+bool HadRecentBreakDown(const double &close[], int barsAvailable, double level, int lookback)
+{
+   int lb = MathMax(2, lookback);
+   for(int i = 2; i <= lb + 1; i++)
+   {
+      if(i >= barsAvailable) break;
+      if(close[i] >= level && close[i - 1] < level)
+         return true;
+   }
+   return false;
+}
+
+bool EvalStoch(const int hStoch, const bool useCross, const bool useClassic,
+               bool &buyOK, bool &sellOK)
+{
+   buyOK = false; sellOK = false;
+   if(!useCross && !useClassic) { buyOK = true; sellOK = true; return true; } // not used
+   if(hStoch == INVALID_HANDLE) return false;
+
+   double k[], d[];
+   ArraySetAsSeries(k, true);
+   ArraySetAsSeries(d, true);
+   if(CopyBuffer(hStoch, 0, 0, 3, k) != 3) return false;
+   if(CopyBuffer(hStoch, 1, 0, 3, d) != 3) return false;
+
+   double k1 = k[1], k2 = k[2];
+   double d1 = d[1], d2 = d[2];
+
+   bool crossedUp   = (k2 <= d2) && (k1 > d1);
+   bool crossedDown = (k2 >= d2) && (k1 < d1);
+   bool crossLevelBuyOK  = (StochCrossMode == STOCH_CROSS_ANY)  ? true
+                         : (StochCrossMode == STOCH_CROSS_OSOB) ? (k2 < StochOversoldLevel)
+                         :                                        (k1 < StochPullbackLevel);
+   bool crossLevelSellOK = (StochCrossMode == STOCH_CROSS_ANY)  ? true
+                         : (StochCrossMode == STOCH_CROSS_OSOB) ? (k2 > StochOverboughtLevel)
+                         :                                        (k1 > StochPullbackLevel);
+
+   bool crossBuy    = useCross && crossedUp   && crossLevelBuyOK;
+   bool crossSell   = useCross && crossedDown && crossLevelSellOK;
+   bool classicBuy  = useClassic && (k1 < StochOversoldLevel);
+   bool classicSell = useClassic && (k1 > StochOverboughtLevel);
+
+   buyOK  = crossBuy  || classicBuy;
+   sellOK = crossSell || classicSell;
+   return true;
+}
+
+bool EvalMacd(const int hMacd, const bool useIt, bool &buyOK, bool &sellOK)
+{
+   buyOK = true; sellOK = true;
+   if(!useIt) return true;
+   if(hMacd == INVALID_HANDLE) return false;
+
+   double m[];
+   ArraySetAsSeries(m, true);
+   if(CopyBuffer(hMacd, 0, 0, 2, m) != 2) return false;
+   buyOK  = (m[1] > 0);
+   sellOK = (m[1] < 0);
+   return true;
+}
+
+bool EvalRsi(const int hRsi, const bool useIt, bool &buyOK, bool &sellOK)
+{
+   buyOK = true; sellOK = true;
+   if(!useIt) return true;
+   if(hRsi == INVALID_HANDLE) return false;
+
+   double r[];
+   ArraySetAsSeries(r, true);
+   if(CopyBuffer(hRsi, 0, 0, 2, r) != 2) return false;
+   buyOK  = (r[1] > RSIMidLevel);
+   sellOK = (r[1] < RSIMidLevel);
+   return true;
+}
+
+bool EvalEmaTrend(const int hFast, const int hSlow, const bool useIt, bool &buyOK, bool &sellOK)
+{
+   buyOK = true; sellOK = true;
+   if(!useIt) return true;
+   if(hFast == INVALID_HANDLE || hSlow == INVALID_HANDLE) return false;
+
+   double f[], s[];
+   ArraySetAsSeries(f, true);
+   ArraySetAsSeries(s, true);
+   if(CopyBuffer(hFast, 0, 1, 1, f) != 1) return false;
+   if(CopyBuffer(hSlow, 0, 1, 1, s) != 1) return false;
+
+   double diff = f[0] - s[0];
+   double thr  = MathMax(0.0, EmaMinDiffPips) * g_pip;
+   int dir = 0; // +1 up, -1 down, 0 range
+   if(diff >  thr) dir = 1;
+   if(diff < -thr) dir = -1;
+
+   if(dir == 0) { buyOK = false; sellOK = false; return true; } // ranging = no pass when filter on
+
+   if(EmaTrendMode == TREND_FOLLOW)
+   {
+      buyOK  = (dir > 0);
+      sellOK = (dir < 0);
+   }
+   else
+   {
+      buyOK  = (dir < 0);
+      sellOK = (dir > 0);
+   }
+   return true;
+}
+
+bool EvalSr(const ENUM_TIMEFRAMES tf, const bool useBounce, const bool useRetest,
+            bool &buyOK, bool &sellOK)
+{
+   buyOK = false; sellOK = false;
+   if(!useBounce && !useRetest) { buyOK = true; sellOK = true; return true; }
+
+   double support = 0, resistance = 0;
+   if(!GetActiveSR(tf, support, resistance)) return false;
+   if(support <= 0 || resistance <= 0 || support >= resistance) return false;
+
+   double touch = MathMax(0.0, TouchPips) * g_pip;
+
+   double o[], h[], l[], c[];
+   ArraySetAsSeries(o, true);
+   ArraySetAsSeries(h, true);
+   ArraySetAsSeries(l, true);
+   ArraySetAsSeries(c, true);
+
+   int need = MathMax(BreakLookbackBars + 4, 6);
+   if(CopyOpen (_Symbol, tf, 0, need, o) != need) return false;
+   if(CopyHigh (_Symbol, tf, 0, need, h) != need) return false;
+   if(CopyLow  (_Symbol, tf, 0, need, l) != need) return false;
+   if(CopyClose(_Symbol, tf, 0, need, c) != need) return false;
+
+   double o1 = o[1], h1 = h[1], l1 = l[1], c1 = c[1];
+   bool bullReject = (c1 > o1);
+   bool bearReject = (c1 < o1);
+
+   bool bounceBuy  = (l1 <= support + touch) && (c1 > support) &&
+                     (!RequireRejectCandle || bullReject);
+   bool bounceSell = (h1 >= resistance - touch) && (c1 < resistance) &&
+                     (!RequireRejectCandle || bearReject);
+
+   bool retestBuy  = HadRecentBreakUp(c, need, resistance, BreakLookbackBars) &&
+                     (l1 <= resistance + touch) && (c1 > resistance) &&
+                     (!RequireRejectCandle || bullReject);
+   bool retestSell = HadRecentBreakDown(c, need, support, BreakLookbackBars) &&
+                     (h1 >= support - touch) && (c1 < support) &&
+                     (!RequireRejectCandle || bearReject);
+
+   if(useBounce)
+   {
+      buyOK  = buyOK  || bounceBuy;
+      sellOK = sellOK || bounceSell;
+   }
+   if(useRetest)
+   {
+      buyOK  = buyOK  || retestBuy;
+      sellOK = sellOK || retestSell;
+   }
+   return true;
+}
+
+// Evaluate one TF. Triggers OR among enabled; filters AND among enabled.
+// If no triggers enabled, enabled filters alone may form the signal.
+bool EvalTf(const ENUM_TIMEFRAMES tf,
+            const bool useCross, const bool useClassic,
+            const bool useBounce, const bool useRetest,
+            const bool useMacd, const bool useRsi, const bool useEma,
+            const int hStoch, const int hRsi, const int hMacd,
+            const int hEmaF, const int hEmaS,
+            bool &outBuy, bool &outSell)
+{
+   outBuy = false; outSell = false;
+
+   bool anyTrigger = (useCross || useClassic || useBounce || useRetest);
+   bool anyFilter  = (useMacd || useRsi || useEma);
+   if(!anyTrigger && !anyFilter) return true; // nothing enabled -> neutral (caller skips)
+
+   bool stBuy = true, stSell = true;
+   bool srBuy = true, srSell = true;
+   if(anyTrigger)
+   {
+      stBuy = false; stSell = false;
+      srBuy = false; srSell = false;
+
+      bool gotStoch = false, gotSr = false;
+      bool stB = false, stS = false, srB = false, srS = false;
+
+      if(useCross || useClassic)
+      {
+         if(!EvalStoch(hStoch, useCross, useClassic, stB, stS)) return false;
+         gotStoch = true;
+      }
+      if(useBounce || useRetest)
+      {
+         if(!EvalSr(tf, useBounce, useRetest, srB, srS)) return false;
+         gotSr = true;
+      }
+
+      // OR across enabled trigger families
+      bool buyTrig = false, sellTrig = false;
+      if(gotStoch) { buyTrig |= stB; sellTrig |= stS; }
+      if(gotSr)    { buyTrig |= srB; sellTrig |= srS; }
+      stBuy = buyTrig; stSell = sellTrig;
+   }
+
+   bool macdBuy = true, macdSell = true;
+   bool rsiBuy  = true, rsiSell  = true;
+   bool emaBuy  = true, emaSell  = true;
+   if(!EvalMacd(hMacd, useMacd, macdBuy, macdSell)) return false;
+   if(!EvalRsi(hRsi, useRsi, rsiBuy, rsiSell)) return false;
+   if(!EvalEmaTrend(hEmaF, hEmaS, useEma, emaBuy, emaSell)) return false;
+
+   outBuy  = stBuy  && macdBuy  && rsiBuy  && emaBuy;
+   outSell = stSell && macdSell && rsiSell && emaSell;
+   return true;
+}
+
+void UpdateSignal()
+{
+   g_haveSignal  = false;
+   g_signalIsBuy = false;
+
+   bool b1 = false, s1 = false;
+   if(!EvalTf(g_tf1,
+              TF1_UseStochCross, TF1_UseStochClassic,
+              TF1_UseSrBounce, TF1_UseSrBreakRetest,
+              TF1_UseMacdBias, TF1_UseRsiBias, TF1_UseEmaTrend,
+              g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1,
+              b1, s1))
+      return;
+
+   bool b2 = true, s2 = true; // ignored in TF1_ONLY
+   if(ConfluenceMode == CONF_TF1_AND_TF2)
+   {
+      b2 = false; s2 = false;
+      if(!EvalTf(g_tf2,
+                 TF2_UseStochCross, TF2_UseStochClassic,
+                 TF2_UseSrBounce, TF2_UseSrBreakRetest,
+                 TF2_UseMacdBias, TF2_UseRsiBias, TF2_UseEmaTrend,
+                 g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2,
+                 b2, s2))
+         return;
+   }
+
+   bool buyOK  = b1 && b2;
+   bool sellOK = s1 && s2;
+
+   // Conflict (both sides) or neither -> no trade
+   if(TradeBuy && buyOK && !(TradeSell && sellOK))
+   { g_haveSignal = true; g_signalIsBuy = true; return; }
+   if(TradeSell && sellOK && !(TradeBuy && buyOK))
+   { g_haveSignal = true; g_signalIsBuy = false; return; }
+}
+
+
+//====================== ENTRY ======================
+void DiagBlock(const string reason)
+{
+   if(g_lastDiagBar == g_lastBarTime) return;
+   g_lastDiagBar = g_lastBarTime;
+   Print(Tag(), " | BLOCKED ", reason,
+         " | signal=", (g_signalIsBuy ? "BUY" : "SELL"));
+}
+
+void TryEnter()
+{
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   int count; double totalLots, breakeven, extremePrice, sideProfit;
-   GetBasketInfo(side, count, totalLots, breakeven, extremePrice, sideProfit);
+   if(!CanAttemptEntry())
+   { DiagBlock("trade path guard (terminal/broker session/stale tick/retry cooldown)"); return; }
 
-   //--- 1) no positions -> open initial trade (only if entries allowed)
-   if(count == 0)
-     {
-      if(!g_halted && allowEntries)
-        {
-         double lot = NormalizeLot(InpInitialLot);
-         if(side == POSITION_TYPE_BUY) trade.Buy(lot, _Symbol, 0, 0, 0, "grid init");
-         else                          trade.Sell(lot, _Symbol, 0, 0, 0, "grid init");
-        }
-      return;
-     }
+   if(MaxSpreadPips > 0 && (ask - bid) / g_pip > MaxSpreadPips)
+   { DiagBlock("spread " + DoubleToString((ask - bid) / g_pip, 1) + " > " + IntegerToString(MaxSpreadPips)); return; }
 
-   //--- 2) centralized TP (per-side modes only; global modes handled in OnTick)
-   bool closeIt = false;
-   switch(InpTPMode)
-     {
-      case TP_ATR_BASKET:
-        {
-         double dist = atr * InpTPValue;
-         closeIt = (side == POSITION_TYPE_BUY) ? (bid >= breakeven + dist)
-                                               : (ask <= breakeven - dist);
-         break;
-        }
-      case TP_PIPS_BASKET:
-        {
-         double dist = InpTPValue * PipSize();
-         closeIt = (side == POSITION_TYPE_BUY) ? (bid >= breakeven + dist)
-                                               : (ask <= breakeven - dist);
-         break;
-        }
-      case TP_MONEY_BASKET:
-         closeIt = (sideProfit >= InpTPValue);
-         break;
-      default:
-         break; // TP_MONEY_GLOBAL / TP_PERCENT_GLOBAL handled globally
-     }
+   if(!PassesMAFilter(g_signalIsBuy))
+   { DiagBlock("MA filter"); return; }
 
-   if(closeIt)
-     {
-      Print(side == POSITION_TYPE_BUY ? "BUY" : "SELL",
-            " basket TP hit. Profit=", DoubleToString(sideProfit, 2),
-            " BE=", DoubleToString(breakeven, _Digits), ". Closing side.");
-      CloseSide(side);
-      return;
-     }
+   int    layers; double deepest; bool existingIsBuy;
+   CountLayers(layers, deepest, existingIsBuy);
 
-   //--- 3) add martingale grid level (only if entries allowed)
-   if(g_halted || !allowEntries) return;
-   if(InpMaxGridLevels > 0 && count >= InpMaxGridLevels) return;
+   if(layers >= MaxLayers)
+   { DiagBlock("MaxLayers reached (" + IntegerToString(layers) + ")"); return; }
 
-   double gridDist = atr * InpGridATRMult;
+   if(layers > 0 && existingIsBuy != g_signalIsBuy)
+   { DiagBlock("open layers are opposite direction"); return; }
 
-   if(side == POSITION_TYPE_BUY)
-     {
-      if(ask <= extremePrice - gridDist)
-        {
-         double lot = NormalizeLot(InpInitialLot * MathPow(InpLotMultiplier, count));
-         trade.Buy(lot, _Symbol, 0, 0, 0, "grid lvl " + IntegerToString(count + 1));
-        }
-     }
+   double px = g_signalIsBuy ? ask : bid;
+
+   if(layers > 0)
+   {
+      double needed = LayerStepPips * g_pip;
+      double gap    = g_signalIsBuy ? (deepest - px) : (px - deepest);
+      if(gap < needed)
+      { DiagBlock("layer step " + DoubleToString(gap / g_pip, 1) + " < " + IntegerToString(LayerStepPips) + " pips"); return; }
+   }
    else
-     {
-      if(bid >= extremePrice + gridDist)
-        {
-         double lot = NormalizeLot(InpInitialLot * MathPow(InpLotMultiplier, count));
-         trade.Sell(lot, _Symbol, 0, 0, 0, "grid lvl " + IntegerToString(count + 1));
-        }
-     }
-  }
-//+------------------------------------------------------------------+
-void OnTick()
-  {
-   int eaPositions = 0;
-   double floatPL = GetEAFloatingPL(eaPositions);
+   {
+      if(g_lastEntryBar == g_lastBarTime)
+      { DiagBlock("one first-layer entry per bar"); return; }
+      ResetBasketLines();
+   }
 
-   //--- SL cut-off (% or $), same style as the new TP% mode below
-   if(InpMaxLossMoney > 0 || InpMaxLossPct > 0)
-     {
-      double floatLoss = -floatPL;
-      double balance   = AccountInfoDouble(ACCOUNT_BALANCE);
-      bool hitMoney = (InpMaxLossMoney > 0 && floatLoss >= InpMaxLossMoney);
-      bool hitPct   = (InpMaxLossPct > 0 && balance > 0 &&
-                       floatLoss >= balance * InpMaxLossPct / 100.0);
-      if(hitMoney || hitPct)
-        {
-         if(!g_halted)
-           {
-            Print("SL CUT-OFF HIT. Floating loss=", DoubleToString(floatLoss, 2),
-                  " ", AccountInfoString(ACCOUNT_CURRENCY), ". Closing all.");
-            g_halted = true;
-           }
-         CloseAll();
-         return;
-        }
-      if(g_halted && eaPositions == 0)
-        {
-         Print("Flat after cut-off. Resuming.");
-         g_halted = false;
-        }
-     }
+   OpenLayer(layers == 0);
+}
 
-   //--- Global TP (money or percent of balance -- same unit family as SL%)
-   if(eaPositions > 0)
-     {
-      if(InpTPMode == TP_MONEY_GLOBAL && floatPL >= InpTPValue)
-        {
-         Print("GLOBAL TP HIT ($). Profit=", DoubleToString(floatPL, 2), ". Closing all.");
-         CloseAll();
-         return;
-        }
-      if(InpTPMode == TP_PERCENT_GLOBAL)
-        {
-         double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-         if(balance > 0 && floatPL >= balance * InpTPValue / 100.0)
-           {
-            Print("GLOBAL TP HIT (%). Profit=", DoubleToString(floatPL, 2),
-                  " (", DoubleToString(InpTPValue, 2), "% of balance). Closing all.");
-            CloseAll();
-            return;
-           }
-        }
-     }
+//====================== MARKET GUARD ======================
+void LogGuardOnce(const string msg)
+{
+   if(TimeCurrent() - g_lastGuardLogTime < 300) return;
+   g_lastGuardLogTime = TimeCurrent();
+   Print(Tag(), " | ", msg);
+}
 
-   double atr = GetATR();
-   if(atr <= 0.0) return;
+bool IsExpertTradingEnabled()
+{
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) return false;
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED)) return false;
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)) return false;
+   if(!AccountInfoInteger(ACCOUNT_TRADE_EXPERT)) return false;
+   return true;
+}
 
-   //--- Trend filter: gate which side may open NEW trades
-   int  trendDir = GetTrendDirection();   // 1 up, -1 down, 0 range/off
-   bool allowBuyEntry, allowSellEntry;
-   if(InpTrendMode == TREND_FOLLOW)
-     {
-      // buy with uptrend/range, sell with downtrend/range
-      allowBuyEntry  = InpTradeBuy  && (trendDir >= 0);
-      allowSellEntry = InpTradeSell && (trendDir <= 0);
-     }
-   else // TREND_REVERSAL: fade the trend
-     {
-      // buy in a downtrend (expecting bounce), sell in an uptrend (expecting pullback)
-      allowBuyEntry  = InpTradeBuy  && (trendDir <= 0);
-      allowSellEntry = InpTradeSell && (trendDir >= 0);
-     }
+bool IsTickFresh()
+{
+   if(MaxStaleTickSeconds <= 0) return true;
 
-   ManageSide(POSITION_TYPE_BUY,  atr, allowBuyEntry);
-   ManageSide(POSITION_TYPE_SELL, atr, allowSellEntry);
-  }
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick)) return false;
+   if(tick.bid <= 0.0 || tick.ask <= 0.0) return false;
+   return ((TimeCurrent() - tick.time) <= MaxStaleTickSeconds);
+}
+
+bool IsBrokerTradeSessionOpen()
+{
+   if(!UseBrokerSessionGuard) return true;
+
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int nowSec = dt.hour * 3600 + dt.min * 60 + dt.sec;
+
+   datetime from = 0, to = 0;
+   bool found = false;
+   for(uint ses = 0; ses < 16; ses++)
+   {
+      if(!SymbolInfoSessionTrade(_Symbol, (ENUM_DAY_OF_WEEK)dt.day_of_week, ses, from, to))
+         break;
+      found = true;
+      if(nowSec >= (int)from && nowSec < (int)to)
+         return true;
+   }
+   return !found;   // no published sessions -> don't block (use stale-tick guard)
+}
+
+bool IsTradePathOpen(const bool forClose)
+{
+   if(!IsExpertTradingEnabled()) return false;
+
+   long mode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
+   if(mode == SYMBOL_TRADE_MODE_DISABLED) return false;
+   if(!forClose && mode != SYMBOL_TRADE_MODE_FULL) return false;
+
+   if(!IsBrokerTradeSessionOpen())
+   {
+      LogGuardOnce("GUARD broker trade session closed");
+      return false;
+   }
+   if(!IsTickFresh())
+   {
+      LogGuardOnce("GUARD no fresh ticks for " + IntegerToString(MaxStaleTickSeconds) + "s");
+      return false;
+   }
+   return true;
+}
+
+bool CanAttemptEntry()
+{
+   if(OrderRetryCooldownSec > 0 && (TimeCurrent() - g_lastEntryFailTime) < OrderRetryCooldownSec)
+      return false;
+   return IsTradePathOpen(false);
+}
+
+bool CanAttemptClose()
+{
+   if(OrderRetryCooldownSec > 0 && (TimeCurrent() - g_lastCloseFailTime) < OrderRetryCooldownSec)
+      return false;
+   return IsTradePathOpen(true);
+}
+
+bool HasEAPositions()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) == MagicNumber) return true;
+   }
+   return false;
+}
+
+void CountLayers(int &count, double &deepest, bool &existingIsBuy)
+{
+   count = 0; deepest = 0; existingIsBuy = g_signalIsBuy;
+   bool first = true;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+      double e = PositionGetDouble(POSITION_PRICE_OPEN);
+      bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      count++;
+      if(first) { deepest = e; existingIsBuy = isBuy; first = false; }
+      else
+      {
+         if(isBuy) deepest = MathMin(deepest, e); // deepest buy  = lowest entry
+         else      deepest = MathMax(deepest, e); // deepest sell = highest entry
+      }
+   }
+}
+
+void OpenLayer(const bool isFirstLayer)
+{
+   double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double minStop = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
+   double lots  = NormalizeLots(LotSize);
+   if(lots <= 0) return;
+
+   // Order is never sent naked: attach the existing basket lines if we have
+   // them, otherwise a first-layer estimate. SyncBasketLines() recomputes the
+   // exact levels from real fills right after and pushes them to all tickets.
+   double sl = g_basketSL;
+   double tp = g_basketTP;
+
+   if(g_signalIsBuy)
+   {
+      if(sl <= 0)
+         sl = ask - MaxStopLossPips * g_pip;             // broker line = fixed pip cap in BOTH SL types
+      if(ask - sl < minStop) sl = ask - minStop;
+      if(tp <= 0 && TakeProfitPips > 0) tp = ask + TakeProfitPips * g_pip;
+      if(tp > 0 && tp - ask < minStop) tp = ask + minStop;
+
+      sl = NormalizePrice(sl);
+      tp = (tp > 0) ? NormalizePrice(tp) : 0.0;
+      if(trade.Buy(lots, _Symbol, ask, sl, tp, "lets-go grid buy"))
+      {
+         LogInfo("OPEN BUY " + DoubleToString(lots, 2) + " @ " + DoubleToString(ask, _Digits) + (isFirstLayer ? " | new basket" : " | add layer") + " | SL " + DoubleToString(sl, _Digits) + (tp > 0 ? " TP " + DoubleToString(tp, _Digits) : ""));
+         g_lastEntryBar = g_lastBarTime; SyncBasketLines();
+      }
+      else
+      {
+         g_lastEntryFailTime = TimeCurrent();
+         LogGuardOnce("FAIL buy rc=" + IntegerToString(trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription());
+      }
+   }
+   else
+   {
+      if(sl <= 0)
+         sl = bid + MaxStopLossPips * g_pip;             // broker line = fixed pip cap in BOTH SL types
+      if(sl - bid < minStop) sl = bid + minStop;
+      if(tp <= 0 && TakeProfitPips > 0) tp = bid - TakeProfitPips * g_pip;
+      if(tp > 0 && bid - tp < minStop) tp = bid - minStop;
+
+      sl = NormalizePrice(sl);
+      tp = (tp > 0) ? NormalizePrice(tp) : 0.0;
+      if(trade.Sell(lots, _Symbol, bid, sl, tp, "lets-go grid sell"))
+      {
+         LogInfo("OPEN SELL " + DoubleToString(lots, 2) + " @ " + DoubleToString(bid, _Digits) + (isFirstLayer ? " | new basket" : " | add layer") + " | SL " + DoubleToString(sl, _Digits) + (tp > 0 ? " TP " + DoubleToString(tp, _Digits) : ""));
+         g_lastEntryBar = g_lastBarTime; SyncBasketLines();
+      }
+      else
+      {
+         g_lastEntryFailTime = TimeCurrent();
+         LogGuardOnce("FAIL sell rc=" + IntegerToString(trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription());
+      }
+   }
+}
+
+//====================== BASKET SL/TP LINES (broker, tighter-only) ======================
+// Called ONLY when a layer opens. Computes candidates from the average entry
+// of all open layers, then ratchets:
+//   BUY : SL may only move UP, TP may only move DOWN (both = tighter)
+//   SELL: SL may only move DOWN, TP may only move UP
+// Wider candidates are ignored. Same line pushed to every ticket.
+// Avg entry is a SIMPLE average (not lot-weighted): basket TP hit always
+// equals layers x TakeProfitPips in pips, whatever lots each layer has.
+void SyncBasketLines()
+{
+   int    count = 0;
+   double sumEntry = 0;
+   bool   isBuy = true, first = true;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+      sumEntry += PositionGetDouble(POSITION_PRICE_OPEN);
+      if(first) { isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY); first = false; }
+      count++;
+   }
+   if(count == 0) { ResetBasketLines(); return; }
+
+   double avgEntry = sumEntry / count;
+   double point    = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double minStop  = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
+
+   // ratchet reference: if a tighter modify is still pending at the broker,
+   // ratchet against THAT, so the tighter-only guarantee survives rejections
+   double refSL = g_modifyPending ? g_pendingSL : g_basketSL;
+   double refTP = g_modifyPending ? g_pendingTP : g_basketTP;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   double slCand, tpCand;
+
+   if(isBuy)
+   {
+      slCand = avgEntry - MaxStopLossPips * g_pip;
+      tpCand = (TakeProfitPips > 0) ? avgEntry + TakeProfitPips * g_pip : 0.0;
+
+      // ratchet: tighter update, wider ignore
+      double newSL = (refSL <= 0) ? slCand : MathMax(refSL, slCand);
+      double newTP = (TakeProfitPips <= 0) ? 0.0
+                   : (refTP <= 0) ? tpCand : MathMin(refTP, tpCand);
+
+      // broker min-distance: never widen to satisfy it — keep old line instead
+      if(bid - newSL < minStop)  newSL = (refSL > 0) ? refSL : bid - minStop;
+      if(newTP > 0 && newTP - ask < minStop) newTP = (refTP > 0) ? refTP : ask + minStop;
+
+      ApplyBasketLines(NormalizePrice(newSL), (newTP > 0) ? NormalizePrice(newTP) : 0.0);
+   }
+   else
+   {
+      slCand = avgEntry + MaxStopLossPips * g_pip;
+      tpCand = (TakeProfitPips > 0) ? avgEntry - TakeProfitPips * g_pip : 0.0;
+
+      double newSL = (refSL <= 0) ? slCand : MathMin(refSL, slCand);
+      double newTP = (TakeProfitPips <= 0) ? 0.0
+                   : (refTP <= 0) ? tpCand : MathMax(refTP, tpCand);
+
+      if(newSL - ask < minStop) newSL = (refSL > 0) ? refSL : ask + minStop;
+      if(newTP > 0 && bid - newTP < minStop) newTP = (refTP > 0) ? refTP : bid - minStop;
+
+      ApplyBasketLines(NormalizePrice(newSL), (newTP > 0) ? NormalizePrice(newTP) : 0.0);
+   }
+}
+
+void ApplyBasketLines(double sl, double tp)
+{
+   double tol = SymbolInfoDouble(_Symbol, SYMBOL_POINT) / 2.0;
+   bool slMoved = (MathAbs(sl - g_basketSL) > tol);
+   bool tpMoved = (MathAbs(tp - g_basketTP) > tol);
+
+   if(slMoved || tpMoved)
+      Print(Tag(), " | LINES SL ", DoubleToString(g_basketSL, _Digits), " -> ", DoubleToString(sl, _Digits),
+            " | TP ", DoubleToString(g_basketTP, _Digits), " -> ", DoubleToString(tp, _Digits),
+            " (tighter update / wider ignored)");
+
+   // targets are PENDING until every ticket is confirmed by the broker
+   g_pendingSL     = sl;
+   g_pendingTP     = tp;
+   g_modifyPending = true;
+
+   ProcessBasketModify();
+}
+
+// transient = worth an immediate retry burst; fatal = burst is pointless,
+// but the pending flag stays so we re-attempt after the cooldown
+bool IsTransientRetcode(const uint rc)
+{
+   return (rc == TRADE_RETCODE_REQUOTE           ||   // 10004
+           rc == TRADE_RETCODE_TIMEOUT           ||   // 10012
+           rc == TRADE_RETCODE_PRICE_CHANGED     ||   // 10020
+           rc == TRADE_RETCODE_PRICE_OFF         ||   // 10021
+           rc == TRADE_RETCODE_TOO_MANY_REQUESTS ||   // 10024
+           rc == TRADE_RETCODE_CONNECTION);           // 10031
+}
+
+// one ticket, one burst: up to ModifyRetryMax attempts, ModifyRetryDelayMs apart
+bool ModifyTicketWithRetry(const ulong ticket, const double sl, const double tp)
+{
+   int maxTry = MathMax(1, ModifyRetryMax);
+   for(int attempt = 1; attempt <= maxTry; attempt++)
+   {
+      if(trade.PositionModify(ticket, sl, tp)) return true;
+
+      uint rc = trade.ResultRetcode();
+      if(!IsTransientRetcode(rc))
+      {
+         LogGuardOnce("FAIL modify (fatal) rc=" + IntegerToString(rc) +
+                      " " + trade.ResultRetcodeDescription() + " — will re-attempt after cooldown");
+         return false;
+      }
+      if(attempt < maxTry && ModifyRetryDelayMs > 0)
+         Sleep(ModifyRetryDelayMs);
+   }
+   LogGuardOnce("FAIL modify after " + IntegerToString(maxTry) + " tries rc=" +
+                IntegerToString(trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription());
+   return false;
+}
+
+// push pending lines to every EA ticket; commit g_basketSL/TP only when the
+// broker has accepted them on ALL tickets. Called on layer open and from
+// OnTick after MaxConsecutiveRetryCooldownMs while still pending.
+void ProcessBasketModify()
+{
+   if(!g_modifyPending) return;
+
+   double sl  = g_pendingSL;
+   double tp  = g_pendingTP;
+   double tol = SymbolInfoDouble(_Symbol, SYMBOL_POINT) / 2.0;
+
+   int  count = 0;
+   bool allOk = true;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      count++;
+
+      double curSL = PositionGetDouble(POSITION_SL);
+      double curTP = PositionGetDouble(POSITION_TP);
+      if(MathAbs(curSL - sl) <= tol && MathAbs(curTP - tp) <= tol) continue;   // already there
+
+      if(!ModifyTicketWithRetry(tk, sl, tp)) allOk = false;
+   }
+
+   if(count == 0)              // nothing left to modify
+   {
+      g_modifyPending = false;
+      return;
+   }
+
+   if(allOk)
+   {
+      g_modifyPending = false;
+      g_basketSL = sl;         // commit ONLY what the broker actually accepted
+      g_basketTP = tp;
+   }
+   else
+      g_lastModifyBurstMs = GetTickCount64();   // stay pending, cool down, retry in OnTick
+}
+
+void ResetBasketLines()
+{
+   g_basketSL      = 0;
+   g_basketTP      = 0;
+   g_modifyPending = false;
+   g_pendingSL     = 0;
+   g_pendingTP     = 0;
+}
+
+//====================== VIRTUAL MA SL (EA-side, never sent to broker) ======================
+// Exit line from the CURRENT MA value: BUY = MA - buffer, SELL = MA + buffer.
+// Returns false if the MA can't be read (handle missing / no data yet) —
+// then no virtual exit fires this tick; the broker pip-cap SL is the backup.
+bool GetMASLAnchor(const bool isBuy, double &anchor)
+{
+   anchor = 0;
+   if(g_ma == INVALID_HANDLE) return false;
+
+   double m[];
+   ArraySetAsSeries(m, true);
+   if(CopyBuffer(g_ma, 0, 0, 1, m) != 1) return false;
+
+   double buffer = MathMax(0.0, SLMABufferPips) * g_pip;
+   anchor = isBuy ? (m[0] - buffer) : (m[0] + buffer);
+   return true;
+}
+
+// Watched every tick, exactly like the basket pip trail: when price breaks
+// the MA by the buffer, the WHOLE basket is closed at market by the EA.
+// Nothing is ever written to the broker — the broker SL stays the fixed
+// pip cap as offline backup. The line moves with the MA on its own, both
+// directions, because it's recomputed fresh from the MA each tick.
+void CheckVirtualMASL()
+{
+   if(SLType != SL_MA_VIRTUAL) return;
+
+   int layers; double deepest; bool isBuy;
+   CountLayers(layers, deepest, isBuy);
+   if(layers == 0) return;
+
+   double maSL;
+   if(!GetMASLAnchor(isBuy, maSL)) return;
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   bool breached = isBuy ? (bid <= maSL) : (ask >= maSL);
+   if(!breached) return;
+
+   LogGuardOnce("EXIT virtual MA SL hit " + (isBuy ? "bid " + DoubleToString(bid, _Digits) + " <= " : "ask " + DoubleToString(ask, _Digits) + " >= ") +
+                DoubleToString(maSL, _Digits) + " (MA " + (isBuy ? "-" : "+") + " " + DoubleToString(SLMABufferPips, 1) + " pips) — closing basket");
+   CloseAllEA("virtual MA SL");
+}
+
+//====================== BASKET PROFIT (pips, trailing) ======================
+void ManageBasket()
+{
+   if(!UseBasketTP) return;
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   int    count = 0;
+   double totalPips = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+      double e = PositionGetDouble(POSITION_PRICE_OPEN);
+      if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+         totalPips += (bid - e) / g_pip;
+      else
+         totalPips += (e - ask) / g_pip;
+      count++;
+   }
+
+   if(count == 0) { ResetBasket(); ResetBasketLines(); return; }
+
+   if(!g_basketArmed)
+   {
+      if(totalPips >= BasketStartPips)   // arm once the whole basket reaches the start line
+      { g_basketArmed = true; g_basketPeak = totalPips; }
+   }
+   else
+   {
+      if(totalPips > g_basketPeak) g_basketPeak = totalPips;         // ratchet the peak up
+      if(g_basketPeak - totalPips >= BasketGivebackPips)             // gave back too much -> harvest
+      { CloseAllEA("basket giveback"); }
+   }
+}
+
+void ResetBasket()
+{
+   g_basketArmed = false;
+   g_basketPeak  = 0;
+}
+
+//====================== HELPERS ======================
+void CloseAllEA(const string reason = "")
+{
+   if(!HasEAPositions()) return;
+   if(!CanAttemptClose()) return;
+
+   double totalPL     = 0;
+   int    closedCount = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      totalPL += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      closedCount++;
+   }
+
+   bool anyFail = false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(!trade.PositionClose(tk))
+      {
+         anyFail = true;
+         LogGuardOnce("FAIL close rc=" + IntegerToString(trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription());
+      }
+   }
+   if(anyFail) g_lastCloseFailTime = TimeCurrent();
+   else if(closedCount > 0)
+   {
+      LogInfo("CLOSE" + (reason != "" ? " (" + reason + ")" : "") + " | net P/L " + DoubleToString(totalPL, 2));
+      NotifyPush(Tag() + ": BASKET CLOSED" + (reason != "" ? " (" + reason + ")" : "") + " | Net P/L: " + DoubleToString(totalPL, 2));
+   }
+}
+
+bool PassesMAFilter(bool wantBuy)
+{
+   if(!UseMAFilter) return true;
+   if(g_ma == INVALID_HANDLE) return false;
+
+   double m[];
+   ArraySetAsSeries(m, true);
+   if(CopyBuffer(g_ma, 0, 0, 2, m) != 2) return false;   // [0]=MA now, [1]=MA of last closed bar
+
+   double buffer = MathMax(0.0, MABufferPips) * g_pip;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   // BOTH modes: live price at this exact moment must be on the correct side
+   // of the current MA (+/- buffer). No entry can print on the wrong side of
+   // the MA line on the chart.
+   bool liveOK = wantBuy ? (ask > m[0] + buffer) : (bid < m[0] - buffer);
+   if(!liveOK) return false;
+
+   if(MACheckMode == MA_CHECK_RUNNING) return true;
+
+   // CANDLE_CLOSE (tighter): the last finished candle must ALSO have closed
+   // on the correct side of its MA (+/- buffer). Skips the first spike
+   // across the MA — needs a close to confirm before entries are allowed.
+   double c[];
+   ArraySetAsSeries(c, true);
+   if(CopyClose(_Symbol, g_tf1, 1, 1, c) != 1) return false;
+
+   if(wantBuy) return (c[0] > m[1] + buffer);
+   return (c[0] < m[1] - buffer);
+}
+
+double PipSize()
+{
+   int    d = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double p = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   return (d == 3 || d == 5) ? p * 10.0 : p;
+}
+
+double NormalizePrice(double p)
+{
+   return NormalizeDouble(p, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+}
+
+double NormalizeLots(double lots)
+{
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0) step = 0.01;
+   lots = MathRound(lots / step) * step;
+   lots = MathMax(minLot, MathMin(maxLot, lots));
+   return lots;
+}
 //+------------------------------------------------------------------+
