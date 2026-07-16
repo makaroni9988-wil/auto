@@ -1,0 +1,13 @@
+*.ex5
+Experts/Advisors/
+Experts/Examples/
+Experts/Free Robots/
+Experts/Market/
+Indicators/Examples/
+Indicators/Free Indicators/
+Scripts/
+Include/
+Images/
+Profiles/
+logs/
+experts.dat
