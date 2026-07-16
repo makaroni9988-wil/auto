@@ -24,7 +24,10 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.50"
+#property version   "4.60"
+// v4.60: Best-in-class chip panel — uncle-style input fingerprint memory,
+//        quiet TF init, light paint refresh, collapse, tooltips, click guard,
+//        account+symbol+magic GV scope, no-blink + self-heal.
 // v4.50: Cute compact chip panel — click toggles, GlobalVariable memory,
 //        left/right corner, no-blink TF change + self-heal (weird-manager).
 // v4.40: Swing virtual SL follows g_BosMode (zigzag / fractal / both-AND),
@@ -178,7 +181,9 @@ enum ENUM_PANEL_SIDE
 input ENUM_PANEL_SIDE PanelSide = PANEL_SIDE_RIGHT; // Panel corner
 input int  PanelOffsetX = 8;                 // Inset from chosen side
 input int  PanelOffsetY = 28;                // Inset from top
-input bool PanelRemember = true;             // Save on/off to GlobalVariables
+input bool PanelRemember = true;             // Save on/off (survives DC / reattach)
+input bool PanelStartCollapsed = false;      // Start minimized (title + expand only)
+input uint PanelClickGuardMs = 180;          // Ignore double-clicks inside this window
 input group "===== Stop / Exit (broker pip-cap always; virtuals optional) ====="
 // Broker SL line = MaxStopLossPips from avg entry (offline backup) — always.
 // Virtual exits are EA-side only; turn on any combo — first hit closes basket.
@@ -246,8 +251,12 @@ bool g_TF2_UseStochCross, g_TF2_UseStochClassic, g_TF2_UseSrBounce, g_TF2_UseSrB
 bool g_TF2_UseFibZone, g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_UseEmaTrend, g_TF2_UseBos;
 bool g_UseMAFilter, g_UseVirtualMaSL, g_UseSwingVirtualSL, g_UseBasketTP;
 
-string g_panelPrefix;
+string g_gvPrefix = "";
+string g_panelPrefix = "";
 bool   g_panelBuilt = false;
+bool   g_panelCollapsed = false;
+bool   g_quietInit = false;          // TF-change reinit: keep logs quiet
+ulong  g_panelLastClickMs = 0;
 //====================== GLOBALS ======================
 ENUM_TIMEFRAMES g_tf1;
 ENUM_TIMEFRAMES g_tf2;
@@ -373,14 +382,22 @@ void ReleaseHandle(int &h)
 
 
 //====================== PANEL STATE (GlobalVariables) ======================
-string PanelGvBase()
+// Uncle-style memory:
+//   - fingerprint of INPUT defaults stored alongside runtime clicks
+//   - if Inputs tab values changed since last run -> reset to those inputs
+//   - if Inputs unchanged -> restore last clicked runtime state
+// Scope: account + symbol + magic (never leaks across accounts/EAs)
+
+void PanelInitPrefix()
 {
    string sym = _Symbol;
    StringReplace(sym, ".", "_");
-   return "LG_" + IntegerToString(MagicNumber) + "_" + sym + "_";
+   g_gvPrefix = "LG_" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "_"
+              + sym + "_" + IntegerToString(MagicNumber) + "_";
+   g_panelPrefix = "LGUI_" + IntegerToString(ChartID()) + "_";
 }
 
-string PanelGvKey(const string id) { return PanelGvBase() + id; }
+string PanelGvKey(const string id) { return g_gvPrefix + id; }
 
 void PanelSaveBool(const string id, const bool v)
 {
@@ -410,9 +427,28 @@ int PanelLoadInt(const string id, const int fallback)
    return (int)GlobalVariableGet(k);
 }
 
-void RuntimeLoadFromInputsThenGV()
+// Compact fingerprint of every panel-backed INPUT default.
+string PanelInputFingerprint()
 {
-   // defaults from inputs
+   return IntegerToString((int)ConfluenceMode) + "|"
+        + IntegerToString((int)BosMode) + "|"
+        + IntegerToString((int)TradeBuy) + IntegerToString((int)TradeSell) + "|"
+        + IntegerToString((int)TF1_UseStochCross) + IntegerToString((int)TF1_UseStochClassic)
+        + IntegerToString((int)TF1_UseSrBounce) + IntegerToString((int)TF1_UseSrBreakRetest)
+        + IntegerToString((int)TF1_UseFibZone) + IntegerToString((int)TF1_UseMacdBias)
+        + IntegerToString((int)TF1_UseRsiBias) + IntegerToString((int)TF1_UseEmaTrend)
+        + IntegerToString((int)TF1_UseBos) + "|"
+        + IntegerToString((int)TF2_UseStochCross) + IntegerToString((int)TF2_UseStochClassic)
+        + IntegerToString((int)TF2_UseSrBounce) + IntegerToString((int)TF2_UseSrBreakRetest)
+        + IntegerToString((int)TF2_UseFibZone) + IntegerToString((int)TF2_UseMacdBias)
+        + IntegerToString((int)TF2_UseRsiBias) + IntegerToString((int)TF2_UseEmaTrend)
+        + IntegerToString((int)TF2_UseBos) + "|"
+        + IntegerToString((int)UseMAFilter) + IntegerToString((int)UseVirtualMaSL)
+        + IntegerToString((int)UseSwingVirtualSL) + IntegerToString((int)UseBasketTP);
+}
+
+void RuntimeApplyInputDefaults()
+{
    g_ConfluenceMode = ConfluenceMode;
    g_BosMode = BosMode;
    g_TradeBuy = TradeBuy;
@@ -442,8 +478,45 @@ void RuntimeLoadFromInputsThenGV()
    g_UseVirtualMaSL = UseVirtualMaSL;
    g_UseSwingVirtualSL = UseSwingVirtualSL;
    g_UseBasketTP = UseBasketTP;
+}
 
-   // overlay remembered clicks
+void RuntimeSaveAllToGV()
+{
+   if(!PanelRemember) return;
+   PanelSaveInt("Conf", (int)g_ConfluenceMode);
+   PanelSaveInt("BosMode", (int)g_BosMode);
+   PanelSaveBool("Buy", g_TradeBuy);
+   PanelSaveBool("Sell", g_TradeSell);
+
+   PanelSaveBool("T1_stX", g_TF1_UseStochCross);
+   PanelSaveBool("T1_stC", g_TF1_UseStochClassic);
+   PanelSaveBool("T1_srB", g_TF1_UseSrBounce);
+   PanelSaveBool("T1_srR", g_TF1_UseSrBreakRetest);
+   PanelSaveBool("T1_fib", g_TF1_UseFibZone);
+   PanelSaveBool("T1_macd", g_TF1_UseMacdBias);
+   PanelSaveBool("T1_rsi", g_TF1_UseRsiBias);
+   PanelSaveBool("T1_ema", g_TF1_UseEmaTrend);
+   PanelSaveBool("T1_bos", g_TF1_UseBos);
+
+   PanelSaveBool("T2_stX", g_TF2_UseStochCross);
+   PanelSaveBool("T2_stC", g_TF2_UseStochClassic);
+   PanelSaveBool("T2_srB", g_TF2_UseSrBounce);
+   PanelSaveBool("T2_srR", g_TF2_UseSrBreakRetest);
+   PanelSaveBool("T2_fib", g_TF2_UseFibZone);
+   PanelSaveBool("T2_macd", g_TF2_UseMacdBias);
+   PanelSaveBool("T2_rsi", g_TF2_UseRsiBias);
+   PanelSaveBool("T2_ema", g_TF2_UseEmaTrend);
+   PanelSaveBool("T2_bos", g_TF2_UseBos);
+
+   PanelSaveBool("MA", g_UseMAFilter);
+   PanelSaveBool("MaSL", g_UseVirtualMaSL);
+   PanelSaveBool("SwSL", g_UseSwingVirtualSL);
+   PanelSaveBool("Trail", g_UseBasketTP);
+   PanelSaveBool("Collapsed", g_panelCollapsed);
+}
+
+void RuntimeLoadFromGV()
+{
    g_ConfluenceMode = (ENUM_CONF_MODE)PanelLoadInt("Conf", (int)g_ConfluenceMode);
    g_BosMode = (ENUM_BOS_MODE)PanelLoadInt("BosMode", (int)g_BosMode);
    g_TradeBuy = PanelLoadBool("Buy", g_TradeBuy);
@@ -473,6 +546,7 @@ void RuntimeLoadFromInputsThenGV()
    g_UseVirtualMaSL = PanelLoadBool("MaSL", g_UseVirtualMaSL);
    g_UseSwingVirtualSL = PanelLoadBool("SwSL", g_UseSwingVirtualSL);
    g_UseBasketTP = PanelLoadBool("Trail", g_UseBasketTP);
+   g_panelCollapsed = PanelLoadBool("Collapsed", g_panelCollapsed);
 
    if(g_ConfluenceMode != CONF_TF1_ONLY && g_ConfluenceMode != CONF_TF1_AND_TF2)
       g_ConfluenceMode = CONF_TF1_AND_TF2;
@@ -480,66 +554,129 @@ void RuntimeLoadFromInputsThenGV()
       g_BosMode = BOS_ZIGZAG;
 }
 
+void RuntimeLoadFromInputsThenGV()
+{
+   PanelInitPrefix();
+   RuntimeApplyInputDefaults();
+   g_panelCollapsed = PanelStartCollapsed;
+
+   if(!PanelRemember)
+   {
+      RuntimeSaveAllToGV(); // keep FP in sync even if remember off? skip
+      return;
+   }
+
+   string fpNow = PanelInputFingerprint();
+   string kFp = PanelGvKey("INP_FP");
+   bool haveFp = GlobalVariableCheck(kFp);
+   // store fingerprint as a hash-ish double from string length+checksum
+   double fpHash = 0;
+   for(int i = 0; i < StringLen(fpNow); i++)
+      fpHash += (double)StringGetCharacter(fpNow, i) * (i + 1);
+
+   if(haveFp && MathAbs(GlobalVariableGet(kFp) - fpHash) < 0.5)
+   {
+      // Inputs unchanged -> restore last clicks
+      RuntimeLoadFromGV();
+      if(!g_quietInit)
+         Print(Tag(), " | PANEL memory restored (inputs unchanged)");
+   }
+   else
+   {
+      // Fresh attach or Inputs tab changed -> follow inputs
+      RuntimeApplyInputDefaults();
+      g_panelCollapsed = PanelStartCollapsed;
+      GlobalVariableSet(kFp, fpHash);
+      RuntimeSaveAllToGV();
+      if(!g_quietInit)
+         Print(Tag(), " | PANEL defaults from Inputs (fresh or inputs changed)");
+   }
+}
+
+void PanelClearMemory()
+{
+   // wipe remembered clicks for this account/symbol/magic
+   string ids[] = {
+      "INP_FP","Conf","BosMode","Buy","Sell","Collapsed",
+      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
+      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
+      "MA","MaSL","SwSL","Trail"
+   };
+   for(int i = 0; i < ArraySize(ids); i++)
+      GlobalVariableDel(PanelGvKey(ids[i]));
+}
+
 //====================== CHIP PANEL UI ======================
 string PanelObj(const string id) { return g_panelPrefix + id; }
 
 void PanelDeleteAll()
 {
+   if(StringLen(g_panelPrefix) == 0)
+      g_panelPrefix = "LGUI_" + IntegerToString(ChartID()) + "_";
    ObjectsDeleteAll(0, g_panelPrefix);
    g_panelBuilt = false;
 }
 
-void PanelChip(const string id, const string text, const int x, const int y,
-               const int w, const int h, const bool on)
+ENUM_BASE_CORNER PanelCorner()
 {
-   string name = PanelObj(id);
-   if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
+   return (PanelSide == PANEL_SIDE_LEFT) ? CORNER_LEFT_UPPER : CORNER_RIGHT_UPPER;
+}
 
-   ENUM_BASE_CORNER corner = (PanelSide == PANEL_SIDE_LEFT) ? CORNER_LEFT_UPPER : CORNER_RIGHT_UPPER;
-   color bg = on ? C'46,120,100' : C'55,55,55';
-   color fg = on ? C'230,255,245' : C'180,180,180';
-   color bd = on ? C'70,150,125' : C'40,40,40';
+void PanelStyleChip(const string name, const string text, const string tip,
+                    const bool on, const bool isModeChip)
+{
+   color bg, fg, bd;
+   if(isModeChip)
+   {
+      bg = C'36,52,68';
+      fg = C'220,235,250';
+      bd = C'70,110,140';
+   }
+   else if(on)
+   {
+      bg = C'40,110,92';
+      fg = C'235,255,248';
+      bd = C'80,160,130';
+   }
+   else
+   {
+      bg = C'48,48,48';
+      fg = C'160,160,160';
+      bd = C'36,36,36';
+   }
 
-   ObjectSetInteger(0, name, OBJPROP_CORNER, corner);
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
-   ObjectSetString (0, name, OBJPROP_FONT, "Consolas");
    ObjectSetString (0, name, OBJPROP_TEXT, text);
+   ObjectSetString (0, name, OBJPROP_TOOLTIP, tip);
    ObjectSetInteger(0, name, OBJPROP_COLOR, fg);
    ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, bd);
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, name, OBJPROP_ZORDER, 100);
 }
 
-void PanelLabel(const string id, const string text, const int x, const int y, const int w, const int h)
+void PanelEnsureButton(const string id, const int x, const int y, const int w, const int h)
 {
    string name = PanelObj(id);
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
 
-   ENUM_BASE_CORNER corner = (PanelSide == PANEL_SIDE_LEFT) ? CORNER_LEFT_UPPER : CORNER_RIGHT_UPPER;
-   ObjectSetInteger(0, name, OBJPROP_CORNER, corner);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, PanelCorner());
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
    ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
    ObjectSetString (0, name, OBJPROP_FONT, "Consolas");
-   ObjectSetString (0, name, OBJPROP_TEXT, text);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, C'210,210,210');
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'28,28,28');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'28,28,28');
-   ObjectSetInteger(0, name, OBJPROP_STATE, false);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, name, OBJPROP_ZORDER, 90);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 1000);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+}
+
+void PanelEnsureLabel(const string id, const int x, const int y, const int w, const int h)
+{
+   PanelEnsureButton(id, x, y, w, h);
+   ObjectSetInteger(0, PanelObj(id), OBJPROP_ZORDER, 900);
 }
 
 string ConfChipText()
@@ -554,11 +691,89 @@ string BosChipText()
    return "Zig";
 }
 
+string ConfTip()
+{
+   return (g_ConfluenceMode == CONF_TF1_ONLY)
+      ? "Confluence: TF1 only (click to require TF1 AND TF2)"
+      : "Confluence: TF1 AND TF2 (click for TF1 only)";
+}
+
+string BosTip()
+{
+   if(g_BosMode == BOS_FRACTAL) return "BOS engine: Fractal / choch-bos style (click to cycle)";
+   if(g_BosMode == BOS_BOTH_AND) return "BOS engine: BOTH must agree (click to cycle)";
+   return "BOS engine: Zigzag / fibo-gun (click to cycle)";
+}
+
+// Light paint: update text/colors/tooltips only (no delete, no geometry thrash).
+void PanelPaintState()
+{
+   if(!ShowPanel) return;
+
+   PanelStyleChip(PanelObj("TTL"), g_panelCollapsed ? " lets-go  ▸" : " lets-go  ▾",
+                  "Click to collapse / expand panel", true, true);
+   PanelStyleChip(PanelObj("MIN"), g_panelCollapsed ? "▸" : "▾",
+                  "Collapse / expand", true, true);
+
+   if(g_panelCollapsed) return;
+
+   PanelStyleChip(PanelObj("CONF"), "Conf " + ConfChipText(), ConfTip(), true, true);
+   PanelStyleChip(PanelObj("BOSM"), "BOS " + BosChipText(), BosTip(), true, true);
+   PanelStyleChip(PanelObj("BUY"),  "Buy",  "Allow BUY signals",  g_TradeBuy,  false);
+   PanelStyleChip(PanelObj("SELL"), "Sell", "Allow SELL signals", g_TradeSell, false);
+
+   PanelStyleChip(PanelObj("L1"), " TF1 triggers / filters", "TF1 module row", true, true);
+   PanelStyleChip(PanelObj("T1_stX"), "stX", "TF1 Stoch cross trigger", g_TF1_UseStochCross, false);
+   PanelStyleChip(PanelObj("T1_stC"), "stC", "TF1 Stoch classic OS/OB", g_TF1_UseStochClassic, false);
+   PanelStyleChip(PanelObj("T1_srB"), "srB", "TF1 S/R bounce", g_TF1_UseSrBounce, false);
+   PanelStyleChip(PanelObj("T1_srR"), "srR", "TF1 S/R break-retest", g_TF1_UseSrBreakRetest, false);
+   PanelStyleChip(PanelObj("T1_fib"), "fib", "TF1 Fib golden zone", g_TF1_UseFibZone, false);
+   PanelStyleChip(PanelObj("T1_macd"),"macd","TF1 MACD bias filter", g_TF1_UseMacdBias, false);
+   PanelStyleChip(PanelObj("T1_rsi"), "rsi", "TF1 RSI bias filter", g_TF1_UseRsiBias, false);
+   PanelStyleChip(PanelObj("T1_ema"), "ema", "TF1 EMA trend filter", g_TF1_UseEmaTrend, false);
+   PanelStyleChip(PanelObj("T1_bos"), "bos", "TF1 BOS filter (BosMode)", g_TF1_UseBos, false);
+
+   PanelStyleChip(PanelObj("L2"), " TF2 triggers / filters", "TF2 module row", true, true);
+   PanelStyleChip(PanelObj("T2_stX"), "stX", "TF2 Stoch cross trigger", g_TF2_UseStochCross, false);
+   PanelStyleChip(PanelObj("T2_stC"), "stC", "TF2 Stoch classic OS/OB", g_TF2_UseStochClassic, false);
+   PanelStyleChip(PanelObj("T2_srB"), "srB", "TF2 S/R bounce", g_TF2_UseSrBounce, false);
+   PanelStyleChip(PanelObj("T2_srR"), "srR", "TF2 S/R break-retest", g_TF2_UseSrBreakRetest, false);
+   PanelStyleChip(PanelObj("T2_fib"), "fib", "TF2 Fib golden zone", g_TF2_UseFibZone, false);
+   PanelStyleChip(PanelObj("T2_macd"),"macd","TF2 MACD bias filter", g_TF2_UseMacdBias, false);
+   PanelStyleChip(PanelObj("T2_rsi"), "rsi", "TF2 RSI bias filter", g_TF2_UseRsiBias, false);
+   PanelStyleChip(PanelObj("T2_ema"), "ema", "TF2 EMA trend filter", g_TF2_UseEmaTrend, false);
+   PanelStyleChip(PanelObj("T2_bos"), "bos", "TF2 BOS filter (BosMode)", g_TF2_UseBos, false);
+
+   PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
+   PanelStyleChip(PanelObj("MA"),   "MA",   "Live MA entry filter (TF1)", g_UseMAFilter, false);
+   PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop (live follow)", g_UseVirtualMaSL, false);
+   PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop (BosMode, tighten-only)", g_UseSwingVirtualSL, false);
+   PanelStyleChip(PanelObj("Trail"),"Trail","Basket pip trail TP", g_UseBasketTP, false);
+}
+
+void PanelHideExtras()
+{
+   // when collapsed, park non-title chips off-view instead of deleting (no blink)
+   string extras[] = {
+      "CONF","BOSM","BUY","SELL","L1","L2","LR",
+      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
+      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
+      "MA","MaSL","SwSL","Trail"
+   };
+   for(int i = 0; i < ArraySize(extras); i++)
+   {
+      string name = PanelObj(extras[i]);
+      if(ObjectFind(0, name) < 0) continue;
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, -5000);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, -5000);
+   }
+}
+
 void PanelBuild()
 {
    if(!ShowPanel) { PanelDeleteAll(); return; }
-
-   g_panelPrefix = "LGUI_" + IntegerToString(ChartID()) + "_";
+   if(StringLen(g_panelPrefix) == 0)
+      PanelInitPrefix();
 
    const int chipW = 40;
    const int chipH = 18;
@@ -567,46 +782,58 @@ void PanelBuild()
    int x0 = PanelOffsetX;
    int y  = PanelOffsetY;
 
-   PanelLabel("TTL", " lets-go", x0, y, rowW, chipH); y += chipH + gap;
+   // title + collapse control always visible
+   PanelEnsureLabel("TTL", x0, y, rowW - 22, chipH);
+   PanelEnsureButton("MIN", x0 + rowW - 20, y, 20, chipH);
 
-   PanelChip("CONF", "Conf " + ConfChipText(), x0, y, 52, chipH, true);
-   PanelChip("BOSM", "BOS " + BosChipText(), x0 + 52 + gap, y, 56, chipH, true);
-   PanelChip("BUY",  "Buy",  x0 + 52 + gap + 56 + gap, y, chipW, chipH, g_TradeBuy);
-   PanelChip("SELL", "Sell", x0 + 52 + gap + 56 + gap + chipW + gap, y, chipW, chipH, g_TradeSell);
-   y += chipH + gap + 2;
+   if(g_panelCollapsed)
+   {
+      PanelHideExtras();
+      PanelPaintState();
+      g_panelBuilt = true;
+      return;
+   }
 
-   PanelLabel("L1", " TF1", x0, y, rowW, chipH); y += chipH + gap;
-   PanelChip("T1_stX", "stX", x0, y, chipW, chipH, g_TF1_UseStochCross);
-   PanelChip("T1_stC", "stC", x0 + (chipW + gap) * 1, y, chipW, chipH, g_TF1_UseStochClassic);
-   PanelChip("T1_srB", "srB", x0 + (chipW + gap) * 2, y, chipW, chipH, g_TF1_UseSrBounce);
-   PanelChip("T1_srR", "srR", x0 + (chipW + gap) * 3, y, chipW, chipH, g_TF1_UseSrBreakRetest);
-   PanelChip("T1_fib", "fib", x0 + (chipW + gap) * 4, y, chipW, chipH, g_TF1_UseFibZone);
    y += chipH + gap;
-   PanelChip("T1_macd", "macd", x0, y, chipW, chipH, g_TF1_UseMacdBias);
-   PanelChip("T1_rsi",  "rsi",  x0 + (chipW + gap) * 1, y, chipW, chipH, g_TF1_UseRsiBias);
-   PanelChip("T1_ema",  "ema",  x0 + (chipW + gap) * 2, y, chipW, chipH, g_TF1_UseEmaTrend);
-   PanelChip("T1_bos",  "bos",  x0 + (chipW + gap) * 3, y, chipW, chipH, g_TF1_UseBos);
+   PanelEnsureButton("CONF", x0, y, 52, chipH);
+   PanelEnsureButton("BOSM", x0 + 52 + gap, y, 56, chipH);
+   PanelEnsureButton("BUY",  x0 + 52 + gap + 56 + gap, y, chipW, chipH);
+   PanelEnsureButton("SELL", x0 + 52 + gap + 56 + gap + chipW + gap, y, chipW, chipH);
    y += chipH + gap + 2;
 
-   PanelLabel("L2", " TF2", x0, y, rowW, chipH); y += chipH + gap;
-   PanelChip("T2_stX", "stX", x0, y, chipW, chipH, g_TF2_UseStochCross);
-   PanelChip("T2_stC", "stC", x0 + (chipW + gap) * 1, y, chipW, chipH, g_TF2_UseStochClassic);
-   PanelChip("T2_srB", "srB", x0 + (chipW + gap) * 2, y, chipW, chipH, g_TF2_UseSrBounce);
-   PanelChip("T2_srR", "srR", x0 + (chipW + gap) * 3, y, chipW, chipH, g_TF2_UseSrBreakRetest);
-   PanelChip("T2_fib", "fib", x0 + (chipW + gap) * 4, y, chipW, chipH, g_TF2_UseFibZone);
+   PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("T1_stX", x0, y, chipW, chipH);
+   PanelEnsureButton("T1_stC", x0 + (chipW + gap) * 1, y, chipW, chipH);
+   PanelEnsureButton("T1_srB", x0 + (chipW + gap) * 2, y, chipW, chipH);
+   PanelEnsureButton("T1_srR", x0 + (chipW + gap) * 3, y, chipW, chipH);
+   PanelEnsureButton("T1_fib", x0 + (chipW + gap) * 4, y, chipW, chipH);
    y += chipH + gap;
-   PanelChip("T2_macd", "macd", x0, y, chipW, chipH, g_TF2_UseMacdBias);
-   PanelChip("T2_rsi",  "rsi",  x0 + (chipW + gap) * 1, y, chipW, chipH, g_TF2_UseRsiBias);
-   PanelChip("T2_ema",  "ema",  x0 + (chipW + gap) * 2, y, chipW, chipH, g_TF2_UseEmaTrend);
-   PanelChip("T2_bos",  "bos",  x0 + (chipW + gap) * 3, y, chipW, chipH, g_TF2_UseBos);
+   PanelEnsureButton("T1_macd", x0, y, chipW, chipH);
+   PanelEnsureButton("T1_rsi",  x0 + (chipW + gap) * 1, y, chipW, chipH);
+   PanelEnsureButton("T1_ema",  x0 + (chipW + gap) * 2, y, chipW, chipH);
+   PanelEnsureButton("T1_bos",  x0 + (chipW + gap) * 3, y, chipW, chipH);
    y += chipH + gap + 2;
 
-   PanelLabel("LR", " risk", x0, y, rowW, chipH); y += chipH + gap;
-   PanelChip("MA",   "MA",   x0, y, chipW, chipH, g_UseMAFilter);
-   PanelChip("MaSL", "MaSL", x0 + (chipW + gap) * 1, y, chipW, chipH, g_UseVirtualMaSL);
-   PanelChip("SwSL", "SwSL", x0 + (chipW + gap) * 2, y, chipW, chipH, g_UseSwingVirtualSL);
-   PanelChip("Trail","Trail",x0 + (chipW + gap) * 3, y, chipW + 8, chipH, g_UseBasketTP);
+   PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("T2_stX", x0, y, chipW, chipH);
+   PanelEnsureButton("T2_stC", x0 + (chipW + gap) * 1, y, chipW, chipH);
+   PanelEnsureButton("T2_srB", x0 + (chipW + gap) * 2, y, chipW, chipH);
+   PanelEnsureButton("T2_srR", x0 + (chipW + gap) * 3, y, chipW, chipH);
+   PanelEnsureButton("T2_fib", x0 + (chipW + gap) * 4, y, chipW, chipH);
+   y += chipH + gap;
+   PanelEnsureButton("T2_macd", x0, y, chipW, chipH);
+   PanelEnsureButton("T2_rsi",  x0 + (chipW + gap) * 1, y, chipW, chipH);
+   PanelEnsureButton("T2_ema",  x0 + (chipW + gap) * 2, y, chipW, chipH);
+   PanelEnsureButton("T2_bos",  x0 + (chipW + gap) * 3, y, chipW, chipH);
+   y += chipH + gap + 2;
 
+   PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("MA",    x0, y, chipW, chipH);
+   PanelEnsureButton("MaSL",  x0 + (chipW + gap) * 1, y, chipW, chipH);
+   PanelEnsureButton("SwSL",  x0 + (chipW + gap) * 2, y, chipW, chipH);
+   PanelEnsureButton("Trail", x0 + (chipW + gap) * 3, y, chipW + 8, chipH);
+
+   PanelPaintState();
    g_panelBuilt = true;
 }
 
@@ -618,8 +845,17 @@ void PanelRefreshVisuals()
       PanelBuild();
       return;
    }
-   // rebuild chip colors/text in place (adopt existing objects — no delete)
-   PanelBuild();
+   // geometry already good — paint state only (unless collapsed toggled)
+   PanelBuild(); // safe: find-first + paint; no delete
+}
+
+bool PanelClickAllowed()
+{
+   ulong now = GetTickCount64();
+   if(PanelClickGuardMs > 0 && now - g_panelLastClickMs < (ulong)PanelClickGuardMs)
+      return false;
+   g_panelLastClickMs = now;
+   return true;
 }
 
 bool PanelToggleBool(bool &flag, const string gvId)
@@ -632,18 +868,29 @@ bool PanelToggleBool(bool &flag, const string gvId)
 bool PanelHandleClick(const string sparam)
 {
    if(!ShowPanel) return false;
+   if(StringLen(g_panelPrefix) == 0) PanelInitPrefix();
    if(StringFind(sparam, g_panelPrefix) != 0) return false;
-   string id = StringSubstr(sparam, StringLen(g_panelPrefix));
 
-   // ignore labels
-   if(id == "TTL" || id == "L1" || id == "L2" || id == "LR") 
-   {
-      ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+   string id = StringSubstr(sparam, StringLen(g_panelPrefix));
+   ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+
+   // section headers are not toggles
+   if(id == "L1" || id == "L2" || id == "LR")
       return true;
-   }
+
+   if(!PanelClickAllowed())
+      return true;
 
    bool changed = true;
-   if(id == "CONF")
+   bool needFullBuild = false;
+
+   if(id == "TTL" || id == "MIN")
+   {
+      g_panelCollapsed = !g_panelCollapsed;
+      PanelSaveBool("Collapsed", g_panelCollapsed);
+      needFullBuild = true;
+   }
+   else if(id == "CONF")
    {
       g_ConfluenceMode = (g_ConfluenceMode == CONF_TF1_ONLY) ? CONF_TF1_AND_TF2 : CONF_TF1_ONLY;
       PanelSaveInt("Conf", (int)g_ConfluenceMode);
@@ -681,12 +928,13 @@ bool PanelHandleClick(const string sparam)
    else if(id == "Trail") PanelToggleBool(g_UseBasketTP, "Trail");
    else changed = false;
 
-   ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
    if(changed)
    {
-      PanelRefreshVisuals();
+      if(needFullBuild) PanelBuild();
+      else PanelPaintState();
       ChartRedraw(0);
-      LogInfo("PANEL " + id + " updated");
+      if(!g_quietInit)
+         Print(Tag(), " | PANEL ", id);
    }
    return true;
 }
@@ -694,6 +942,7 @@ bool PanelHandleClick(const string sparam)
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   g_quietInit = (UninitializeReason() == REASON_CHARTCHANGE);
    RuntimeLoadFromInputsThenGV();
 
    g_tf1 = (InpTF1 == PERIOD_CURRENT) ? (ENUM_TIMEFRAMES)_Period : InpTF1;
@@ -710,7 +959,7 @@ int OnInit()
       LogInfo("INIT FAILED - PivotLeftBars/PivotRightBars must be >= 1");
       return(INIT_PARAMETERS_INCORRECT);
    }
-   if(!g_TradeBuy && !g_TradeSell)
+   if(!g_TradeBuy && !g_TradeSell && !g_quietInit)
       Print(Tag(), " | NOTE Buy and Sell both off — enable from panel/inputs to trade.");
 
    // With the chip panel, pre-create ALL handles so live toggles work without reattach.
@@ -731,13 +980,14 @@ int OnInit()
                           prepAll || g_TF2_UseFibZone, prepAll || g_TF2_UseBos,
                           g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2, g_atr2, "TF2"))
          return(INIT_FAILED);
-      if(PeriodSeconds(g_tf2) == PeriodSeconds(g_tf1))
+      if(PeriodSeconds(g_tf2) == PeriodSeconds(g_tf1) && !g_quietInit)
          Print(Tag(), " | NOTE TF1 and TF2 are the same period — confluence adds no extra info.");
    }
 
    if(prepAll || g_UseMAFilter || g_UseVirtualMaSL)
    {
-      g_ma = iMA(_Symbol, g_tf1, MathMax(1, MA_Period), MA_Shift, MA_Method, MA_AppliedPrice);
+      if(g_ma == INVALID_HANDLE)
+         g_ma = iMA(_Symbol, g_tf1, MathMax(1, MA_Period), MA_Shift, MA_Method, MA_AppliedPrice);
       if(g_ma == INVALID_HANDLE)
       {
          LogInfo("INIT FAILED - TF1 MA handle (live filter / virtual MA SL)");
@@ -746,7 +996,6 @@ int OnInit()
       }
    }
 
-   // Ensure TF1 ATR for zigzag swing SL / fib even if BosMode is fractal now
    if((prepAll || g_UseSwingVirtualSL || g_TF1_UseFibZone) && g_atr1 == INVALID_HANDLE)
    {
       g_atr1 = iATR(_Symbol, g_tf1, MathMax(1, FibATRPeriod));
@@ -761,27 +1010,22 @@ int OnInit()
    trade.SetExpertMagicNumber((ulong)MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
 
-   string mode = (g_ConfluenceMode == CONF_TF1_ONLY) ? "TF1_ONLY" : "TF1_AND_TF2";
-   Print(Tag(), " | INIT ", mode, " TF1=", EnumToString(g_tf1),
-         " TF2=", EnumToString(g_tf2), " g_BosMode=", EnumToString(g_BosMode),
-         " | modules TF1[stX=", (int)g_TF1_UseStochCross, " stC=", (int)g_TF1_UseStochClassic,
-         " srB=", (int)g_TF1_UseSrBounce, " srR=", (int)g_TF1_UseSrBreakRetest,
-         " fib=", (int)g_TF1_UseFibZone, " macd=", (int)g_TF1_UseMacdBias,
-         " rsi=", (int)g_TF1_UseRsiBias, " ema=", (int)g_TF1_UseEmaTrend,
-         " bos=", (int)g_TF1_UseBos, "] TF2[stX=", (int)g_TF2_UseStochCross,
-         " stC=", (int)g_TF2_UseStochClassic, " srB=", (int)g_TF2_UseSrBounce,
-         " srR=", (int)g_TF2_UseSrBreakRetest, " fib=", (int)g_TF2_UseFibZone,
-         " macd=", (int)g_TF2_UseMacdBias, " rsi=", (int)g_TF2_UseRsiBias,
-         " ema=", (int)g_TF2_UseEmaTrend, " bos=", (int)g_TF2_UseBos, "]");
+   if(!g_quietInit)
+   {
+      string mode = (g_ConfluenceMode == CONF_TF1_ONLY) ? "TF1_ONLY" : "TF1_AND_TF2";
+      Print(Tag(), " | INIT ", mode, " TF1=", EnumToString(g_tf1),
+            " TF2=", EnumToString(g_tf2), " BosMode=", EnumToString(g_BosMode),
+            " | panel=", (ShowPanel ? (PanelSide == PANEL_SIDE_LEFT ? "LEFT" : "RIGHT") : "off"));
+      if(_Period != g_tf1)
+         Print(Tag(), " | NOTE chart TF differs from TF1 (", EnumToString(g_tf1),
+               "). Signal clock runs on TF1.");
+   }
 
-   if(_Period != g_tf1)
-      Print(Tag(), " | NOTE chart TF differs from TF1 (", EnumToString(g_tf1),
-            "). Signal clock runs on TF1.");
-
-   g_panelPrefix = "LGUI_" + IntegerToString(ChartID()) + "_";
+   // Adopt existing panel on TF change (no delete/rebuild blink)
    PanelBuild();
    EventSetTimer(1);
-   ChartRedraw(0);
+   if(!g_quietInit)
+      ChartRedraw(0);
 
    return(INIT_SUCCEEDED);
 }
@@ -791,10 +1035,14 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
 
-   // weird-manager pattern: keep objects on TF change to avoid blink;
-   // next OnInit adopts them via find-first create.
+   // Keep objects on TF change — next OnInit adopts them (no blink).
    if(reason != REASON_CHARTCHANGE)
       PanelDeleteAll();
+
+   // Deliberate remove from chart = forget panel memory (fresh next attach).
+   // Restart / DC / recompile / TF change keep memory.
+   if(reason == REASON_REMOVE && PanelRemember)
+      PanelClearMemory();
 
    ReleaseHandle(g_stoch1); ReleaseHandle(g_rsi1); ReleaseHandle(g_macd1);
    ReleaseHandle(g_emaF1);  ReleaseHandle(g_emaS1); ReleaseHandle(g_atr1);
@@ -805,8 +1053,10 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   // self-heal only — no forced redraw spam
-   if(ShowPanel && (ObjectFind(0, PanelObj("TTL")) < 0))
+   // self-heal only — never spam redraw
+   if(!ShowPanel) return;
+   if(StringLen(g_panelPrefix) == 0) PanelInitPrefix();
+   if(ObjectFind(0, PanelObj("TTL")) < 0)
    {
       PanelBuild();
       ChartRedraw(0);
@@ -819,7 +1069,6 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       PanelHandleClick(sparam);
 }
 
-//+------------------------------------------------------------------+
 void OnTick()
 {
    datetime bt[];
