@@ -26,17 +26,13 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.80"
-// v4.80: Panel simplified — always top-left; PanelInsetX / PanelInsetY only.
-//        Removed corner chooser and right-side mirror helpers.
-// v4.70: Journal logging same as 2nd/3rd/fibo-gun; push INIT FAILED +
-//        BASKET CLOSED; InpDebugLog for panel chatter.
-// v4.60: Chip panel — input fingerprint memory, collapse, tooltips,
-//        click guard, account+symbol+magic GV, no-blink + self-heal.
-// v4.40: Swing virtual SL follows g_BosMode, tighten-only.
-// v4.30: Optional virtual MA / swing exits; broker pip-cap always.
-// v4.20: BosMode zigzag / fractal / both-AND.
-// v4.10: Independent FibZone + Bos toggles per TF.
+#property version   "4.81"
+// v4.81: Live harden — reset basket trail/lines on successful close and on
+//        new first layer; clear flat-basket state even if Trail is off;
+//        panel GV restore only when panel is shown; dead helpers removed.
+// v4.80: Panel always top-left (PanelInsetX / PanelInsetY).
+// v4.70: Journal Tag + push INIT FAILED / BASKET CLOSED only.
+// v4.60: Chip panel with GV memory, collapse, self-heal.
 // v4.00: Rewrite onto 2nd/3rd skeleton; modular dual-TF confluence.
 
 #include <Trade\Trade.mqh>
@@ -247,7 +243,6 @@ bool g_UseMAFilter, g_UseVirtualMaSL, g_UseSwingVirtualSL, g_UseBasketTP;
 
 string g_gvPrefix = "";
 string g_panelPrefix = "";
-bool   g_panelBuilt = false;
 bool   g_panelCollapsed = false;
 bool   g_quietInit = false;          // TF-change reinit: keep logs quiet
 ulong  g_panelLastClickMs = 0;
@@ -304,12 +299,6 @@ void NotifyPush(const string msg)
       LogInfo("PUSH FAILED - " + msg);
 }
 
-bool TfNeedsStoch(const bool cross, const bool classic) { return (cross || classic); }
-bool TfNeedsMacd(const bool on)  { return on; }
-bool TfNeedsRsi(const bool on)   { return on; }
-bool TfNeedsEma(const bool on)   { return on; }
-bool TfNeedsSr(const bool bounce, const bool retest) { return (bounce || retest); }
-
 bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
                      const bool useCross, const bool useClassic,
                      const bool useMacd, const bool useRsi, const bool useEma,
@@ -317,7 +306,7 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
                      int &hStoch, int &hRsi, int &hMacd, int &hEmaF, int &hEmaS, int &hAtr,
                      const string label)
 {
-   if(TfNeedsStoch(useCross, useClassic))
+   if(useCross || useClassic)
    {
       hStoch = iStochastic(_Symbol, tf, StochKPeriod, StochDPeriod, StochSlowing, StochMAMethod, StochPriceField);
       if(hStoch == INVALID_HANDLE)
@@ -327,7 +316,7 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
          return false;
       }
    }
-   if(TfNeedsRsi(useRsi))
+   if(useRsi)
    {
       hRsi = iRSI(_Symbol, tf, RSIPeriod, RSIAppliedPrice);
       if(hRsi == INVALID_HANDLE)
@@ -337,7 +326,7 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
          return false;
       }
    }
-   if(TfNeedsMacd(useMacd))
+   if(useMacd)
    {
       hMacd = iMACD(_Symbol, tf, MACDFastEMA, MACDSlowEMA, MACDSignalPeriod, MACDAppliedPrice);
       if(hMacd == INVALID_HANDLE)
@@ -347,7 +336,7 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
          return false;
       }
    }
-   if(TfNeedsEma(useEma))
+   if(useEma)
    {
       hEmaF = iMA(_Symbol, tf, MathMax(1, EmaFastPeriod), 0, MODE_EMA, PRICE_CLOSE);
       hEmaS = iMA(_Symbol, tf, MathMax(1, EmaSlowPeriod), 0, MODE_EMA, PRICE_CLOSE);
@@ -379,11 +368,8 @@ void ReleaseHandle(int &h)
 
 
 //====================== PANEL STATE (GlobalVariables) ======================
-// Uncle-style memory:
-//   - fingerprint of INPUT defaults stored alongside runtime clicks
-//   - if Inputs tab values changed since last run -> reset to those inputs
-//   - if Inputs unchanged -> restore last clicked runtime state
-// Scope: account + symbol + magic (never leaks across accounts/EAs)
+// Memory: fingerprint Inputs; if unchanged restore last clicks, else reset.
+// Scope: account + symbol + magic.
 
 void PanelInitPrefix()
 {
@@ -557,30 +543,25 @@ void RuntimeLoadFromInputsThenGV()
    RuntimeApplyInputDefaults();
    g_panelCollapsed = PanelStartCollapsed;
 
-   if(!PanelRemember)
-   {
-      RuntimeSaveAllToGV(); // keep FP in sync even if remember off? skip
+   // No panel or remember off -> Inputs only (never silent GV override).
+   if(!ShowPanel || !PanelRemember)
       return;
-   }
 
    string fpNow = PanelInputFingerprint();
    string kFp = PanelGvKey("INP_FP");
    bool haveFp = GlobalVariableCheck(kFp);
-   // store fingerprint as a hash-ish double from string length+checksum
    double fpHash = 0;
    for(int i = 0; i < StringLen(fpNow); i++)
       fpHash += (double)StringGetCharacter(fpNow, i) * (i + 1);
 
    if(haveFp && MathAbs(GlobalVariableGet(kFp) - fpHash) < 0.5)
    {
-      // Inputs unchanged -> restore last clicks
       RuntimeLoadFromGV();
       if(!g_quietInit)
          LogDebug("PANEL memory restored (inputs unchanged)");
    }
    else
    {
-      // Fresh attach or Inputs tab changed -> follow inputs
       RuntimeApplyInputDefaults();
       g_panelCollapsed = PanelStartCollapsed;
       GlobalVariableSet(kFp, fpHash);
@@ -612,7 +593,6 @@ void PanelDeleteAll()
    if(StringLen(g_panelPrefix) == 0)
       g_panelPrefix = "LGUI_" + IntegerToString(ChartID()) + "_";
    ObjectsDeleteAll(0, g_panelPrefix);
-   g_panelBuilt = false;
 }
 
 void PanelStyleChip(const string name, const string text, const string tip,
@@ -764,7 +744,6 @@ void PanelBuild()
    if(StringLen(g_panelPrefix) == 0)
       PanelInitPrefix();
 
-   // Drop orphan objects from older panel builds (extra collapse chip).
    if(ObjectFind(0, PanelObj("MIN")) >= 0)
       ObjectDelete(0, PanelObj("MIN"));
 
@@ -782,7 +761,6 @@ void PanelBuild()
    {
       PanelHideExtras();
       PanelPaintState();
-      g_panelBuilt = true;
       return;
    }
 
@@ -830,7 +808,6 @@ void PanelBuild()
    PanelEnsureButton("Trail", x0 + step * 3, y, trailW, chipH);
 
    PanelPaintState();
-   g_panelBuilt = true;
 }
 
 bool PanelClickAllowed()
@@ -935,6 +912,12 @@ int OnInit()
    {
       LogInfo("INIT FAILED - MaxLayers must be >= 1");
       NotifyPush(Tag() + ": INIT FAILED - MaxLayers must be >= 1");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(MaxStopLossPips < 1)
+   {
+      LogInfo("INIT FAILED - MaxStopLossPips must be >= 1");
+      NotifyPush(Tag() + ": INIT FAILED - MaxStopLossPips must be >= 1");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(PivotLeftBars < 1 || PivotRightBars < 1)
@@ -1837,6 +1820,7 @@ void TryEnter()
    {
       if(g_lastEntryBar == g_lastBarTime)
       { DiagBlock("one first-layer entry per bar"); return; }
+      ResetBasket();
       ResetBasketLines();
    }
 
@@ -2352,8 +2336,6 @@ void CheckSwingVirtualSL()
 //====================== BASKET PROFIT (pips, trailing) ======================
 void ManageBasket()
 {
-   if(!g_UseBasketTP) return;
-
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
@@ -2374,18 +2356,20 @@ void ManageBasket()
       count++;
    }
 
+   // Always clear trail/line state when flat (even if Trail chip is off).
    if(count == 0) { ResetBasket(); ResetBasketLines(); return; }
+   if(!g_UseBasketTP) return;
 
    if(!g_basketArmed)
    {
-      if(totalPips >= BasketStartPips)   // arm once the whole basket reaches the start line
+      if(totalPips >= BasketStartPips)
       { g_basketArmed = true; g_basketPeak = totalPips; }
    }
    else
    {
-      if(totalPips > g_basketPeak) g_basketPeak = totalPips;         // ratchet the peak up
-      if(g_basketPeak - totalPips >= BasketGivebackPips)             // gave back too much -> harvest
-      { CloseAllEA("basket giveback"); }
+      if(totalPips > g_basketPeak) g_basketPeak = totalPips;
+      if(g_basketPeak - totalPips >= BasketGivebackPips)
+         CloseAllEA("basket giveback");
    }
 }
 
@@ -2433,6 +2417,9 @@ void CloseAllEA(const string reason = "")
    {
       LogInfo("CLOSE" + (reason != "" ? " (" + reason + ")" : "") + " | net P/L " + DoubleToString(totalPL, 2));
       NotifyPush(Tag() + ": BASKET CLOSED" + (reason != "" ? " (" + reason + ")" : "") + " | Net P/L: " + DoubleToString(totalPL, 2));
+      // Fresh state so the next basket cannot inherit armed peak / swing / pending lines.
+      ResetBasket();
+      ResetBasketLines();
    }
 }
 
