@@ -29,7 +29,10 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.85"
+#property version   "4.86"
+// v4.86: BOS signal mode — EVENT (enter only on the break bar) vs BIAS
+//        (keep buying every bar while structure stays bullish). Default EVENT
+//        so fractal BOS does not spam entries after a tiny past break.
 // v4.85: Single-TF M30 fractal BOS (wick break), swing virtual SL (no MA),
 //        wider broker hard SL + calmer basket trail defaults.
 // v4.84: Sync user-tidied source; M1 StochCross entry + M30 BOS-only bias defaults.
@@ -141,6 +144,12 @@ enum ENUM_BOS_MODE
    BOS_BOTH_AND   // both must agree (strict)
 };
 input ENUM_BOS_MODE BosMode = BOS_FRACTAL; // Fractal structure BOS (single-TF template)
+enum ENUM_BOS_SIGNAL_MODE
+{
+   BOS_SIGNAL_EVENT, // Enter only on the bar that breaks structure
+   BOS_SIGNAL_BIAS   // Stay buy/sell every bar while bias holds (spamy if Bos alone)
+};
+input ENUM_BOS_SIGNAL_MODE BosSignalMode = BOS_SIGNAL_EVENT; // How BOS creates entries
 
 // --- Zigzag engine (fibo-gun / fibo.mq5) ---
 input double FibDeviationMult = 3.0;   // Zigzag: deviation multiplier (ATR-based %)
@@ -1601,8 +1610,8 @@ bool EvalFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
 }
 
 // Replay choch-bos style fractal structure on closed bars.
-// buyOK/sellOK = current structure bias after last break.
-// swingHigh/swingLow = latest active fractal levels (0 if none).
+// buyOK/sellOK = entry signal (EVENT = only on break bar; BIAS = while trend holds).
+// swingHigh/swingLow = latest active fractal levels (0 if none) — always sticky for SwSL.
 bool ScanFractalStructure(const ENUM_TIMEFRAMES tf,
                           bool &buyOK, bool &sellOK,
                           double &swingHigh, double &swingLow)
@@ -1624,6 +1633,8 @@ bool ScanFractalStructure(const ENUM_TIMEFRAMES tf,
    bool lowValid  = false, lowBroken  = false;
    double highPrice = 0, lowPrice = 0;
    int trend = 0; // +1 bull, -1 bear, 0 neutral
+   int lastBreakBar = -1;
+   int lastBreakDir = 0; // +1 buy BOS, -1 sell BOS
 
    int lastClosed = copied - 2;
    for(int i = period; i <= lastClosed; i++)
@@ -1636,12 +1647,16 @@ bool ScanFractalStructure(const ENUM_TIMEFRAMES tf,
          highBroken = true;
          trend = 1;
          lowValid = false;
+         lastBreakBar = i;
+         lastBreakDir = 1;
       }
       else if(lowValid && !lowBroken && breakLowPrice < lowPrice)
       {
          lowBroken = true;
          trend = -1;
          highValid = false;
+         lastBreakBar = i;
+         lastBreakDir = -1;
       }
 
       int pivot = i - period;
@@ -1678,8 +1693,18 @@ bool ScanFractalStructure(const ENUM_TIMEFRAMES tf,
       }
    }
 
-   if(trend > 0) buyOK = true;
-   if(trend < 0) sellOK = true;
+   if(BosSignalMode == BOS_SIGNAL_EVENT)
+   {
+      // Only the bar that actually breaks structure may enter.
+      if(lastBreakBar == lastClosed && lastBreakDir > 0) buyOK = true;
+      if(lastBreakBar == lastClosed && lastBreakDir < 0) sellOK = true;
+   }
+   else
+   {
+      // Sticky bias — every bar while structure remains bullish/bearish.
+      if(trend > 0) buyOK = true;
+      if(trend < 0) sellOK = true;
+   }
    if(highValid) swingHigh = highPrice;
    if(lowValid)  swingLow  = lowPrice;
    return true;
