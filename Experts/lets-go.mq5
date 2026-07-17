@@ -18,7 +18,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.88"
+#property version   "4.89"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -773,10 +773,15 @@ void PanelBuild()
    const int chipW = 40;
    const int chipH = 18;
    const int gap   = 3;
-   const int rowW  = chipW * 5 + gap * 4;
+   const int rowW  = chipW * 5 + gap * 4; // full panel width (5-chip trigger row)
    const int step  = chipW + gap;
    const int x0    = MathMax(0, PanelInsetX);
    int y = MathMax(0, PanelInsetY);
+
+   // 4 equal chips spanning full rowW (mode row + filter/risk 4-chip rows)
+   const int quadW    = (rowW - gap * 3) / 4;
+   const int quadStep = quadW + gap;
+   const int quadLast = rowW - quadStep * 3;
 
    PanelEnsureLabel("TTL", x0, y, rowW, chipH);
 
@@ -788,13 +793,10 @@ void PanelBuild()
    }
 
    y += chipH + gap;
-   const int modeW    = (rowW - gap * 3) / 4;
-   const int modeStep = modeW + gap;
-   const int modeLast = rowW - modeStep * 3;
-   PanelEnsureButton("CONF", x0,                y, modeW,    chipH);
-   PanelEnsureButton("BOSM", x0 + modeStep,     y, modeW,    chipH);
-   PanelEnsureButton("BUY",  x0 + modeStep * 2, y, modeW,    chipH);
-   PanelEnsureButton("SELL", x0 + modeStep * 3, y, modeLast, chipH);
+   PanelEnsureButton("CONF", x0,                y, quadW,    chipH);
+   PanelEnsureButton("BOSM", x0 + quadStep,     y, quadW,    chipH);
+   PanelEnsureButton("BUY",  x0 + quadStep * 2, y, quadW,    chipH);
+   PanelEnsureButton("SELL", x0 + quadStep * 3, y, quadLast, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
@@ -804,10 +806,10 @@ void PanelBuild()
    PanelEnsureButton("T1_srR", x0 + step * 3,  y, chipW, chipH);
    PanelEnsureButton("T1_fib", x0 + step * 4,  y, chipW, chipH);
    y += chipH + gap;
-   PanelEnsureButton("T1_macd", x0,            y, chipW, chipH);
-   PanelEnsureButton("T1_rsi",  x0 + step,     y, chipW, chipH);
-   PanelEnsureButton("T1_ema",  x0 + step * 2, y, chipW, chipH);
-   PanelEnsureButton("T1_bos",  x0 + step * 3, y, chipW, chipH);
+   PanelEnsureButton("T1_macd", x0,                y, quadW,    chipH);
+   PanelEnsureButton("T1_rsi",  x0 + quadStep,     y, quadW,    chipH);
+   PanelEnsureButton("T1_ema",  x0 + quadStep * 2, y, quadW,    chipH);
+   PanelEnsureButton("T1_bos",  x0 + quadStep * 3, y, quadLast, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
@@ -817,18 +819,17 @@ void PanelBuild()
    PanelEnsureButton("T2_srR", x0 + step * 3,  y, chipW, chipH);
    PanelEnsureButton("T2_fib", x0 + step * 4,  y, chipW, chipH);
    y += chipH + gap;
-   PanelEnsureButton("T2_macd", x0,            y, chipW, chipH);
-   PanelEnsureButton("T2_rsi",  x0 + step,     y, chipW, chipH);
-   PanelEnsureButton("T2_ema",  x0 + step * 2, y, chipW, chipH);
-   PanelEnsureButton("T2_bos",  x0 + step * 3, y, chipW, chipH);
+   PanelEnsureButton("T2_macd", x0,                y, quadW,    chipH);
+   PanelEnsureButton("T2_rsi",  x0 + quadStep,     y, quadW,    chipH);
+   PanelEnsureButton("T2_ema",  x0 + quadStep * 2, y, quadW,    chipH);
+   PanelEnsureButton("T2_bos",  x0 + quadStep * 3, y, quadLast, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
-   PanelEnsureButton("MA",    x0,            y, chipW, chipH);
-   PanelEnsureButton("MaSL",  x0 + step,     y, chipW, chipH);
-   // Wider chip so "sFrac" / "sBoth" fit (mode shown on the chip itself)
-   PanelEnsureButton("SwSL",  x0 + step * 2, y, chipW + 12, chipH);
-   PanelEnsureButton("Trail", x0 + step * 3 + 12, y, chipW + 8, chipH);
+   PanelEnsureButton("MA",    x0,                y, quadW,    chipH);
+   PanelEnsureButton("MaSL",  x0 + quadStep,     y, quadW,    chipH);
+   PanelEnsureButton("SwSL",  x0 + quadStep * 2, y, quadW,    chipH);
+   PanelEnsureButton("Trail", x0 + quadStep * 3, y, quadLast, chipH);
    // Remove leftover SwMd from older builds
    if(ObjectFind(0, PanelObj("SwMd")) >= 0)
       ObjectDelete(0, PanelObj("SwMd"));
@@ -890,21 +891,19 @@ bool PanelHandleClick(const string sparam)
    }
    else if(id == "SwSL")
    {
-      // Cycle: OFF → Zig → Frac → Both → OFF (label shows active method)
+      // Cycle: OFF → (on current mode) → next mode → … → OFF
+      // Label shows SwSL / SwZg / SwFr / SwBo
       if(!g_UseSwingVirtualSL)
       {
          g_UseSwingVirtualSL = true;
-         g_SwingSLMode = BOS_ZIGZAG;
+         // keep g_SwingSLMode from Inputs / last choice
       }
       else if(g_SwingSLMode == BOS_ZIGZAG)
          g_SwingSLMode = BOS_FRACTAL;
       else if(g_SwingSLMode == BOS_FRACTAL)
          g_SwingSLMode = BOS_BOTH_AND;
       else
-      {
          g_UseSwingVirtualSL = false;
-         g_SwingSLMode = BOS_FRACTAL; // default next time it turns on via inputs
-      }
       PanelSaveBool("SwSL", g_UseSwingVirtualSL);
       PanelSaveInt("SwMode", (int)g_SwingSLMode);
       g_haveSwingSL = false;
