@@ -29,7 +29,8 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.83"
+#property version   "4.84"
+// v4.84: Sync user-tidied source; M1 StochCross entry + M30 BOS-only bias defaults.
 // v4.83: Default template = M1 entry + M30 BOS bias (TF1 AND TF2).
 // v4.82: Strategy Tester panel clicks — OnChartEvent is not called in tester,
 //        so poll OBJPROP_STATE (uncle-style) from OnTick/OnTimer and repaint.
@@ -54,7 +55,7 @@ enum ENUM_CONF_MODE
    CONF_TF1_AND_TF2   // TF1 AND TF2 (both must agree on direction)
 };
 input ENUM_CONF_MODE   ConfluenceMode = CONF_TF1_AND_TF2; // How many TFs must agree
-input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M1;        // TF1 entry clock (+ live MA / virtual SL)
+input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M1;        // TF1 (signal clock + live MA / virtual SL)
 input ENUM_TIMEFRAMES  InpTF2         = PERIOD_M30;       // TF2 HTF bias (used only when AND mode)
 
 input group "===== Direction Master ====="
@@ -62,8 +63,8 @@ input bool TradeBuy  = true;  // Allow BUY signals
 input bool TradeSell = true;  // Allow SELL signals
 
 input group "===== TF1 Modules (ON = use, OFF = ignore) ====="
-// TF1 = ENTRY timing on InpTF1. Needs at least one TRIGGER (or filters alone).
-input bool TF1_UseStochCross     = true;   // TRIGGER: %K crosses %D  (M1 entry)
+// TF1 = M1 ENTRY timing. Needs a TRIGGER (StochCross default).
+input bool TF1_UseStochCross     = true;   // TRIGGER: %K crosses %D
 input bool TF1_UseStochClassic   = false;  // TRIGGER: %K in OS/OB zone (no cross)
 input bool TF1_UseSrBounce       = false;  // TRIGGER: wick into S/R + reject
 input bool TF1_UseSrBreakRetest  = false;  // TRIGGER: break + retest reject
@@ -71,10 +72,10 @@ input bool TF1_UseFibZone        = false;  // TRIGGER: price in fib golden zone 
 input bool TF1_UseMacdBias       = false;  // FILTER: MACD main >0 buy / <0 sell
 input bool TF1_UseRsiBias        = false;  // FILTER: RSI above/below mid
 input bool TF1_UseEmaTrend       = false;  // FILTER: fast vs slow EMA side
-input bool TF1_UseBos            = false;  // FILTER: leave OFF if BOS is on TF2 only
+input bool TF1_UseBos            = false;  // FILTER: leave OFF — BOS is on TF2 (M30)
 
 input group "===== TF2 Modules (ON = use, OFF = ignore) ====="
-// TF2 = HTF bias on InpTF2. Keep lean (BOS only) for fewer, higher-quality trades.
+// TF2 = M30 HTF bias. BOS only = fewer, higher-quality trades.
 input bool TF2_UseStochCross     = false;
 input bool TF2_UseStochClassic   = false;
 input bool TF2_UseSrBounce       = false;
@@ -118,8 +119,8 @@ enum ENUM_TREND_MODE
    TREND_REVERSAL   // Fade: buy when fast<slow, sell when fast>slow
 };
 input ENUM_TREND_MODE     EmaTrendMode     = TREND_FOLLOW;
-input int                 EmaFastPeriod    = 50;
-input int                 EmaSlowPeriod    = 200;
+input int                 EmaFastPeriod    = 13;
+input int                 EmaSlowPeriod    = 34;
 input double              EmaMinDiffPips   = 0;   // 0 = any separation counts
 
 input group "===== S/R Pivot Entry (shared params, per-TF levels) ====="
@@ -153,9 +154,9 @@ enum ENUM_BOS_BREAK_MODE
    BOS_BREAK_CLOSE, // Fractal BOS: candle CLOSE must break level
    BOS_BREAK_WICK   // Fractal BOS: wick/shadow may break level
 };
-input int                BosFractalPeriod = 2;              // Fractal: bars each side to confirm swing
-input ENUM_BOS_BREAK_MODE BosBreakMode    = BOS_BREAK_CLOSE; // Fractal: break confirmation
-input int                BosFractalLookback = 200;          // Fractal: bars scanned
+input int                 BosFractalPeriod   = 2;               // Fractal: bars each side to confirm swing
+input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK;  // Fractal: break confirmation
+input int                 BosFractalLookback = 200;             // Fractal: bars scanned
 
 input group "===== Moving Average Filter (TF1 live gate + virtual SL) ====="
 enum ENUM_MA_CHECK
@@ -163,7 +164,7 @@ enum ENUM_MA_CHECK
    MA_CHECK_RUNNING,      // Running: live price vs MA right now (+/- buffer)
    MA_CHECK_CANDLE_CLOSE  // Candle close: last close must confirm too (tighter)
 };
-input bool               UseMAFilter     = true;
+input bool               UseMAFilter     = false;
 input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_RUNNING;
 input ENUM_MA_METHOD     MA_Method       = MODE_EMA;
 input int                MA_Period       = 34;
@@ -171,29 +172,22 @@ input int                MA_Shift        = 0;
 input ENUM_APPLIED_PRICE MA_AppliedPrice = PRICE_CLOSE;
 input double             MABufferPips    = 100;
 
-
-input group "===== Chip Panel (click toggles) ====="
-input bool ShowPanel = true;                 // Show toggle chip panel (top-left)
-input int  PanelInsetX = 8;                  // Inset from left side
-input int  PanelInsetY = 28;                 // Inset from top
-input bool PanelRemember = true;             // Save on/off (survives DC / reattach)
-input bool PanelStartCollapsed = false;      // Start minimized (title only)
-input uint PanelClickGuardMs = 180;          // Ignore double-clicks inside this window
 input group "===== Stop / Exit (broker pip-cap always; virtuals optional) ====="
 // Broker SL line = MaxStopLossPips from avg entry (offline backup) — always.
 // Virtual exits are EA-side only; turn on any combo — first hit closes basket.
-input bool   UseVirtualMaSL     = true;  // Virtual MA exit on TF1 (InpTF1)
+input bool   UseVirtualMaSL     = false; // Virtual MA exit on TF1 (InpTF1)
 input double SLMABufferPips     = 50;    // MA exit: room beyond MA (0 = at MA touch)
-input bool   UseSwingVirtualSL  = false; // Virtual swing/last-low exit (follows BosMode, tighten-only)
+
+input bool   UseSwingVirtualSL  = true;  // Virtual swing/last-low exit (follows BosMode, tighten-only)
 input double SwingSLBufferPips  = 0;     // Swing exit: room beyond swing (0 = at swing)
 
 input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
 input double LotSize         = 0.01;
-input int    MaxStopLossPips = 300;
+input int    MaxStopLossPips = 500;
 input int    TakeProfitPips  = 3000;
 input int    MaxSpreadPips   = 0;
 input int    SlippagePoints  = 20;
-input long   MagicNumber     = 777;
+input long   MagicNumber     = 778899;
 
 input group "===== Grid Layering ====="
 input int    MaxLayers       = 2;
@@ -201,8 +195,13 @@ input int    LayerStepPips   = 200;
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
 input bool   UseBasketTP         = true;
-input double BasketStartPips     = 200;
-input double BasketGivebackPips  = 50;
+input double BasketStartPips     = 300;
+input double BasketGivebackPips  = 100;
+
+input group "===== Basket SL/TP Modify Retry ====="
+input int ModifyRetryMax                = 3;
+input int ModifyRetryDelayMs            = 500;
+input int MaxConsecutiveRetryCooldownMs = 2000;
 
 input group "===== Session Filter (WIB / Jakarta time) ====="
 input int  SessionTZOffset       = 7;
@@ -230,10 +229,13 @@ input bool UseBrokerSessionGuard = true;
 input int  MaxStaleTickSeconds   = 120;
 input int  OrderRetryCooldownSec = 60;
 
-input group "===== Basket SL/TP Modify Retry ====="
-input int ModifyRetryMax                = 3;
-input int ModifyRetryDelayMs            = 500;
-input int MaxConsecutiveRetryCooldownMs = 2000;
+input group "===== Chip Panel (click toggles) ====="
+input bool ShowPanel             = true;     // Show toggle chip panel (top-left)
+input int  PanelInsetX           = 3;        // Inset from left side
+input int  PanelInsetY           = 25;       // Inset from top
+input bool PanelRemember         = true;     // Save on/off (survives DC / reattach)
+input bool PanelStartCollapsed   = false;    // Start minimized (title only)
+input uint PanelClickGuardMs     = 200;      // Ignore double-clicks inside this window
 
 input group "===== Logging ====="
 input bool InpDebugLog = false; // Extra panel / restore chatter (trade lines always on)
