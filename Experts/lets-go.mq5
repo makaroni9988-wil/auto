@@ -19,14 +19,17 @@
 //|   - Exits: broker pip-cap always; optional virtual MA SL (live)  |
 //|     and/or swing SL (g_BosMode + tighten-only) — first hit closes. |
 //|   - Optional chip panel (top-left): click toggles, GV memory,     |
-//|     PanelInsetX/Y, collapse, no blink on TF change, self-heals.  |
+//|     PanelInsetX/Y, collapse, self-heal. Tester: poll button STATE |
+//|     (OnChartEvent is not called in Strategy Tester).             |
 //|   - Journal Tag = "lets-go #magic SYMBOL" (same style as 2nd/3rd).|
 //|     Push: INIT FAILED + BASKET CLOSED only. InpDebugLog = panel. |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.81"
+#property version   "4.82"
+// v4.82: Strategy Tester panel clicks — OnChartEvent is not called in tester,
+//        so poll OBJPROP_STATE (uncle-style) from OnTick/OnTimer and repaint.
 // v4.81: Live harden — reset basket trail/lines on successful close and on
 //        new first layer; clear flat-basket state even if Trail is off;
 //        panel GV restore only when panel is shown; dead helpers removed.
@@ -899,6 +902,39 @@ bool PanelHandleClick(const string sparam)
    return true;
 }
 
+// Strategy Tester does NOT call OnChartEvent (even in Visual mode).
+// Uncle-style: poll OBJ_BUTTON pressed state each tick/timer, then toggle + repaint.
+void PanelPollClicks()
+{
+   if(!ShowPanel) return;
+   if(!MQLInfoInteger(MQL_TESTER)) return;
+   if(StringLen(g_panelPrefix) == 0) PanelInitPrefix();
+
+   string headers[] = { "L1", "L2", "LR" };
+   for(int h = 0; h < ArraySize(headers); h++)
+   {
+      string hn = PanelObj(headers[h]);
+      if(ObjectFind(0, hn) < 0) continue;
+      if(ObjectGetInteger(0, hn, OBJPROP_STATE))
+         ObjectSetInteger(0, hn, OBJPROP_STATE, false);
+   }
+
+   string ids[] = {
+      "TTL","CONF","BOSM","BUY","SELL",
+      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
+      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
+      "MA","MaSL","SwSL","Trail"
+   };
+   for(int i = 0; i < ArraySize(ids); i++)
+   {
+      string name = PanelObj(ids[i]);
+      if(ObjectFind(0, name) < 0) continue;
+      if(!ObjectGetInteger(0, name, OBJPROP_STATE)) continue;
+      PanelHandleClick(name);
+      break; // one chip per poll (avoids multi-toggle in one tick)
+   }
+}
+
 //+------------------------------------------------------------------+
 int OnInit()
 {
@@ -1028,9 +1064,9 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   // self-heal only — never spam redraw
    if(!ShowPanel) return;
    if(StringLen(g_panelPrefix) == 0) PanelInitPrefix();
+   PanelPollClicks(); // tester clicks while paused / between ticks
    if(ObjectFind(0, PanelObj("TTL")) < 0)
    {
       PanelBuild();
@@ -1040,12 +1076,15 @@ void OnTimer()
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+   // Live / demo charts only — Strategy Tester never calls this.
    if(id == CHARTEVENT_OBJECT_CLICK)
       PanelHandleClick(sparam);
 }
 
 void OnTick()
 {
+   PanelPollClicks();
+
    datetime bt[];
    if(CopyTime(_Symbol, g_tf1, 0, 1, bt) == 1 && bt[0] != g_lastBarTime)
    {
