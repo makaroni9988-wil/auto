@@ -29,7 +29,10 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.85"
+#property version   "4.86"
+// v4.86: BOS signal mode — EVENT (enter only on the break bar) vs BIAS
+//        (keep buying every bar while structure stays bullish). Default EVENT
+//        so fractal BOS does not spam entries after a tiny past break.
 // v4.85: Single-TF M30 fractal BOS (wick break), swing virtual SL (no MA),
 //        wider broker hard SL + calmer basket trail defaults.
 // v4.84: Sync user-tidied source; M1 StochCross entry + M30 BOS-only bias defaults.
