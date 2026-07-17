@@ -10,6 +10,8 @@
 //|           Signal clock = TF1 new bar. Per-TF modules on/off.     |
 //|           Triggers OR; filters AND. Fib and BOS are independent. |
 //|           BosMode = zigzag / fractal / both-AND (entry only).    |
+//|           FibZone: leg arms on TF1 bar; price-in-zone re-checked  |
+//|           every tick (fibo-gun / fibo-bomb style) when needed.    |
 //|  Exits  : broker pip-cap always; optional virtual MA SL and/or   |
 //|           swing SL (SwingSLMode, independent of BosMode).        |
 //|  Panel  : optional chip toggles (top-left), GV memory.           |
@@ -18,7 +20,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.90"
+#property version   "4.91"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -257,6 +259,9 @@ datetime g_lastEntryBar = 0;
 
 bool   g_haveSignal  = false;
 bool   g_signalIsBuy = false;
+// True when signal is armed by FibZone leg but price not yet in zone at bar eval.
+// TryEnter re-checks live zone every tick (gun/bomb style).
+bool   g_fibZoneTickGate = false;
 
 bool   g_basketArmed = false;
 double g_basketPeak  = 0;
@@ -990,6 +995,12 @@ int OnInit()
       NotifyPush(Tag() + ": INIT FAILED - PivotLeftBars/PivotRightBars must be >= 1");
       return(INIT_PARAMETERS_INCORRECT);
    }
+   if(FibZoneLevelMin >= FibZoneLevelMax)
+   {
+      LogInfo("INIT FAILED - FibZoneLevelMin must be < FibZoneLevelMax");
+      NotifyPush(Tag() + ": INIT FAILED - FibZoneLevelMin must be < FibZoneLevelMax");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
    if(!g_TradeBuy && !g_TradeSell && !g_quietInit)
       LogInfo("NOTE Buy and Sell both off — enable from panel/inputs to trade.");
 
@@ -1586,8 +1597,11 @@ bool ScanFibLeg(const ENUM_TIMEFRAMES tf, const int hAtr,
    return true;
 }
 
+// Fib golden zone from current zigzag leg.
+// legOnly=true  → arm buy/sell from leg direction (no live price check) for bar signal.
+// legOnly=false → require ask/bid inside zone (bar eval or per-tick re-gate).
 bool EvalFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
-                 bool &buyOK, bool &sellOK)
+                 const bool legOnly, bool &buyOK, bool &sellOK)
 {
    buyOK = false; sellOK = false;
    if(!useIt) { buyOK = true; sellOK = true; return true; }
@@ -1599,6 +1613,13 @@ bool EvalFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
 
    double height = MathAbs(newerP - olderP);
    if(height <= 0) return true;
+
+   if(legOnly)
+   {
+      if(bullish) buyOK = true;
+      else        sellOK = true;
+      return true;
+   }
 
    double zLow, zHigh;
    if(bullish)
@@ -1620,6 +1641,14 @@ bool EvalFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
    if(bullish) buyOK = true;
    else        sellOK = true;
    return true;
+}
+
+// Live price-in-zone check for per-tick FibZone gate (gun/bomb style).
+bool LiveInFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool wantBuy)
+{
+   bool buyOK = false, sellOK = false;
+   if(!EvalFibZone(tf, hAtr, true, false, buyOK, sellOK)) return false;
+   return wantBuy ? buyOK : sellOK;
 }
 
 // Replay choch-bos style fractal structure on closed bars.
@@ -1765,12 +1794,14 @@ bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
 
 // Evaluate one TF. Triggers OR among enabled; filters AND among enabled.
 // If no triggers enabled, enabled filters alone may form the signal.
+// fibLegOnly: FibZone arms from leg direction only (price checked later per tick).
 bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useCross, const bool useClassic,
             const bool useBounce, const bool useRetest, const bool useFib,
             const bool useMacd, const bool useRsi, const bool useEma, const bool useBos,
             const int hStoch, const int hRsi, const int hMacd,
             const int hEmaF, const int hEmaS, const int hAtr,
+            const bool fibLegOnly,
             bool &outBuy, bool &outSell)
 {
    outBuy = false; outSell = false;
@@ -1799,7 +1830,7 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
       }
       if(useFib)
       {
-         if(!EvalFibZone(tf, hAtr, true, fibB, fibS)) return false;
+         if(!EvalFibZone(tf, hAtr, true, fibLegOnly, fibB, fibS)) return false;
          gotFib = true;
       }
 
@@ -1823,18 +1854,29 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
    return true;
 }
 
+bool ResolveSignalSide(const bool buyOK, const bool sellOK, bool &isBuy)
+{
+   if(g_TradeBuy && buyOK && !(g_TradeSell && sellOK))
+   { isBuy = true; return true; }
+   if(g_TradeSell && sellOK && !(g_TradeBuy && buyOK))
+   { isBuy = false; return true; }
+   return false;
+}
+
 void UpdateSignal()
 {
-   g_haveSignal  = false;
-   g_signalIsBuy = false;
+   g_haveSignal      = false;
+   g_signalIsBuy     = false;
+   g_fibZoneTickGate = false;
 
+   // Pass 1: normal eval (FibZone requires price in zone now)
    bool b1 = false, s1 = false;
    if(!EvalTf(g_tf1,
               g_TF1_UseStochCross, g_TF1_UseStochClassic,
               g_TF1_UseSrBounce, g_TF1_UseSrBreakRetest, g_TF1_UseFibZone,
               g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_UseEmaTrend, g_TF1_UseBos,
               g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1, g_atr1,
-              b1, s1))
+              false, b1, s1))
       return;
 
    bool b2 = true, s2 = true; // ignored in TF1_ONLY
@@ -1846,18 +1888,52 @@ void UpdateSignal()
                  g_TF2_UseSrBounce, g_TF2_UseSrBreakRetest, g_TF2_UseFibZone,
                  g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_UseEmaTrend, g_TF2_UseBos,
                  g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2, g_atr2,
-                 b2, s2))
+                 false, b2, s2))
          return;
    }
 
-   bool buyOK  = b1 && b2;
-   bool sellOK = s1 && s2;
+   bool isBuy = false;
+   if(ResolveSignalSide(b1 && b2, s1 && s2, isBuy))
+   {
+      g_haveSignal  = true;
+      g_signalIsBuy = isBuy;
+      return;
+   }
 
-   // Conflict (both sides) or neither -> no trade
-   if(g_TradeBuy && buyOK && !(g_TradeSell && sellOK))
-   { g_haveSignal = true; g_signalIsBuy = true; return; }
-   if(g_TradeSell && sellOK && !(g_TradeBuy && buyOK))
-   { g_haveSignal = true; g_signalIsBuy = false; return; }
+   // Pass 2: FibZone leg-armed only (price may enter zone later this bar).
+   // Used when FibZone is on and pass 1 had no trade (e.g. waiting for zone).
+   const bool wantFibGate = (g_TF1_UseFibZone ||
+                             (g_ConfluenceMode == CONF_TF1_AND_TF2 && g_TF2_UseFibZone));
+   if(!wantFibGate) return;
+
+   b1 = false; s1 = false;
+   if(!EvalTf(g_tf1,
+              g_TF1_UseStochCross, g_TF1_UseStochClassic,
+              g_TF1_UseSrBounce, g_TF1_UseSrBreakRetest, g_TF1_UseFibZone,
+              g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_UseEmaTrend, g_TF1_UseBos,
+              g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1, g_atr1,
+              true, b1, s1))
+      return;
+
+   b2 = true; s2 = true;
+   if(g_ConfluenceMode == CONF_TF1_AND_TF2)
+   {
+      b2 = false; s2 = false;
+      if(!EvalTf(g_tf2,
+                 g_TF2_UseStochCross, g_TF2_UseStochClassic,
+                 g_TF2_UseSrBounce, g_TF2_UseSrBreakRetest, g_TF2_UseFibZone,
+                 g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_UseEmaTrend, g_TF2_UseBos,
+                 g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2, g_atr2,
+                 true, b2, s2))
+         return;
+   }
+
+   if(ResolveSignalSide(b1 && b2, s1 && s2, isBuy))
+   {
+      g_haveSignal      = true;
+      g_signalIsBuy     = isBuy;
+      g_fibZoneTickGate = true; // TryEnter waits for live zone
+   }
 }
 
 
@@ -1873,6 +1949,16 @@ void TryEnter()
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   // FibZone per-tick re-gate (fibo-gun / fibo-bomb): leg armed on bar, enter when price is in zone.
+   if(g_fibZoneTickGate)
+   {
+      if(g_TF1_UseFibZone && !LiveInFibZone(g_tf1, g_atr1, g_signalIsBuy))
+         return; // silent wait — same as gun when price is outside zone
+      if(g_ConfluenceMode == CONF_TF1_AND_TF2 && g_TF2_UseFibZone &&
+         !LiveInFibZone(g_tf2, g_atr2, g_signalIsBuy))
+         return;
+   }
 
    if(!CanAttemptEntry())
    { DiagBlock("trade path guard (terminal/broker session/stale tick/retry cooldown)"); return; }
