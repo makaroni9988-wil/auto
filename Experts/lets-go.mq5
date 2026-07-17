@@ -18,39 +18,26 @@
 //|   - Live MA gate + virtual exits stay on TF1 (InpTF1).           |
 //|   - Exits: broker pip-cap always; optional virtual MA SL (live)  |
 //|     and/or swing SL (g_BosMode + tighten-only) — first hit closes. |
-//|   - Optional chip panel: click toggles, remembers via GV,         |
-//|     left/right corner, no blink on TF change, self-heals.        |
+//|   - Optional chip panel (top-left): click toggles, GV memory,     |
+//|     PanelInsetX/Y, collapse, no blink on TF change, self-heals.  |
 //|   - Journal Tag = "lets-go #magic SYMBOL" (same style as 2nd/3rd).|
 //|     Push: INIT FAILED + BASKET CLOSED only. InpDebugLog = panel. |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.72"
-// v4.72: Fix right-corner panel flip — CORNER_RIGHT_UPPER measures X from the
-//        right edge, so chips are mirrored to keep the same LTR order as left.
-// v4.71: Panel tidy — single full-width title (click collapses; no extra ▾
-//        chip), mode row is 4 even chips (no wrapped/stacked Conf/AND look).
-// v4.70: Neat journal logging same as 2nd/3rd/fibo-gun — Tag() on every
-//        line (lets-go #magic SYMBOL), LogInfo for OPEN/CLOSE/FAIL/INIT/
-//        BLOCKED/LINES, push only INIT FAILED + BASKET CLOSED, panel chatter
-//        behind InpDebugLog.
-// v4.60: Best-in-class chip panel — uncle-style input fingerprint memory,
-//        quiet TF init, light paint refresh, collapse, tooltips, click guard,
-//        account+symbol+magic GV scope, no-blink + self-heal.
-// v4.50: Cute compact chip panel — click toggles, GlobalVariable memory,
-//        left/right corner, no-blink TF change + self-heal (weird-manager).
-// v4.40: Swing virtual SL follows g_BosMode (zigzag / fractal / both-AND),
-//        ratchet tighten-only. Virtual MA stays live follow both ways.
-// v4.30: Exit toggles — broker pip-cap always; optional virtual MA SL and
-//        optional virtual swing/last-low SL. All can be ON; first hit closes.
-// v4.20: g_BosMode chooser: ZIGZAG / FRACTAL / BOTH_AND (no OR — clear which
-//        engines must pass). Fractal = choch-bos style structure bias.
-// v4.10: Per-TF FibZone (trigger) + Bos (filter) toggles, independent —
-//        use fib alone, BOS alone, both, or neither.
-// v4.00: Full rewrite onto 2nd/3rd skeleton. Modular 1/2-TF confluence
-//        entry with per-TF toggles (Stoch / MACD / RSI / S/R / EMA).
-//        Replaces the old ATR martingale always-on grid (v3).
+#property version   "4.80"
+// v4.80: Panel simplified — always top-left; PanelInsetX / PanelInsetY only.
+//        Removed corner chooser and right-side mirror helpers.
+// v4.70: Journal logging same as 2nd/3rd/fibo-gun; push INIT FAILED +
+//        BASKET CLOSED; InpDebugLog for panel chatter.
+// v4.60: Chip panel — input fingerprint memory, collapse, tooltips,
+//        click guard, account+symbol+magic GV, no-blink + self-heal.
+// v4.40: Swing virtual SL follows g_BosMode, tighten-only.
+// v4.30: Optional virtual MA / swing exits; broker pip-cap always.
+// v4.20: BosMode zigzag / fractal / both-AND.
+// v4.10: Independent FibZone + Bos toggles per TF.
+// v4.00: Rewrite onto 2nd/3rd skeleton; modular dual-TF confluence.
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -182,17 +169,11 @@ input double             MABufferPips    = 100;
 
 
 input group "===== Chip Panel (click toggles) ====="
-input bool ShowPanel = true;                 // Show cute toggle chip panel
-enum ENUM_PANEL_SIDE
-{
-   PANEL_SIDE_RIGHT, // Top-right corner
-   PANEL_SIDE_LEFT   // Top-left corner
-};
-input ENUM_PANEL_SIDE PanelSide = PANEL_SIDE_RIGHT; // Panel corner
-input int  PanelOffsetX = 8;                 // Inset from chosen side
-input int  PanelOffsetY = 28;                // Inset from top
+input bool ShowPanel = true;                 // Show toggle chip panel (top-left)
+input int  PanelInsetX = 8;                  // Inset from left side
+input int  PanelInsetY = 28;                 // Inset from top
 input bool PanelRemember = true;             // Save on/off (survives DC / reattach)
-input bool PanelStartCollapsed = false;      // Start minimized (title + expand only)
+input bool PanelStartCollapsed = false;      // Start minimized (title only)
 input uint PanelClickGuardMs = 180;          // Ignore double-clicks inside this window
 input group "===== Stop / Exit (broker pip-cap always; virtuals optional) ====="
 // Broker SL line = MaxStopLossPips from avg entry (offline backup) — always.
@@ -623,6 +604,7 @@ void PanelClearMemory()
 }
 
 //====================== CHIP PANEL UI ======================
+// Always top-left. Position = PanelInsetX / PanelInsetY.
 string PanelObj(const string id) { return g_panelPrefix + id; }
 
 void PanelDeleteAll()
@@ -631,22 +613,6 @@ void PanelDeleteAll()
       g_panelPrefix = "LGUI_" + IntegerToString(ChartID()) + "_";
    ObjectsDeleteAll(0, g_panelPrefix);
    g_panelBuilt = false;
-}
-
-ENUM_BASE_CORNER PanelCorner()
-{
-   return (PanelSide == PANEL_SIDE_LEFT) ? CORNER_LEFT_UPPER : CORNER_RIGHT_UPPER;
-}
-
-// Convert LTR layout coords (offset from panel-block LEFT) into OBJPROP_XDISTANCE.
-// Left corner: X grows rightward from chart left.
-// Right corner: X is distance from chart RIGHT to the object's RIGHT edge —
-// without mirroring, placing chips with increasing X reverses visual order.
-int PanelX(const int localLeft, const int width, const int rowW)
-{
-   if(PanelSide == PANEL_SIDE_LEFT)
-      return PanelOffsetX + localLeft;
-   return PanelOffsetX + (rowW - localLeft - width);
 }
 
 void PanelStyleChip(const string name, const string text, const string tip,
@@ -686,7 +652,7 @@ void PanelEnsureButton(const string id, const int x, const int y, const int w, c
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
 
-   ObjectSetInteger(0, name, OBJPROP_CORNER, PanelCorner());
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
@@ -732,18 +698,15 @@ string BosTip()
    return "BOS engine: Zigzag / fibo-gun (click to cycle)";
 }
 
-// Light paint: update text/colors/tooltips only (no delete, no geometry thrash).
 void PanelPaintState()
 {
    if(!ShowPanel) return;
 
-   // One title chip only — click collapses/expands (no separate ▾ button).
    PanelStyleChip(PanelObj("TTL"), g_panelCollapsed ? " lets-go  ▸" : " lets-go  ▾",
                   "Click to collapse / expand panel", true, true);
 
    if(g_panelCollapsed) return;
 
-   // Short one-line labels (avoids MT5 wrapping "Conf AND" into a stacked look).
    PanelStyleChip(PanelObj("CONF"), ConfChipText(), ConfTip(), true, true);
    PanelStyleChip(PanelObj("BOSM"), BosChipText(), BosTip(), true, true);
    PanelStyleChip(PanelObj("BUY"),  "Buy",  "Allow BUY signals",  g_TradeBuy,  false);
@@ -780,7 +743,6 @@ void PanelPaintState()
 
 void PanelHideExtras()
 {
-   // when collapsed, park non-title chips off-view instead of deleting (no blink)
    string extras[] = {
       "CONF","BOSM","BUY","SELL","L1","L2","LR",
       "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
@@ -802,20 +764,19 @@ void PanelBuild()
    if(StringLen(g_panelPrefix) == 0)
       PanelInitPrefix();
 
+   // Drop orphan objects from older panel builds (extra collapse chip).
+   if(ObjectFind(0, PanelObj("MIN")) >= 0)
+      ObjectDelete(0, PanelObj("MIN"));
+
    const int chipW = 40;
    const int chipH = 18;
-   const int gap = 3;
-   const int rowW = chipW * 5 + gap * 4;
-   const int step = chipW + gap;
-   int y = PanelOffsetY;
+   const int gap   = 3;
+   const int rowW  = chipW * 5 + gap * 4;
+   const int step  = chipW + gap;
+   const int x0    = MathMax(0, PanelInsetX);
+   int y = MathMax(0, PanelInsetY);
 
-   // Drop legacy separate collapse chip from older builds (title alone toggles).
-   string minName = PanelObj("MIN");
-   if(ObjectFind(0, minName) >= 0)
-      ObjectDelete(0, minName);
-
-   // Full-width title — click collapses / expands
-   PanelEnsureLabel("TTL", PanelX(0, rowW, rowW), y, rowW, chipH);
+   PanelEnsureLabel("TTL", x0, y, rowW, chipH);
 
    if(g_panelCollapsed)
    {
@@ -825,65 +786,51 @@ void PanelBuild()
       return;
    }
 
-   // Mode row: 4 even chips across the same width as TF rows (no cramped stack).
    y += chipH + gap;
-   const int modeGap = gap;
-   const int modeW = (rowW - modeGap * 3) / 4;
-   const int modeStep = modeW + modeGap;
-   const int modeLast = rowW - modeStep * 3; // absorb remainder on Sell
-   PanelEnsureButton("CONF", PanelX(0,            modeW,    rowW), y, modeW,    chipH);
-   PanelEnsureButton("BOSM", PanelX(modeStep,     modeW,    rowW), y, modeW,    chipH);
-   PanelEnsureButton("BUY",  PanelX(modeStep * 2, modeW,    rowW), y, modeW,    chipH);
-   PanelEnsureButton("SELL", PanelX(modeStep * 3, modeLast, rowW), y, modeLast, chipH);
+   const int modeW    = (rowW - gap * 3) / 4;
+   const int modeStep = modeW + gap;
+   const int modeLast = rowW - modeStep * 3;
+   PanelEnsureButton("CONF", x0,                y, modeW,    chipH);
+   PanelEnsureButton("BOSM", x0 + modeStep,     y, modeW,    chipH);
+   PanelEnsureButton("BUY",  x0 + modeStep * 2, y, modeW,    chipH);
+   PanelEnsureButton("SELL", x0 + modeStep * 3, y, modeLast, chipH);
    y += chipH + gap + 2;
 
-   PanelEnsureLabel("L1", PanelX(0, rowW, rowW), y, rowW, chipH); y += chipH + gap;
-   PanelEnsureButton("T1_stX", PanelX(0,        chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T1_stC", PanelX(step,     chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T1_srB", PanelX(step * 2, chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T1_srR", PanelX(step * 3, chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T1_fib", PanelX(step * 4, chipW, rowW), y, chipW, chipH);
+   PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("T1_stX", x0,             y, chipW, chipH);
+   PanelEnsureButton("T1_stC", x0 + step,      y, chipW, chipH);
+   PanelEnsureButton("T1_srB", x0 + step * 2,  y, chipW, chipH);
+   PanelEnsureButton("T1_srR", x0 + step * 3,  y, chipW, chipH);
+   PanelEnsureButton("T1_fib", x0 + step * 4,  y, chipW, chipH);
    y += chipH + gap;
-   PanelEnsureButton("T1_macd", PanelX(0,        chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T1_rsi",  PanelX(step,     chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T1_ema",  PanelX(step * 2, chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T1_bos",  PanelX(step * 3, chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T1_macd", x0,            y, chipW, chipH);
+   PanelEnsureButton("T1_rsi",  x0 + step,     y, chipW, chipH);
+   PanelEnsureButton("T1_ema",  x0 + step * 2, y, chipW, chipH);
+   PanelEnsureButton("T1_bos",  x0 + step * 3, y, chipW, chipH);
    y += chipH + gap + 2;
 
-   PanelEnsureLabel("L2", PanelX(0, rowW, rowW), y, rowW, chipH); y += chipH + gap;
-   PanelEnsureButton("T2_stX", PanelX(0,        chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T2_stC", PanelX(step,     chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T2_srB", PanelX(step * 2, chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T2_srR", PanelX(step * 3, chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T2_fib", PanelX(step * 4, chipW, rowW), y, chipW, chipH);
+   PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("T2_stX", x0,             y, chipW, chipH);
+   PanelEnsureButton("T2_stC", x0 + step,      y, chipW, chipH);
+   PanelEnsureButton("T2_srB", x0 + step * 2,  y, chipW, chipH);
+   PanelEnsureButton("T2_srR", x0 + step * 3,  y, chipW, chipH);
+   PanelEnsureButton("T2_fib", x0 + step * 4,  y, chipW, chipH);
    y += chipH + gap;
-   PanelEnsureButton("T2_macd", PanelX(0,        chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T2_rsi",  PanelX(step,     chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T2_ema",  PanelX(step * 2, chipW, rowW), y, chipW, chipH);
-   PanelEnsureButton("T2_bos",  PanelX(step * 3, chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T2_macd", x0,            y, chipW, chipH);
+   PanelEnsureButton("T2_rsi",  x0 + step,     y, chipW, chipH);
+   PanelEnsureButton("T2_ema",  x0 + step * 2, y, chipW, chipH);
+   PanelEnsureButton("T2_bos",  x0 + step * 3, y, chipW, chipH);
    y += chipH + gap + 2;
 
    const int trailW = chipW + 8;
-   PanelEnsureLabel("LR", PanelX(0, rowW, rowW), y, rowW, chipH); y += chipH + gap;
-   PanelEnsureButton("MA",    PanelX(0,        chipW,  rowW), y, chipW,  chipH);
-   PanelEnsureButton("MaSL",  PanelX(step,     chipW,  rowW), y, chipW,  chipH);
-   PanelEnsureButton("SwSL",  PanelX(step * 2, chipW,  rowW), y, chipW,  chipH);
-   PanelEnsureButton("Trail", PanelX(step * 3, trailW, rowW), y, trailW, chipH);
+   PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("MA",    x0,            y, chipW,  chipH);
+   PanelEnsureButton("MaSL",  x0 + step,     y, chipW,  chipH);
+   PanelEnsureButton("SwSL",  x0 + step * 2, y, chipW,  chipH);
+   PanelEnsureButton("Trail", x0 + step * 3, y, trailW, chipH);
 
    PanelPaintState();
    g_panelBuilt = true;
-}
-
-void PanelRefreshVisuals()
-{
-   if(!ShowPanel) return;
-   if(!g_panelBuilt || ObjectFind(0, PanelObj("TTL")) < 0)
-   {
-      PanelBuild();
-      return;
-   }
-   // geometry already good — paint state only (unless collapsed toggled)
-   PanelBuild(); // safe: find-first + paint; no delete
 }
 
 bool PanelClickAllowed()
@@ -911,7 +858,6 @@ bool PanelHandleClick(const string sparam)
    string id = StringSubstr(sparam, StringLen(g_panelPrefix));
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
 
-   // section headers are not toggles
    if(id == "L1" || id == "L2" || id == "LR")
       return true;
 
@@ -921,7 +867,7 @@ bool PanelHandleClick(const string sparam)
    bool changed = true;
    bool needFullBuild = false;
 
-   if(id == "TTL" || id == "MIN") // MIN = legacy orphan from older panel builds
+   if(id == "TTL")
    {
       g_panelCollapsed = !g_panelCollapsed;
       PanelSaveBool("Collapsed", g_panelCollapsed);
@@ -1061,7 +1007,7 @@ int OnInit()
               + " | MaSL=" + (g_UseVirtualMaSL ? "ON" : "OFF")
               + " SwSL=" + (g_UseSwingVirtualSL ? "ON" : "OFF")
               + " Trail=" + (g_UseBasketTP ? "ON" : "OFF")
-              + " | panel=" + (ShowPanel ? (PanelSide == PANEL_SIDE_LEFT ? "LEFT" : "RIGHT") : "off"));
+              + " | panel=" + (ShowPanel ? ("ON inset " + IntegerToString(PanelInsetX) + "," + IntegerToString(PanelInsetY)) : "off"));
       if(_Period != g_tf1)
          LogInfo("NOTE chart TF differs from TF1 (" + EnumToString(g_tf1)
                  + "). Signal clock runs on TF1.");
