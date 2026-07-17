@@ -138,7 +138,7 @@ enum ENUM_BOS_BREAK_MODE
    BOS_BREAK_CLOSE, // Fractal: close must break level
    BOS_BREAK_WICK   // Fractal: wick may break level
 };
-input int                 BosFractalPeriod   = 2;              // Fractal: bars each side
+input int                 BosFractalPeriod   = 5;              // Fractal: bars each side
 input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK; // Fractal break type
 input int                 BosFractalLookback = 200;            // Fractal: bars scanned
 
@@ -163,11 +163,11 @@ input double       SLMABufferPips    = 50;         // MA SL buffer (pips)
 
 input bool         UseSwingVirtualSL = true;       // Virtual swing stop (tighten-only)
 input ENUM_BOS_MODE SwingSLMode      = BOS_FRACTAL; // Swing SL engine (independent of BosMode)
-input double       SwingSLBufferPips = 50;         // Air beyond swing (pips)
+input double       SwingSLBufferPips = 200;        // Air beyond swing (pips)
 
 input group "===== Orders / Risk (basket lines: shared SL/TP, tighter-only) ====="
 input double LotSize         = 0.01;
-input int    MaxStopLossPips = 800;   // Hard broker SL (pips)
+input int    MaxStopLossPips = 1000;  // Hard broker SL (pips)
 input int    TakeProfitPips  = 3000;  // Broker TP (pips)
 input int    MaxSpreadPips   = 0;     // 0 = no spread filter
 input int    SlippagePoints  = 20;
@@ -179,8 +179,8 @@ input int    LayerStepPips   = 200;   // Min adverse move before next layer
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
 input bool   UseBasketTP         = true;
-input double BasketStartPips     = 400; // Arm trail after this open profit
-input double BasketGivebackPips  = 150; // Pullback from peak before close
+input double BasketStartPips     = 500; // Arm trail after this open profit
+input double BasketGivebackPips  = 100; // Pullback from peak before close
 
 input group "===== Basket SL/TP Modify Retry ====="
 input int ModifyRetryMax                = 3;
