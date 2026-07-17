@@ -26,7 +26,10 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.71"
+#property version   "4.72"
+// v4.72: Fix right-corner panel flip — CORNER_RIGHT_UPPER measures X from the
+//        right edge, so chips are mirrored to keep the same LTR order as left.
+// v4.71: Panel tidy — single full-width title (click collapses; no extra � chips are mirrored to keep the same LTR order as left.
 // v4.71: Panel tidy — single full-width title (click collapses; no extra ▾
 //        chip), mode row is 4 even chips (no wrapped/stacked Conf/AND look).
 // v4.70: Neat journal logging same as 2nd/3rd/fibo-gun — Tag() on every
@@ -636,6 +639,17 @@ ENUM_BASE_CORNER PanelCorner()
    return (PanelSide == PANEL_SIDE_LEFT) ? CORNER_LEFT_UPPER : CORNER_RIGHT_UPPER;
 }
 
+// Convert LTR layout coords (offset from panel-block LEFT) into OBJPROP_XDISTANCE.
+// Left corner: X grows rightward from chart left.
+// Right corner: X is distance from chart RIGHT to the object's RIGHT edge —
+// without mirroring, placing chips with increasing X reverses visual order.
+int PanelX(const int localLeft, const int width, const int rowW)
+{
+   if(PanelSide == PANEL_SIDE_LEFT)
+      return PanelOffsetX + localLeft;
+   return PanelOffsetX + (rowW - localLeft - width);
+}
+
 void PanelStyleChip(const string name, const string text, const string tip,
                     const bool on, const bool isModeChip)
 {
@@ -793,8 +807,8 @@ void PanelBuild()
    const int chipH = 18;
    const int gap = 3;
    const int rowW = chipW * 5 + gap * 4;
-   int x0 = PanelOffsetX;
-   int y  = PanelOffsetY;
+   const int step = chipW + gap;
+   int y = PanelOffsetY;
 
    // Drop legacy separate collapse chip from older builds (title alone toggles).
    string minName = PanelObj("MIN");
@@ -802,7 +816,7 @@ void PanelBuild()
       ObjectDelete(0, minName);
 
    // Full-width title — click collapses / expands
-   PanelEnsureLabel("TTL", x0, y, rowW, chipH);
+   PanelEnsureLabel("TTL", PanelX(0, rowW, rowW), y, rowW, chipH);
 
    if(g_panelCollapsed)
    {
@@ -816,44 +830,46 @@ void PanelBuild()
    y += chipH + gap;
    const int modeGap = gap;
    const int modeW = (rowW - modeGap * 3) / 4;
-   const int modeLast = rowW - (modeW + modeGap) * 3; // absorb remainder on Sell
-   PanelEnsureButton("CONF", x0, y, modeW, chipH);
-   PanelEnsureButton("BOSM", x0 + (modeW + modeGap) * 1, y, modeW, chipH);
-   PanelEnsureButton("BUY",  x0 + (modeW + modeGap) * 2, y, modeW, chipH);
-   PanelEnsureButton("SELL", x0 + (modeW + modeGap) * 3, y, modeLast, chipH);
+   const int modeStep = modeW + modeGap;
+   const int modeLast = rowW - modeStep * 3; // absorb remainder on Sell
+   PanelEnsureButton("CONF", PanelX(0,            modeW,    rowW), y, modeW,    chipH);
+   PanelEnsureButton("BOSM", PanelX(modeStep,     modeW,    rowW), y, modeW,    chipH);
+   PanelEnsureButton("BUY",  PanelX(modeStep * 2, modeW,    rowW), y, modeW,    chipH);
+   PanelEnsureButton("SELL", PanelX(modeStep * 3, modeLast, rowW), y, modeLast, chipH);
    y += chipH + gap + 2;
 
-   PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
-   PanelEnsureButton("T1_stX", x0, y, chipW, chipH);
-   PanelEnsureButton("T1_stC", x0 + (chipW + gap) * 1, y, chipW, chipH);
-   PanelEnsureButton("T1_srB", x0 + (chipW + gap) * 2, y, chipW, chipH);
-   PanelEnsureButton("T1_srR", x0 + (chipW + gap) * 3, y, chipW, chipH);
-   PanelEnsureButton("T1_fib", x0 + (chipW + gap) * 4, y, chipW, chipH);
+   PanelEnsureLabel("L1", PanelX(0, rowW, rowW), y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("T1_stX", PanelX(0,        chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T1_stC", PanelX(step,     chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T1_srB", PanelX(step * 2, chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T1_srR", PanelX(step * 3, chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T1_fib", PanelX(step * 4, chipW, rowW), y, chipW, chipH);
    y += chipH + gap;
-   PanelEnsureButton("T1_macd", x0, y, chipW, chipH);
-   PanelEnsureButton("T1_rsi",  x0 + (chipW + gap) * 1, y, chipW, chipH);
-   PanelEnsureButton("T1_ema",  x0 + (chipW + gap) * 2, y, chipW, chipH);
-   PanelEnsureButton("T1_bos",  x0 + (chipW + gap) * 3, y, chipW, chipH);
+   PanelEnsureButton("T1_macd", PanelX(0,        chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T1_rsi",  PanelX(step,     chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T1_ema",  PanelX(step * 2, chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T1_bos",  PanelX(step * 3, chipW, rowW), y, chipW, chipH);
    y += chipH + gap + 2;
 
-   PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
-   PanelEnsureButton("T2_stX", x0, y, chipW, chipH);
-   PanelEnsureButton("T2_stC", x0 + (chipW + gap) * 1, y, chipW, chipH);
-   PanelEnsureButton("T2_srB", x0 + (chipW + gap) * 2, y, chipW, chipH);
-   PanelEnsureButton("T2_srR", x0 + (chipW + gap) * 3, y, chipW, chipH);
-   PanelEnsureButton("T2_fib", x0 + (chipW + gap) * 4, y, chipW, chipH);
+   PanelEnsureLabel("L2", PanelX(0, rowW, rowW), y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("T2_stX", PanelX(0,        chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T2_stC", PanelX(step,     chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T2_srB", PanelX(step * 2, chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T2_srR", PanelX(step * 3, chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T2_fib", PanelX(step * 4, chipW, rowW), y, chipW, chipH);
    y += chipH + gap;
-   PanelEnsureButton("T2_macd", x0, y, chipW, chipH);
-   PanelEnsureButton("T2_rsi",  x0 + (chipW + gap) * 1, y, chipW, chipH);
-   PanelEnsureButton("T2_ema",  x0 + (chipW + gap) * 2, y, chipW, chipH);
-   PanelEnsureButton("T2_bos",  x0 + (chipW + gap) * 3, y, chipW, chipH);
+   PanelEnsureButton("T2_macd", PanelX(0,        chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T2_rsi",  PanelX(step,     chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T2_ema",  PanelX(step * 2, chipW, rowW), y, chipW, chipH);
+   PanelEnsureButton("T2_bos",  PanelX(step * 3, chipW, rowW), y, chipW, chipH);
    y += chipH + gap + 2;
 
-   PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
-   PanelEnsureButton("MA",    x0, y, chipW, chipH);
-   PanelEnsureButton("MaSL",  x0 + (chipW + gap) * 1, y, chipW, chipH);
-   PanelEnsureButton("SwSL",  x0 + (chipW + gap) * 2, y, chipW, chipH);
-   PanelEnsureButton("Trail", x0 + (chipW + gap) * 3, y, chipW + 8, chipH);
+   const int trailW = chipW + 8;
+   PanelEnsureLabel("LR", PanelX(0, rowW, rowW), y, rowW, chipH); y += chipH + gap;
+   PanelEnsureButton("MA",    PanelX(0,        chipW,  rowW), y, chipW,  chipH);
+   PanelEnsureButton("MaSL",  PanelX(step,     chipW,  rowW), y, chipW,  chipH);
+   PanelEnsureButton("SwSL",  PanelX(step * 2, chipW,  rowW), y, chipW,  chipH);
+   PanelEnsureButton("Trail", PanelX(step * 3, trailW, rowW), y, trailW, chipH);
 
    PanelPaintState();
    g_panelBuilt = true;
