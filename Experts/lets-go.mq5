@@ -18,6 +18,8 @@
 //|   - Live MA gate + virtual exits stay on TF1 (InpTF1).           |
 //|   - Exits: broker pip-cap always; optional virtual MA SL (live)  |
 //|     and/or swing SL (g_BosMode + tighten-only) — first hit closes. |
+//|   - Recommended HTF-bias pattern: TF1 = entry clock (e.g. M1),    |
+//|     TF2 = HTF bias (e.g. M30 BOS only), Confluence = TF1 AND TF2.|
 //|   - Optional chip panel (top-left): click toggles, GV memory,     |
 //|     PanelInsetX/Y, collapse, self-heal. Tester: poll button STATE |
 //|     (OnChartEvent is not called in Strategy Tester).             |
