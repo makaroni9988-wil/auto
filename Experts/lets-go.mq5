@@ -1,51 +1,24 @@
 //+------------------------------------------------------------------+
 //|                                                      lets-go.mq5 |
-//|  Modular dual-TF confluence grid EA. Skeleton (grid layering,    |
-//|  basket SL/TP, virtual MA SL, session/weekend/news/market guards,|
-//|  modify-retry) forked from 3rd-strategy / 2nd-strategy.          |
+//|           Modular dual-TF confluence grid EA                     |
 //|                                                                  |
-//|  Entry:                                                          |
-//|   - g_ConfluenceMode: TF1 only, or TF1 AND TF2 (both must agree).  |
-//|   - Signal clock = TF1 new bar (no intrabar repaint).            |
-//|   - Each TF has its OWN on/off modules. Disabled = ignored.      |
-//|   - TRIGGERS (OR if any enabled): StochCross, StochClassic,      |
-//|     SrBounce, SrBreakRetest, FibZone. If none enabled, filters   |
-//|     alone can form the signal (same idea as 2nd with stoch off). |
-//|   - FILTERS (AND if enabled): MacdBias, RsiBias, EmaTrend, Bos.  |
-//|   - Fib/BOS are independent toggles (not forced as a pair).      |
-//|   - g_BosMode: ZIGZAG (fibo-gun), FRACTAL (choch-bos style), or     |
-//|     BOTH_AND (both engines must agree). No OR mode.              |
-//|   - Live MA gate + virtual exits stay on TF1 (InpTF1).           |
-//|   - Exits: broker pip-cap always; optional virtual MA SL (live)  |
-//|     and/or swing SL (g_BosMode + tighten-only) — first hit closes. |
-//|   - Recommended calm template: TF1_ONLY + M30 fractal BOS (wick),  |
-//|     swing virtual SL (not MA), wider broker hard SL + trail.     |
-//|   - Optional chip panel (top-left): click toggles, GV memory,     |
-//|     PanelInsetX/Y, collapse, self-heal. Tester: poll button STATE |
-//|     (OnChartEvent is not called in Strategy Tester).             |
-//|   - Journal Tag = "lets-go #magic SYMBOL" (same style as 2nd/3rd).|
-//|     Push: INIT FAILED + BASKET CLOSED only. InpDebugLog = panel. |
+//|  Skeleton: grid layering, basket SL/TP, virtual exits,           |
+//|  session / weekend / news / market guards, modify-retry.         |
+//|  Forked from 2nd-strategy / 3rd-strategy.                        |
+//|                                                                  |
+//|  Entry  : ConfluenceMode (TF1 only, or TF1 AND TF2).             |
+//|           Signal clock = TF1 new bar. Per-TF modules on/off.     |
+//|           Triggers OR; filters AND. Fib and BOS are independent. |
+//|           BosMode = zigzag / fractal / both-AND (entry only).    |
+//|  Exits  : broker pip-cap always; optional virtual MA SL and/or   |
+//|           swing SL (SwingSLMode, independent of BosMode).        |
+//|  Panel  : optional chip toggles (top-left), GV memory.           |
+//|  Journal: Tag "lets-go #magic SYMBOL". Push INIT/BASKET only.    |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.86"
-// v4.86: BOS signal mode — EVENT (enter only on the break bar) vs BIAS
-//        (keep buying every bar while structure stays bullish). Default EVENT
-//        so fractal BOS does not spam entries after a tiny past break.
-// v4.85: Single-TF M30 fractal BOS (wick break), swing virtual SL (no MA),
-//        wider broker hard SL + calmer basket trail defaults.
-// v4.84: Sync user-tidied source; M1 StochCross entry + M30 BOS-only bias defaults.
-// v4.83: Default template = M1 entry + M30 BOS bias (TF1 AND TF2).
-// v4.82: Strategy Tester panel clicks — OnChartEvent is not called in tester,
-//        so poll OBJPROP_STATE (uncle-style) from OnTick/OnTimer and repaint.
-// v4.81: Live harden — reset basket trail/lines on successful close and on
-//        new first layer; clear flat-basket state even if Trail is off;
-//        panel GV restore only when panel is shown; dead helpers removed.
-// v4.80: Panel always top-left (PanelInsetX / PanelInsetY).
-// v4.70: Journal Tag + push INIT FAILED / BASKET CLOSED only.
-// v4.60: Chip panel with GV memory, collapse, self-heal.
-// v4.00: Rewrite onto 2nd/3rd skeleton; modular dual-TF confluence.
+#property version   "4.87"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -59,37 +32,39 @@ enum ENUM_CONF_MODE
    CONF_TF1_ONLY,     // TF1 only
    CONF_TF1_AND_TF2   // TF1 AND TF2 (both must agree on direction)
 };
-input ENUM_CONF_MODE   ConfluenceMode = CONF_TF1_ONLY;    // Single TF (TF1 only)
-input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M30;       // TF1 signal clock (+ swing virtual SL)
-input ENUM_TIMEFRAMES  InpTF2         = PERIOD_H1;        // unused when TF1_ONLY
+input ENUM_CONF_MODE   ConfluenceMode = CONF_TF1_ONLY; // Confluence mode
+input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M30;    // TF1 (signal clock + virtual exits)
+input ENUM_TIMEFRAMES  InpTF2         = PERIOD_H1;     // TF2 (used when AND mode)
 
 input group "===== Direction Master ====="
-input bool TradeBuy  = true;  // Allow BUY signals
-input bool TradeSell = true;  // Allow SELL signals
+input bool TradeBuy  = true;  // Allow BUY
+input bool TradeSell = true;  // Allow SELL
 
 input group "===== TF1 Modules (ON = use, OFF = ignore) ====="
-// Single-TF BOS: filters alone may signal when no triggers are on.
-input bool TF1_UseStochCross     = false;
-input bool TF1_UseStochClassic   = false;
-input bool TF1_UseSrBounce       = false;
-input bool TF1_UseSrBreakRetest  = false;
-input bool TF1_UseFibZone        = false;
-input bool TF1_UseMacdBias       = false;
-input bool TF1_UseRsiBias        = false;
-input bool TF1_UseEmaTrend       = false;
-input bool TF1_UseBos            = true;   // FILTER: fractal BOS (see BosMode / BosBreakMode)
+// Triggers (OR): StochCross, StochClassic, SrBounce, SrBreakRetest, FibZone.
+// Filters (AND): MacdBias, RsiBias, EmaTrend, Bos.
+// If no triggers are on, enabled filters alone may form the signal.
+input bool TF1_UseStochCross     = false; // Trigger: Stoch cross
+input bool TF1_UseStochClassic   = false; // Trigger: Stoch classic OS/OB
+input bool TF1_UseSrBounce       = false; // Trigger: S/R bounce
+input bool TF1_UseSrBreakRetest  = false; // Trigger: S/R break-retest
+input bool TF1_UseFibZone        = false; // Trigger: Fib golden zone
+input bool TF1_UseMacdBias       = false; // Filter: MACD bias
+input bool TF1_UseRsiBias        = false; // Filter: RSI bias
+input bool TF1_UseEmaTrend       = false; // Filter: EMA trend
+input bool TF1_UseBos            = true;  // Filter: BOS (see BosMode)
 
 input group "===== TF2 Modules (ON = use, OFF = ignore) ====="
-// Ignored while ConfluenceMode = TF1_ONLY.
-input bool TF2_UseStochCross     = false;
-input bool TF2_UseStochClassic   = false;
-input bool TF2_UseSrBounce       = false;
-input bool TF2_UseSrBreakRetest  = false;
-input bool TF2_UseFibZone        = false;
-input bool TF2_UseMacdBias       = false;
-input bool TF2_UseRsiBias        = false;
-input bool TF2_UseEmaTrend       = false;
-input bool TF2_UseBos            = false;
+// Same module set as TF1. Ignored when ConfluenceMode = TF1_ONLY.
+input bool TF2_UseStochCross     = false; // Trigger: Stoch cross
+input bool TF2_UseStochClassic   = false; // Trigger: Stoch classic OS/OB
+input bool TF2_UseSrBounce       = false; // Trigger: S/R bounce
+input bool TF2_UseSrBreakRetest  = false; // Trigger: S/R break-retest
+input bool TF2_UseFibZone        = false; // Trigger: Fib golden zone
+input bool TF2_UseMacdBias       = false; // Filter: MACD bias
+input bool TF2_UseRsiBias        = false; // Filter: RSI bias
+input bool TF2_UseEmaTrend       = false; // Filter: EMA trend
+input bool TF2_UseBos            = false; // Filter: BOS (see BosMode)
 
 input group "===== Stochastic (shared params, per-TF handles) ====="
 input int                 StochKPeriod       = 5;
@@ -126,56 +101,54 @@ enum ENUM_TREND_MODE
 input ENUM_TREND_MODE     EmaTrendMode     = TREND_FOLLOW;
 input int                 EmaFastPeriod    = 13;
 input int                 EmaSlowPeriod    = 34;
-input double              EmaMinDiffPips   = 0;   // 0 = any separation counts
+input double              EmaMinDiffPips   = 0; // 0 = any separation counts
 
 input group "===== S/R Pivot Entry (shared params, per-TF levels) ====="
-input int    PivotLeftBars     = 5;
-input int    PivotRightBars    = 5;
-input int    LevelsLookback    = 200;
-input double TouchPips         = 50;
+input int    PivotLeftBars       = 5;
+input int    PivotRightBars      = 5;
+input int    LevelsLookback      = 200;
+input double TouchPips           = 50;
 input bool   RequireRejectCandle = true;
-input int    BreakLookbackBars = 12;
+input int    BreakLookbackBars   = 12;
 
-input group "===== Fib / BOS (shared params, per-TF scan) ====="
+input group "===== Fib / BOS entry (shared params, per-TF scan) ====="
 enum ENUM_BOS_MODE
 {
-   BOS_ZIGZAG,    // fibo-gun zigzag structural BOS only
-   BOS_FRACTAL,   // choch-bos style fractal structure bias only
-   BOS_BOTH_AND   // both must agree (strict)
+   BOS_ZIGZAG,    // Zigzag structural BOS (fibo-gun)
+   BOS_FRACTAL,   // Fractal structure (choch-bos style)
+   BOS_BOTH_AND   // Both engines must agree
 };
-input ENUM_BOS_MODE BosMode = BOS_FRACTAL; // Fractal structure BOS (single-TF template)
+input ENUM_BOS_MODE BosMode = BOS_FRACTAL; // Entry BOS engine
 enum ENUM_BOS_SIGNAL_MODE
 {
    BOS_SIGNAL_EVENT, // Enter only on the bar that breaks structure
-   BOS_SIGNAL_BIAS   // Stay buy/sell every bar while bias holds (spamy if Bos alone)
+   BOS_SIGNAL_BIAS   // Stay buy/sell every bar while bias holds
 };
-input ENUM_BOS_SIGNAL_MODE BosSignalMode = BOS_SIGNAL_EVENT; // How BOS creates entries
+input ENUM_BOS_SIGNAL_MODE BosSignalMode = BOS_SIGNAL_EVENT; // BOS entry style
 
-// --- Zigzag engine (fibo-gun / fibo.mq5) ---
-input double FibDeviationMult = 3.0;   // Zigzag: deviation multiplier (ATR-based %)
-input int    FibDepth         = 6;     // Zigzag: depth (left/right confirm = Depth/2)
+input double FibDeviationMult = 3.0;   // Zigzag: ATR deviation multiplier
+input int    FibDepth         = 6;     // Zigzag: depth (confirm = Depth/2)
 input int    FibATRPeriod     = 10;    // Zigzag: ATR period
-input int    FibLookbackBars  = 100;   // Zigzag: bars scanned for current leg
-input double FibZoneLevelMin  = 0.382; // FibZone trigger: shallow edge
-input double FibZoneLevelMax  = 0.618; // FibZone trigger: deep edge
+input int    FibLookbackBars  = 100;   // Zigzag: bars scanned
+input double FibZoneLevelMin  = 0.382; // FibZone: shallow edge
+input double FibZoneLevelMax  = 0.618; // FibZone: deep edge
 
-// --- Fractal engine (choch-bos style) ---
 enum ENUM_BOS_BREAK_MODE
 {
-   BOS_BREAK_CLOSE, // Fractal BOS: candle CLOSE must break level
-   BOS_BREAK_WICK   // Fractal BOS: wick/shadow may break level
+   BOS_BREAK_CLOSE, // Fractal: close must break level
+   BOS_BREAK_WICK   // Fractal: wick may break level
 };
-input int                 BosFractalPeriod   = 2;               // Fractal: bars each side to confirm swing
-input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK;  // Wick = faster, keeps momentum
-input int                 BosFractalLookback = 200;             // Fractal: bars scanned
+input int                 BosFractalPeriod   = 2;              // Fractal: bars each side
+input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK; // Fractal break type
+input int                 BosFractalLookback = 200;            // Fractal: bars scanned
 
-input group "===== Moving Average Filter (TF1 live gate + virtual SL) ====="
+input group "===== Moving Average (TF1 live gate + optional virtual SL) ====="
 enum ENUM_MA_CHECK
 {
-   MA_CHECK_RUNNING,      // Running: live price vs MA right now (+/- buffer)
-   MA_CHECK_CANDLE_CLOSE  // Candle close: last close must confirm too (tighter)
+   MA_CHECK_RUNNING,      // Live price vs MA (+/- buffer)
+   MA_CHECK_CANDLE_CLOSE  // Last close must confirm too
 };
-input bool               UseMAFilter     = false; // OFF for this BOS template
+input bool               UseMAFilter     = false; // Live MA entry filter
 input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_RUNNING;
 input ENUM_MA_METHOD     MA_Method       = MODE_EMA;
 input int                MA_Period       = 34;
@@ -183,30 +156,31 @@ input int                MA_Shift        = 0;
 input ENUM_APPLIED_PRICE MA_AppliedPrice = PRICE_CLOSE;
 input double             MABufferPips    = 100;
 
-input group "===== Stop / Exit (broker pip-cap always; virtuals optional) ====="
-// Broker SL = hard disaster cap (wider). Virtual swing = working/low SL (not MA).
-input bool   UseVirtualMaSL     = false; // OFF — use swing SL instead
-input double SLMABufferPips     = 50;
+input group "===== Stop / Exit ====="
+// Broker SL = hard pip cap. Virtual MA / swing SL are optional; first hit closes.
+input bool         UseVirtualMaSL    = false;      // Virtual MA stop (live follow)
+input double       SLMABufferPips    = 50;         // MA SL buffer (pips)
 
-input bool   UseSwingVirtualSL  = true;  // Working SL: last swing (BosMode fractal), tighten-only
-input double SwingSLBufferPips  = 50;    // Air beyond swing so a wick scrape doesn't auto-close
+input bool         UseSwingVirtualSL = true;       // Virtual swing stop (tighten-only)
+input ENUM_BOS_MODE SwingSLMode      = BOS_FRACTAL; // Swing SL engine (independent of BosMode)
+input double       SwingSLBufferPips = 50;         // Air beyond swing (pips)
 
-input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
+input group "===== Orders / Risk (basket lines: shared SL/TP, tighter-only) ====="
 input double LotSize         = 0.01;
-input int    MaxStopLossPips = 800;   // Hard broker SL — wider disaster cap
-input int    TakeProfitPips  = 3000;
-input int    MaxSpreadPips   = 0;
+input int    MaxStopLossPips = 800;   // Hard broker SL (pips)
+input int    TakeProfitPips  = 3000;  // Broker TP (pips)
+input int    MaxSpreadPips   = 0;     // 0 = no spread filter
 input int    SlippagePoints  = 20;
 input long   MagicNumber     = 778899;
 
 input group "===== Grid Layering ====="
-input int    MaxLayers       = 2;
-input int    LayerStepPips   = 200;
+input int    MaxLayers       = 1;     // Max open layers (same magic)
+input int    LayerStepPips   = 200;   // Min adverse move before next layer
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
 input bool   UseBasketTP         = true;
-input double BasketStartPips     = 400;  // Arm trail only after solid open profit
-input double BasketGivebackPips  = 150;  // Allow pullback before harvest (not too tight)
+input double BasketStartPips     = 400; // Arm trail after this open profit
+input double BasketGivebackPips  = 150; // Pullback from peak before close
 
 input group "===== Basket SL/TP Modify Retry ====="
 input int ModifyRetryMax                = 3;
@@ -240,20 +214,21 @@ input int  MaxStaleTickSeconds   = 120;
 input int  OrderRetryCooldownSec = 60;
 
 input group "===== Chip Panel (click toggles) ====="
-input bool ShowPanel             = true;     // Show toggle chip panel (top-left)
-input int  PanelInsetX           = 3;        // Inset from left side
-input int  PanelInsetY           = 25;       // Inset from top
-input bool PanelRemember         = true;     // Save on/off (survives DC / reattach)
-input bool PanelStartCollapsed   = false;    // Start minimized (title only)
-input uint PanelClickGuardMs     = 200;      // Ignore double-clicks inside this window
+input bool ShowPanel             = true;  // Show chip panel (top-left)
+input int  PanelInsetX           = 3;     // Inset from left
+input int  PanelInsetY           = 25;    // Inset from top
+input bool PanelRemember         = true;  // Remember toggles (GV)
+input bool PanelStartCollapsed   = false; // Start minimized
+input uint PanelClickGuardMs     = 200;   // Double-click guard (ms)
 
 input group "===== Logging ====="
-input bool InpDebugLog = false; // Extra panel / restore chatter (trade lines always on)
+input bool InpDebugLog = false; // Extra panel chatter (trade lines always on)
 
 
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
 ENUM_CONF_MODE g_ConfluenceMode;
 ENUM_BOS_MODE  g_BosMode;
+ENUM_BOS_MODE  g_SwingSLMode;
 bool g_TradeBuy, g_TradeSell;
 bool g_TF1_UseStochCross, g_TF1_UseStochClassic, g_TF1_UseSrBounce, g_TF1_UseSrBreakRetest;
 bool g_TF1_UseFibZone, g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_UseEmaTrend, g_TF1_UseBos;
@@ -435,6 +410,7 @@ string PanelInputFingerprint()
 {
    return IntegerToString((int)ConfluenceMode) + "|"
         + IntegerToString((int)BosMode) + "|"
+        + IntegerToString((int)SwingSLMode) + "|"
         + IntegerToString((int)TradeBuy) + IntegerToString((int)TradeSell) + "|"
         + IntegerToString((int)TF1_UseStochCross) + IntegerToString((int)TF1_UseStochClassic)
         + IntegerToString((int)TF1_UseSrBounce) + IntegerToString((int)TF1_UseSrBreakRetest)
@@ -454,6 +430,7 @@ void RuntimeApplyInputDefaults()
 {
    g_ConfluenceMode = ConfluenceMode;
    g_BosMode = BosMode;
+   g_SwingSLMode = SwingSLMode;
    g_TradeBuy = TradeBuy;
    g_TradeSell = TradeSell;
 
@@ -488,6 +465,7 @@ void RuntimeSaveAllToGV()
    if(!PanelRemember) return;
    PanelSaveInt("Conf", (int)g_ConfluenceMode);
    PanelSaveInt("BosMode", (int)g_BosMode);
+   PanelSaveInt("SwMode", (int)g_SwingSLMode);
    PanelSaveBool("Buy", g_TradeBuy);
    PanelSaveBool("Sell", g_TradeSell);
 
@@ -522,6 +500,7 @@ void RuntimeLoadFromGV()
 {
    g_ConfluenceMode = (ENUM_CONF_MODE)PanelLoadInt("Conf", (int)g_ConfluenceMode);
    g_BosMode = (ENUM_BOS_MODE)PanelLoadInt("BosMode", (int)g_BosMode);
+   g_SwingSLMode = (ENUM_BOS_MODE)PanelLoadInt("SwMode", (int)g_SwingSLMode);
    g_TradeBuy = PanelLoadBool("Buy", g_TradeBuy);
    g_TradeSell = PanelLoadBool("Sell", g_TradeSell);
 
@@ -555,6 +534,8 @@ void RuntimeLoadFromGV()
       g_ConfluenceMode = CONF_TF1_AND_TF2;
    if(g_BosMode != BOS_ZIGZAG && g_BosMode != BOS_FRACTAL && g_BosMode != BOS_BOTH_AND)
       g_BosMode = BOS_ZIGZAG;
+   if(g_SwingSLMode != BOS_ZIGZAG && g_SwingSLMode != BOS_FRACTAL && g_SwingSLMode != BOS_BOTH_AND)
+      g_SwingSLMode = BOS_FRACTAL;
 }
 
 void RuntimeLoadFromInputsThenGV()
@@ -595,7 +576,7 @@ void PanelClearMemory()
 {
    // wipe remembered clicks for this account/symbol/magic
    string ids[] = {
-      "INP_FP","Conf","BosMode","Buy","Sell","Collapsed",
+      "INP_FP","Conf","BosMode","SwMode","Buy","Sell","Collapsed",
       "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
       "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
       "MA","MaSL","SwSL","Trail"
@@ -684,6 +665,13 @@ string BosChipText()
    return "Zig";
 }
 
+string SwModeChipText()
+{
+   if(g_SwingSLMode == BOS_FRACTAL) return "sFr";
+   if(g_SwingSLMode == BOS_BOTH_AND) return "sBo";
+   return "sZg";
+}
+
 string ConfTip()
 {
    return (g_ConfluenceMode == CONF_TF1_ONLY)
@@ -693,9 +681,16 @@ string ConfTip()
 
 string BosTip()
 {
-   if(g_BosMode == BOS_FRACTAL) return "BOS engine: Fractal / choch-bos style (click to cycle)";
-   if(g_BosMode == BOS_BOTH_AND) return "BOS engine: BOTH must agree (click to cycle)";
-   return "BOS engine: Zigzag / fibo-gun (click to cycle)";
+   if(g_BosMode == BOS_FRACTAL) return "Entry BOS engine: Fractal (click to cycle)";
+   if(g_BosMode == BOS_BOTH_AND) return "Entry BOS engine: BOTH must agree (click to cycle)";
+   return "Entry BOS engine: Zigzag (click to cycle)";
+}
+
+string SwModeTip()
+{
+   if(g_SwingSLMode == BOS_FRACTAL) return "Swing SL engine: Fractal (independent of entry BosMode)";
+   if(g_SwingSLMode == BOS_BOTH_AND) return "Swing SL engine: BOTH, use tighter (independent of entry)";
+   return "Swing SL engine: Zigzag (independent of entry BosMode)";
 }
 
 void PanelPaintState()
@@ -737,7 +732,8 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
    PanelStyleChip(PanelObj("MA"),   "MA",   "Live MA entry filter (TF1)", g_UseMAFilter, false);
    PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop (live follow)", g_UseVirtualMaSL, false);
-   PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop (BosMode, tighten-only)", g_UseSwingVirtualSL, false);
+   PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop (tighten-only)", g_UseSwingVirtualSL, false);
+   PanelStyleChip(PanelObj("SwMd"), SwModeChipText(), SwModeTip(), true, true);
    PanelStyleChip(PanelObj("Trail"),"Trail","Basket pip trail TP", g_UseBasketTP, false);
 }
 
@@ -747,7 +743,7 @@ void PanelHideExtras()
       "CONF","BOSM","BUY","SELL","L1","L2","LR",
       "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
       "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
-      "MA","MaSL","SwSL","Trail"
+      "MA","MaSL","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(extras); i++)
    {
@@ -820,12 +816,12 @@ void PanelBuild()
    PanelEnsureButton("T2_bos",  x0 + step * 3, y, chipW, chipH);
    y += chipH + gap + 2;
 
-   const int trailW = chipW + 8;
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
-   PanelEnsureButton("MA",    x0,            y, chipW,  chipH);
-   PanelEnsureButton("MaSL",  x0 + step,     y, chipW,  chipH);
-   PanelEnsureButton("SwSL",  x0 + step * 2, y, chipW,  chipH);
-   PanelEnsureButton("Trail", x0 + step * 3, y, trailW, chipH);
+   PanelEnsureButton("MA",    x0,            y, chipW, chipH);
+   PanelEnsureButton("MaSL",  x0 + step,     y, chipW, chipH);
+   PanelEnsureButton("SwSL",  x0 + step * 2, y, chipW, chipH);
+   PanelEnsureButton("SwMd",  x0 + step * 3, y, chipW, chipH);
+   PanelEnsureButton("Trail", x0 + step * 4, y, chipW, chipH);
 
    PanelPaintState();
 }
@@ -881,6 +877,15 @@ bool PanelHandleClick(const string sparam)
       else if(g_BosMode == BOS_FRACTAL) g_BosMode = BOS_BOTH_AND;
       else g_BosMode = BOS_ZIGZAG;
       PanelSaveInt("BosMode", (int)g_BosMode);
+   }
+   else if(id == "SwMd")
+   {
+      if(g_SwingSLMode == BOS_ZIGZAG) g_SwingSLMode = BOS_FRACTAL;
+      else if(g_SwingSLMode == BOS_FRACTAL) g_SwingSLMode = BOS_BOTH_AND;
+      else g_SwingSLMode = BOS_ZIGZAG;
+      PanelSaveInt("SwMode", (int)g_SwingSLMode);
+      g_haveSwingSL = false; // reset ratchet when engine changes
+      g_swingSL = 0;
    }
    else if(id == "BUY")  PanelToggleBool(g_TradeBuy, "Buy");
    else if(id == "SELL") PanelToggleBool(g_TradeSell, "Sell");
@@ -940,7 +945,7 @@ void PanelPollClicks()
       "TTL","CONF","BOSM","BUY","SELL",
       "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
       "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
-      "MA","MaSL","SwSL","Trail"
+      "MA","MaSL","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(ids); i++)
    {
@@ -987,7 +992,7 @@ int OnInit()
    if(!CreateTfHandles(g_tf1,
                        prepAll || g_TF1_UseStochCross, prepAll || g_TF1_UseStochClassic,
                        prepAll || g_TF1_UseMacdBias, prepAll || g_TF1_UseRsiBias, prepAll || g_TF1_UseEmaTrend,
-                       prepAll || g_TF1_UseFibZone || g_UseSwingVirtualSL,
+                       prepAll || g_TF1_UseFibZone || (g_UseSwingVirtualSL && g_SwingSLMode != BOS_FRACTAL),
                        prepAll || g_TF1_UseBos || g_UseSwingVirtualSL,
                        g_stoch1, g_rsi1, g_macd1, g_emaF1, g_emaS1, g_atr1, "TF1"))
       return(INIT_FAILED);
@@ -1016,7 +1021,8 @@ int OnInit()
       }
    }
 
-   if((prepAll || g_UseSwingVirtualSL || g_TF1_UseFibZone) && g_atr1 == INVALID_HANDLE)
+   if((prepAll || g_TF1_UseFibZone ||
+       (g_UseSwingVirtualSL && g_SwingSLMode != BOS_FRACTAL)) && g_atr1 == INVALID_HANDLE)
    {
       g_atr1 = iATR(_Symbol, g_tf1, MathMax(1, FibATRPeriod));
       if(g_atr1 == INVALID_HANDLE)
@@ -1038,6 +1044,7 @@ int OnInit()
               + " TF1=" + EnumToString(g_tf1)
               + " TF2=" + EnumToString(g_tf2)
               + " BosMode=" + EnumToString(g_BosMode)
+              + " SwMode=" + EnumToString(g_SwingSLMode)
               + " | Buy=" + (g_TradeBuy ? "ON" : "OFF")
               + " Sell=" + (g_TradeSell ? "ON" : "OFF")
               + " | MaSL=" + (g_UseVirtualMaSL ? "ON" : "OFF")
@@ -2297,17 +2304,18 @@ void CheckVirtualMASL()
    CloseAllEA("virtual MA SL");
 }
 
-// Resolve TF1 swing anchor for the open basket direction, following g_BosMode.
+// Resolve TF1 swing anchor for the open basket direction via g_SwingSLMode
+// (independent of entry g_BosMode).
 // Zigzag: fibo-gun leg start (olderPrice) when leg matches basket side.
-// Fractal: active fractal low (buy) / high (sell) from choch-bos style scan.
-// BOTH_AND: both must be available; use the TIGHTER of the two.
-bool GetSwingAnchorByBosMode(const bool isBuy, double &swing, string &engineTag)
+// Fractal: active fractal low (buy) / high (sell).
+// BOTH_AND: both required; use the tighter of the two.
+bool GetSwingAnchor(const bool isBuy, double &swing, string &engineTag)
 {
    swing = 0;
    engineTag = "";
 
-   bool needZ = (g_BosMode == BOS_ZIGZAG || g_BosMode == BOS_BOTH_AND);
-   bool needF = (g_BosMode == BOS_FRACTAL || g_BosMode == BOS_BOTH_AND);
+   bool needZ = (g_SwingSLMode == BOS_ZIGZAG || g_SwingSLMode == BOS_BOTH_AND);
+   bool needF = (g_SwingSLMode == BOS_FRACTAL || g_SwingSLMode == BOS_BOTH_AND);
 
    double zSwing = 0;
    bool   haveZ  = false;
@@ -2336,13 +2344,13 @@ bool GetSwingAnchorByBosMode(const bool isBuy, double &swing, string &engineTag)
       if(!isBuy && sh > 0) { fSwing = sh; haveF = true; }
    }
 
-   if(g_BosMode == BOS_ZIGZAG)
+   if(g_SwingSLMode == BOS_ZIGZAG)
    {
       if(!haveZ) return false;
       swing = zSwing; engineTag = "zigzag";
       return true;
    }
-   if(g_BosMode == BOS_FRACTAL)
+   if(g_SwingSLMode == BOS_FRACTAL)
    {
       if(!haveF) return false;
       swing = fSwing; engineTag = "fractal";
@@ -2357,7 +2365,7 @@ bool GetSwingAnchorByBosMode(const bool isBuy, double &swing, string &engineTag)
    return true;
 }
 
-// Swing / last-low(high): virtual, follows g_BosMode, ratchet tighten-only.
+// Swing / last-low(high): virtual, follows g_SwingSLMode, ratchet tighten-only.
 // BUY exits if bid <= swingSL; SELL if ask >= swingSL (buffer baked into line).
 void CheckSwingVirtualSL()
 {
@@ -2374,7 +2382,7 @@ void CheckSwingVirtualSL()
 
    double rawSwing = 0;
    string engineTag = "";
-   if(!GetSwingAnchorByBosMode(isBuy, rawSwing, engineTag)) return;
+   if(!GetSwingAnchor(isBuy, rawSwing, engineTag)) return;
    if(rawSwing <= 0) return;
 
    double buffer = MathMax(0.0, SwingSLBufferPips) * g_pip;
@@ -2400,7 +2408,7 @@ void CheckSwingVirtualSL()
 
    LogGuardOnce("EXIT virtual swing SL hit " + (isBuy ? "bid " + DoubleToString(bid, _Digits) + " <= " : "ask " + DoubleToString(ask, _Digits) + " >= ") +
                 DoubleToString(g_swingSL, _Digits) +
-                " (TF1 " + engineTag + " g_BosMode=" + EnumToString(g_BosMode) +
+                " (TF1 " + engineTag + " SwMode=" + EnumToString(g_SwingSLMode) +
                 ", raw swing " + DoubleToString(rawSwing, _Digits) + ", tighten-only) — closing basket");
    CloseAllEA("virtual swing SL");
 }
