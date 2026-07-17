@@ -29,7 +29,9 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.84"
+#property version   "4.85"
+// v4.85: Single-TF M30 fractal BOS (wick break), swing virtual SL (no MA),
+//        wider broker hard SL + calmer basket trail defaults.
 // v4.84: Sync user-tidied source; M1 StochCross entry + M30 BOS-only bias defaults.
 // v4.83: Default template = M1 entry + M30 BOS bias (TF1 AND TF2).
 // v4.82: Strategy Tester panel clicks — OnChartEvent is not called in tester,
