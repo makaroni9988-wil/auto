@@ -29,7 +29,8 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.82"
+#property version   "4.83"
+// v4.83: Default template = M1 entry + M30 BOS bias (TF1 AND TF2).
 // v4.82: Strategy Tester panel clicks — OnChartEvent is not called in tester,
 //        so poll OBJPROP_STATE (uncle-style) from OnTick/OnTimer and repaint.
 // v4.81: Live harden — reset basket trail/lines on successful close and on
@@ -53,34 +54,36 @@ enum ENUM_CONF_MODE
    CONF_TF1_AND_TF2   // TF1 AND TF2 (both must agree on direction)
 };
 input ENUM_CONF_MODE   ConfluenceMode = CONF_TF1_AND_TF2; // How many TFs must agree
-input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M5;        // TF1 (signal clock + live MA / virtual SL)
-input ENUM_TIMEFRAMES  InpTF2         = PERIOD_H1;        // TF2 (used only when AND mode)
+input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M1;        // TF1 entry clock (+ live MA / virtual SL)
+input ENUM_TIMEFRAMES  InpTF2         = PERIOD_M30;       // TF2 HTF bias (used only when AND mode)
 
 input group "===== Direction Master ====="
 input bool TradeBuy  = true;  // Allow BUY signals
 input bool TradeSell = true;  // Allow SELL signals
 
 input group "===== TF1 Modules (ON = use, OFF = ignore) ====="
-input bool TF1_UseStochCross     = true;   // TRIGGER: %K crosses %D
+// TF1 = ENTRY timing on InpTF1. Needs at least one TRIGGER (or filters alone).
+input bool TF1_UseStochCross     = true;   // TRIGGER: %K crosses %D  (M1 entry)
 input bool TF1_UseStochClassic   = false;  // TRIGGER: %K in OS/OB zone (no cross)
 input bool TF1_UseSrBounce       = false;  // TRIGGER: wick into S/R + reject
 input bool TF1_UseSrBreakRetest  = false;  // TRIGGER: break + retest reject
 input bool TF1_UseFibZone        = false;  // TRIGGER: price in fib golden zone of zigzag leg
-input bool TF1_UseMacdBias       = true;   // FILTER: MACD main >0 buy / <0 sell
-input bool TF1_UseRsiBias        = true;   // FILTER: RSI above/below mid
+input bool TF1_UseMacdBias       = false;  // FILTER: MACD main >0 buy / <0 sell
+input bool TF1_UseRsiBias        = false;  // FILTER: RSI above/below mid
 input bool TF1_UseEmaTrend       = false;  // FILTER: fast vs slow EMA side
-input bool TF1_UseBos            = false;  // FILTER: BOS (engine chosen by BosMode below)
+input bool TF1_UseBos            = false;  // FILTER: leave OFF if BOS is on TF2 only
 
 input group "===== TF2 Modules (ON = use, OFF = ignore) ====="
+// TF2 = HTF bias on InpTF2. Keep lean (BOS only) for fewer, higher-quality trades.
 input bool TF2_UseStochCross     = false;
 input bool TF2_UseStochClassic   = false;
 input bool TF2_UseSrBounce       = false;
 input bool TF2_UseSrBreakRetest  = false;
 input bool TF2_UseFibZone        = false;
-input bool TF2_UseMacdBias       = true;
+input bool TF2_UseMacdBias       = false;
 input bool TF2_UseRsiBias        = false;
-input bool TF2_UseEmaTrend       = true;
-input bool TF2_UseBos            = false;
+input bool TF2_UseEmaTrend       = false;
+input bool TF2_UseBos            = true;   // FILTER: M30 BOS direction gate
 
 input group "===== Stochastic (shared params, per-TF handles) ====="
 input int                 StochKPeriod       = 5;
