@@ -26,7 +26,9 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.70"
+#property version   "4.71"
+// v4.71: Panel tidy — single full-width title (click collapses; no extra ▾
+//        chip), mode row is 4 even chips (no wrapped/stacked Conf/AND look).
 // v4.70: Neat journal logging same as 2nd/3rd/fibo-gun — Tag() on every
 //        line (lets-go #magic SYMBOL), LogInfo for OPEN/CLOSE/FAIL/INIT/
 //        BLOCKED/LINES, push only INIT FAILED + BASKET CLOSED, panel chatter
@@ -722,15 +724,15 @@ void PanelPaintState()
 {
    if(!ShowPanel) return;
 
+   // One title chip only — click collapses/expands (no separate ▾ button).
    PanelStyleChip(PanelObj("TTL"), g_panelCollapsed ? " lets-go  ▸" : " lets-go  ▾",
                   "Click to collapse / expand panel", true, true);
-   PanelStyleChip(PanelObj("MIN"), g_panelCollapsed ? "▸" : "▾",
-                  "Collapse / expand", true, true);
 
    if(g_panelCollapsed) return;
 
-   PanelStyleChip(PanelObj("CONF"), "Conf " + ConfChipText(), ConfTip(), true, true);
-   PanelStyleChip(PanelObj("BOSM"), "BOS " + BosChipText(), BosTip(), true, true);
+   // Short one-line labels (avoids MT5 wrapping "Conf AND" into a stacked look).
+   PanelStyleChip(PanelObj("CONF"), ConfChipText(), ConfTip(), true, true);
+   PanelStyleChip(PanelObj("BOSM"), BosChipText(), BosTip(), true, true);
    PanelStyleChip(PanelObj("BUY"),  "Buy",  "Allow BUY signals",  g_TradeBuy,  false);
    PanelStyleChip(PanelObj("SELL"), "Sell", "Allow SELL signals", g_TradeSell, false);
 
@@ -794,9 +796,13 @@ void PanelBuild()
    int x0 = PanelOffsetX;
    int y  = PanelOffsetY;
 
-   // title + collapse control always visible
-   PanelEnsureLabel("TTL", x0, y, rowW - 22, chipH);
-   PanelEnsureButton("MIN", x0 + rowW - 20, y, 20, chipH);
+   // Drop legacy separate collapse chip from older builds (title alone toggles).
+   string minName = PanelObj("MIN");
+   if(ObjectFind(0, minName) >= 0)
+      ObjectDelete(0, minName);
+
+   // Full-width title — click collapses / expands
+   PanelEnsureLabel("TTL", x0, y, rowW, chipH);
 
    if(g_panelCollapsed)
    {
@@ -806,11 +812,15 @@ void PanelBuild()
       return;
    }
 
+   // Mode row: 4 even chips across the same width as TF rows (no cramped stack).
    y += chipH + gap;
-   PanelEnsureButton("CONF", x0, y, 52, chipH);
-   PanelEnsureButton("BOSM", x0 + 52 + gap, y, 56, chipH);
-   PanelEnsureButton("BUY",  x0 + 52 + gap + 56 + gap, y, chipW, chipH);
-   PanelEnsureButton("SELL", x0 + 52 + gap + 56 + gap + chipW + gap, y, chipW, chipH);
+   const int modeGap = gap;
+   const int modeW = (rowW - modeGap * 3) / 4;
+   const int modeLast = rowW - (modeW + modeGap) * 3; // absorb remainder on Sell
+   PanelEnsureButton("CONF", x0, y, modeW, chipH);
+   PanelEnsureButton("BOSM", x0 + (modeW + modeGap) * 1, y, modeW, chipH);
+   PanelEnsureButton("BUY",  x0 + (modeW + modeGap) * 2, y, modeW, chipH);
+   PanelEnsureButton("SELL", x0 + (modeW + modeGap) * 3, y, modeLast, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
@@ -896,7 +906,7 @@ bool PanelHandleClick(const string sparam)
    bool changed = true;
    bool needFullBuild = false;
 
-   if(id == "TTL" || id == "MIN")
+   if(id == "TTL" || id == "MIN") // MIN = legacy orphan from older panel builds
    {
       g_panelCollapsed = !g_panelCollapsed;
       PanelSaveBool("Collapsed", g_panelCollapsed);
