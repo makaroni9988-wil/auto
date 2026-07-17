@@ -138,7 +138,7 @@ enum ENUM_BOS_BREAK_MODE
    BOS_BREAK_CLOSE, // Fractal: close must break level
    BOS_BREAK_WICK   // Fractal: wick may break level
 };
-input int                 BosFractalPeriod   = 2;              // Fractal: bars each side
+input int                 BosFractalPeriod   = 3;              // Fractal: bars each side
 input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK; // Fractal break type
 input int                 BosFractalLookback = 200;            // Fractal: bars scanned
 
@@ -180,7 +180,7 @@ input int    LayerStepPips   = 200;   // Min adverse move before next layer
 input group "===== Basket Take-Profit (pips, trailing) ====="
 input bool   UseBasketTP         = true;
 input double BasketStartPips     = 500; // Arm trail after this open profit
-input double BasketGivebackPips  = 100; // Pullback from peak before close
+input double BasketGivebackPips  = 200; // Pullback from peak before close
 
 input group "===== Basket SL/TP Modify Retry ====="
 input int ModifyRetryMax                = 3;
