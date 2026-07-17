@@ -22,7 +22,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.93"
+#property version   "4.94"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -1884,7 +1884,7 @@ bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
 
 // Evaluate one TF: every enabled module family must pass (all AND).
 // Within Stoch: cross OR classic. Within S/R: bounce OR retest.
-// emptyPass: if no modules ON, pass both sides (used for empty TF2 bias).
+// If nothing enabled: outBuy/outSell stay false (caller may treat empty TF2 as pass).
 // fibLegOnly: FibZone arms from leg direction only (price checked later per tick).
 bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useCross, const bool useClassic,
@@ -1892,7 +1892,7 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useMacd, const bool useRsi, const int maTrendState, const bool useBos,
             const int hStoch, const int hRsi, const int hMacd,
             const int hMaSingle, const int hMaFast, const int hMaSlow, const int hAtr,
-            const bool fibLegOnly, const bool emptyPass,
+            const bool fibLegOnly,
             bool &outBuy, bool &outSell)
 {
    outBuy = false; outSell = false;
@@ -1901,10 +1901,7 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
    const bool useSr      = (useBounce || useRetest);
    const bool useMaTrend = MaTrendEnabled(maTrendState);
    if(!useStoch && !useSr && !useFib && !useMacd && !useRsi && !useMaTrend && !useBos)
-   {
-      if(emptyPass) { outBuy = true; outSell = true; } // empty bias TF = no extra gate
       return true;
-   }
 
    bool buy = true, sell = true;
 
@@ -1965,6 +1962,14 @@ bool ResolveSignalSide(const bool buyOK, const bool sellOK, bool &isBuy)
    return false;
 }
 
+bool Tf2BiasModulesOn()
+{
+   return (g_TF2_UseStochCross || g_TF2_UseStochClassic ||
+           g_TF2_UseSrBounce || g_TF2_UseSrBreakRetest || g_TF2_UseFibZone ||
+           g_TF2_UseMacdBias || g_TF2_UseRsiBias || MaTrendEnabled(g_TF2_MaTrend) ||
+           g_TF2_UseBos);
+}
+
 void UpdateSignal()
 {
    g_haveSignal      = false;
@@ -1981,8 +1986,8 @@ void UpdateSignal()
               false, b1, s1))
       return;
 
-   bool b2 = true, s2 = true; // ignored in ENTRY_ONLY
-   if(g_ConfluenceMode == CONF_TF1_AND_TF2)
+   bool b2 = true, s2 = true; // ENTRY_ONLY, or empty TF2 bias = pass-through
+   if(g_ConfluenceMode == CONF_TF1_AND_TF2 && Tf2BiasModulesOn())
    {
       b2 = false; s2 = false;
       if(!EvalTf(g_tf2,
@@ -2003,7 +2008,6 @@ void UpdateSignal()
    }
 
    // Pass 2: FibZone leg-armed only (price may enter zone later this bar).
-   // Used when FibZone is on and pass 1 had no trade (e.g. waiting for zone).
    const bool wantFibGate = (g_TF1_UseFibZone ||
                              (g_ConfluenceMode == CONF_TF1_AND_TF2 && g_TF2_UseFibZone));
    if(!wantFibGate) return;
@@ -2018,7 +2022,7 @@ void UpdateSignal()
       return;
 
    b2 = true; s2 = true;
-   if(g_ConfluenceMode == CONF_TF1_AND_TF2)
+   if(g_ConfluenceMode == CONF_TF1_AND_TF2 && Tf2BiasModulesOn())
    {
       b2 = false; s2 = false;
       if(!EvalTf(g_tf2,
