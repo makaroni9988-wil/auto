@@ -81,10 +81,10 @@ enum ENUM_STOCH_CROSS_MODE
    STOCH_CROSS_ANY,      // Any %K/%D cross
    STOCH_CROSS_OSOB      // Cross must come FROM OS (buy) / OB (sell)
 };
-input ENUM_STOCH_CROSS_MODE StochCrossMode     = STOCH_CROSS_OSOB;
-input double              StochPullbackLevel   = 50;
-input double              StochOversoldLevel   = 20;
-input double              StochOverboughtLevel = 80;
+input ENUM_STOCH_CROSS_MODE StochCrossMode       = STOCH_CROSS_OSOB;
+input double                StochPullbackLevel   = 50;
+input double                StochOversoldLevel   = 20;
+input double                StochOverboughtLevel = 80;
 
 input group "===== RSI / MACD (shared params) ====="
 input int                 RSIPeriod        = 14;
@@ -107,14 +107,14 @@ enum ENUM_TREND_MODE
    TREND_FOLLOW,    // Single: price vs MA side. Double: fast vs slow side
    TREND_REVERSAL   // Fade the follow rule
 };
-input ENUM_MA_TREND_STYLE MaTrendStyle      = MA_TREND_DOUBLE; // Default style when module ON
-input ENUM_MA_METHOD      MaTrendMethod     = MODE_EMA;        // SMA / EMA / SMMA / LWMA
-input ENUM_APPLIED_PRICE  MaTrendPrice      = PRICE_CLOSE;
-input int                 MaTrendPeriod     = 34;              // Single MA period
-input int                 MaTrendFastPeriod = 13;              // Double: fast period
-input int                 MaTrendSlowPeriod = 34;              // Double: slow period
-input ENUM_TREND_MODE     MaTrendMode       = TREND_FOLLOW;    // Follow / Reversal
-input double              MaTrendMinDiffPips = 0;              // 0 = any separation counts
+input ENUM_MA_TREND_STYLE MaTrendStyle       = MA_TREND_DOUBLE; // Default style when module ON
+input ENUM_MA_METHOD      MaTrendMethod      = MODE_EMA;        // SMA / EMA / SMMA / LWMA
+input ENUM_APPLIED_PRICE  MaTrendPrice       = PRICE_CLOSE;
+input int                 MaTrendPeriod      = 34;              // Single MA period
+input int                 MaTrendFastPeriod  = 13;              // Double: fast period
+input int                 MaTrendSlowPeriod  = 34;              // Double: slow period
+input ENUM_TREND_MODE     MaTrendMode        = TREND_FOLLOW;    // Follow / Reversal
+input double              MaTrendMinDiffPips = 100;             // 0 = any separation counts
 
 input group "===== S/R Pivot Entry (shared params, per-TF levels) ====="
 input int    PivotLeftBars       = 5;
@@ -172,11 +172,11 @@ input double             MABufferPips    = 100;
 input group "===== Stop / Exit ====="
 // Broker SL = hard pip cap. Virtual MA / swing SL are optional; first hit closes.
 input bool         UseVirtualMaSL    = false;      // Virtual MA stop (live follow)
-input double       SLMABufferPips    = 50;         // MA SL buffer (pips)
+input double       SLMABufferPips    = 100;        // MA SL buffer (pips)
 
-input bool         UseSwingVirtualSL = true;       // Virtual swing stop (tighten-only)
+input bool         UseSwingVirtualSL = true;        // Virtual swing stop (tighten-only)
 input ENUM_BOS_MODE SwingSLMode      = BOS_FRACTAL; // Swing SL engine (independent of BosMode)
-input double       SwingSLBufferPips = 50;         // Air beyond swing (pips)
+input double       SwingSLBufferPips = 100;         // Air beyond swing (pips)
 
 input group "===== Orders / Risk (basket lines: shared SL/TP, tighter-only) ====="
 input double LotSize         = 0.01;
