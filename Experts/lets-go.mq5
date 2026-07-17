@@ -18,7 +18,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.87"
+#property version   "4.88"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -665,11 +665,13 @@ string BosChipText()
    return "Zig";
 }
 
-string SwModeChipText()
+// SwSL chip shows the active swing engine (not a static "SwSL" label).
+string SwSLChipText()
 {
-   if(g_SwingSLMode == BOS_FRACTAL) return "sFr";
-   if(g_SwingSLMode == BOS_BOTH_AND) return "sBo";
-   return "sZg";
+   if(!g_UseSwingVirtualSL) return "SwSL";
+   if(g_SwingSLMode == BOS_FRACTAL) return "SwFr";
+   if(g_SwingSLMode == BOS_BOTH_AND) return "SwBo";
+   return "SwZg";
 }
 
 string ConfTip()
@@ -686,11 +688,15 @@ string BosTip()
    return "Entry BOS engine: Zigzag (click to cycle)";
 }
 
-string SwModeTip()
+string SwSLTip()
 {
-   if(g_SwingSLMode == BOS_FRACTAL) return "Swing SL engine: Fractal (independent of entry BosMode)";
-   if(g_SwingSLMode == BOS_BOTH_AND) return "Swing SL engine: BOTH, use tighter (independent of entry)";
-   return "Swing SL engine: Zigzag (independent of entry BosMode)";
+   if(!g_UseSwingVirtualSL)
+      return "Swing SL: OFF (click to cycle Zig / Frac / Both / OFF)";
+   if(g_SwingSLMode == BOS_FRACTAL)
+      return "Swing SL: Fractal (click to cycle Zig / Frac / Both / OFF)";
+   if(g_SwingSLMode == BOS_BOTH_AND)
+      return "Swing SL: BOTH tighter (click to cycle Zig / Frac / Both / OFF)";
+   return "Swing SL: Zigzag (click to cycle Zig / Frac / Both / OFF)";
 }
 
 void PanelPaintState()
@@ -732,8 +738,9 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
    PanelStyleChip(PanelObj("MA"),   "MA",   "Live MA entry filter (TF1)", g_UseMAFilter, false);
    PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop (live follow)", g_UseVirtualMaSL, false);
-   PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop (tighten-only)", g_UseSwingVirtualSL, false);
-   PanelStyleChip(PanelObj("SwMd"), SwModeChipText(), SwModeTip(), true, true);
+   // Mode chip style when ON so Zig/Frac/Both is visible (not stuck as plain "SwSL")
+   PanelStyleChip(PanelObj("SwSL"), SwSLChipText(), SwSLTip(),
+                  g_UseSwingVirtualSL, g_UseSwingVirtualSL);
    PanelStyleChip(PanelObj("Trail"),"Trail","Basket pip trail TP", g_UseBasketTP, false);
 }
 
@@ -819,9 +826,12 @@ void PanelBuild()
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
    PanelEnsureButton("MA",    x0,            y, chipW, chipH);
    PanelEnsureButton("MaSL",  x0 + step,     y, chipW, chipH);
-   PanelEnsureButton("SwSL",  x0 + step * 2, y, chipW, chipH);
-   PanelEnsureButton("SwMd",  x0 + step * 3, y, chipW, chipH);
-   PanelEnsureButton("Trail", x0 + step * 4, y, chipW, chipH);
+   // Wider chip so "sFrac" / "sBoth" fit (mode shown on the chip itself)
+   PanelEnsureButton("SwSL",  x0 + step * 2, y, chipW + 12, chipH);
+   PanelEnsureButton("Trail", x0 + step * 3 + 12, y, chipW + 8, chipH);
+   // Remove leftover SwMd from older builds
+   if(ObjectFind(0, PanelObj("SwMd")) >= 0)
+      ObjectDelete(0, PanelObj("SwMd"));
 
    PanelPaintState();
 }
@@ -878,13 +888,26 @@ bool PanelHandleClick(const string sparam)
       else g_BosMode = BOS_ZIGZAG;
       PanelSaveInt("BosMode", (int)g_BosMode);
    }
-   else if(id == "SwMd")
+   else if(id == "SwSL")
    {
-      if(g_SwingSLMode == BOS_ZIGZAG) g_SwingSLMode = BOS_FRACTAL;
-      else if(g_SwingSLMode == BOS_FRACTAL) g_SwingSLMode = BOS_BOTH_AND;
-      else g_SwingSLMode = BOS_ZIGZAG;
+      // Cycle: OFF → Zig → Frac → Both → OFF (label shows active method)
+      if(!g_UseSwingVirtualSL)
+      {
+         g_UseSwingVirtualSL = true;
+         g_SwingSLMode = BOS_ZIGZAG;
+      }
+      else if(g_SwingSLMode == BOS_ZIGZAG)
+         g_SwingSLMode = BOS_FRACTAL;
+      else if(g_SwingSLMode == BOS_FRACTAL)
+         g_SwingSLMode = BOS_BOTH_AND;
+      else
+      {
+         g_UseSwingVirtualSL = false;
+         g_SwingSLMode = BOS_FRACTAL; // default next time it turns on via inputs
+      }
+      PanelSaveBool("SwSL", g_UseSwingVirtualSL);
       PanelSaveInt("SwMode", (int)g_SwingSLMode);
-      g_haveSwingSL = false; // reset ratchet when engine changes
+      g_haveSwingSL = false;
       g_swingSL = 0;
    }
    else if(id == "BUY")  PanelToggleBool(g_TradeBuy, "Buy");
@@ -909,8 +932,12 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T2_bos") PanelToggleBool(g_TF2_UseBos, "T2_bos");
    else if(id == "MA") PanelToggleBool(g_UseMAFilter, "MA");
    else if(id == "MaSL") PanelToggleBool(g_UseVirtualMaSL, "MaSL");
-   else if(id == "SwSL") PanelToggleBool(g_UseSwingVirtualSL, "SwSL");
    else if(id == "Trail") PanelToggleBool(g_UseBasketTP, "Trail");
+   else if(id == "SwMd")
+   {
+      // Legacy chip from older builds — ignore / remove
+      if(ObjectFind(0, sparam) >= 0) ObjectDelete(0, sparam);
+   }
    else changed = false;
 
    if(changed)
@@ -945,7 +972,7 @@ void PanelPollClicks()
       "TTL","CONF","BOSM","BUY","SELL",
       "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
       "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
-      "MA","MaSL","SwSL","SwMd","Trail"
+      "MA","MaSL","SwSL","Trail"
    };
    for(int i = 0; i < ArraySize(ids); i++)
    {
