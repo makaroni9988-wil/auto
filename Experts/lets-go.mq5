@@ -1093,7 +1093,7 @@ int OnInit()
                           g_stoch2, g_rsi2, g_macd2, g_maTr2, g_maF2, g_maS2, g_atr2, "TF2"))
          return(INIT_FAILED);
       if(PeriodSeconds(g_tf2) == PeriodSeconds(g_tf1) && !g_quietInit)
-         LogInfo("NOTE TF1 and TF2 are the same period — confluence adds no extra info.");
+         LogInfo("NOTE TF1 entry and TF2 bias are the same period — bias adds no extra info.");
    }
 
    if(prepAll || g_UseMAFilter || g_UseVirtualMaSL)
@@ -1126,7 +1126,7 @@ int OnInit()
 
    if(!g_quietInit)
    {
-      string mode = (g_ConfluenceMode == CONF_TF1_ONLY) ? "TF1_ONLY" : "TF1_AND_TF2";
+      string mode = (g_ConfluenceMode == CONF_TF1_ONLY) ? "ENTRY_ONLY" : "ENTRY+BIAS";
       LogInfo("INIT " + mode
               + " TF1=" + EnumToString(g_tf1)
               + " TF2=" + EnumToString(g_tf2)
@@ -1884,6 +1884,7 @@ bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
 
 // Evaluate one TF: every enabled module family must pass (all AND).
 // Within Stoch: cross OR classic. Within S/R: bounce OR retest.
+// emptyPass: if no modules ON, pass both sides (used for empty TF2 bias).
 // fibLegOnly: FibZone arms from leg direction only (price checked later per tick).
 bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useCross, const bool useClassic,
@@ -1891,7 +1892,7 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useMacd, const bool useRsi, const int maTrendState, const bool useBos,
             const int hStoch, const int hRsi, const int hMacd,
             const int hMaSingle, const int hMaFast, const int hMaSlow, const int hAtr,
-            const bool fibLegOnly,
+            const bool fibLegOnly, const bool emptyPass,
             bool &outBuy, bool &outSell)
 {
    outBuy = false; outSell = false;
@@ -1900,7 +1901,10 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
    const bool useSr      = (useBounce || useRetest);
    const bool useMaTrend = MaTrendEnabled(maTrendState);
    if(!useStoch && !useSr && !useFib && !useMacd && !useRsi && !useMaTrend && !useBos)
-      return true; // nothing enabled -> no side
+   {
+      if(emptyPass) { outBuy = true; outSell = true; } // empty bias TF = no extra gate
+      return true;
+   }
 
    bool buy = true, sell = true;
 
@@ -1977,7 +1981,7 @@ void UpdateSignal()
               false, b1, s1))
       return;
 
-   bool b2 = true, s2 = true; // ignored in TF1_ONLY
+   bool b2 = true, s2 = true; // ignored in ENTRY_ONLY
    if(g_ConfluenceMode == CONF_TF1_AND_TF2)
    {
       b2 = false; s2 = false;
