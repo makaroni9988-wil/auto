@@ -18,8 +18,8 @@
 //|   - Live MA gate + virtual exits stay on TF1 (InpTF1).           |
 //|   - Exits: broker pip-cap always; optional virtual MA SL (live)  |
 //|     and/or swing SL (g_BosMode + tighten-only) — first hit closes. |
-//|   - Recommended HTF-bias pattern: TF1 = entry clock (e.g. M1),    |
-//|     TF2 = HTF bias (e.g. M30 BOS only), Confluence = TF1 AND TF2.|
+//|   - Recommended calm template: TF1_ONLY + M30 fractal BOS (wick),  |
+//|     swing virtual SL (not MA), wider broker hard SL + trail.     |
 //|   - Optional chip panel (top-left): click toggles, GV memory,     |
 //|     PanelInsetX/Y, collapse, self-heal. Tester: poll button STATE |
 //|     (OnChartEvent is not called in Strategy Tester).             |
@@ -56,28 +56,28 @@ enum ENUM_CONF_MODE
    CONF_TF1_ONLY,     // TF1 only
    CONF_TF1_AND_TF2   // TF1 AND TF2 (both must agree on direction)
 };
-input ENUM_CONF_MODE   ConfluenceMode = CONF_TF1_AND_TF2; // How many TFs must agree
-input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M1;        // TF1 (signal clock + live MA / virtual SL)
-input ENUM_TIMEFRAMES  InpTF2         = PERIOD_M30;       // TF2 HTF bias (used only when AND mode)
+input ENUM_CONF_MODE   ConfluenceMode = CONF_TF1_ONLY;    // Single TF (TF1 only)
+input ENUM_TIMEFRAMES  InpTF1         = PERIOD_M30;       // TF1 signal clock (+ swing virtual SL)
+input ENUM_TIMEFRAMES  InpTF2         = PERIOD_H1;        // unused when TF1_ONLY
 
 input group "===== Direction Master ====="
 input bool TradeBuy  = true;  // Allow BUY signals
 input bool TradeSell = true;  // Allow SELL signals
 
 input group "===== TF1 Modules (ON = use, OFF = ignore) ====="
-// TF1 = M1 ENTRY timing. Needs a TRIGGER (StochCross default).
-input bool TF1_UseStochCross     = true;   // TRIGGER: %K crosses %D
-input bool TF1_UseStochClassic   = false;  // TRIGGER: %K in OS/OB zone (no cross)
-input bool TF1_UseSrBounce       = false;  // TRIGGER: wick into S/R + reject
-input bool TF1_UseSrBreakRetest  = false;  // TRIGGER: break + retest reject
-input bool TF1_UseFibZone        = false;  // TRIGGER: price in fib golden zone of zigzag leg
-input bool TF1_UseMacdBias       = false;  // FILTER: MACD main >0 buy / <0 sell
-input bool TF1_UseRsiBias        = false;  // FILTER: RSI above/below mid
-input bool TF1_UseEmaTrend       = false;  // FILTER: fast vs slow EMA side
-input bool TF1_UseBos            = false;  // FILTER: leave OFF — BOS is on TF2 (M30)
+// Single-TF BOS: filters alone may signal when no triggers are on.
+input bool TF1_UseStochCross     = false;
+input bool TF1_UseStochClassic   = false;
+input bool TF1_UseSrBounce       = false;
+input bool TF1_UseSrBreakRetest  = false;
+input bool TF1_UseFibZone        = false;
+input bool TF1_UseMacdBias       = false;
+input bool TF1_UseRsiBias        = false;
+input bool TF1_UseEmaTrend       = false;
+input bool TF1_UseBos            = true;   // FILTER: fractal BOS (see BosMode / BosBreakMode)
 
 input group "===== TF2 Modules (ON = use, OFF = ignore) ====="
-// TF2 = M30 HTF bias. BOS only = fewer, higher-quality trades.
+// Ignored while ConfluenceMode = TF1_ONLY.
 input bool TF2_UseStochCross     = false;
 input bool TF2_UseStochClassic   = false;
 input bool TF2_UseSrBounce       = false;
@@ -86,7 +86,7 @@ input bool TF2_UseFibZone        = false;
 input bool TF2_UseMacdBias       = false;
 input bool TF2_UseRsiBias        = false;
 input bool TF2_UseEmaTrend       = false;
-input bool TF2_UseBos            = true;   // FILTER: M30 BOS direction gate
+input bool TF2_UseBos            = false;
 
 input group "===== Stochastic (shared params, per-TF handles) ====="
 input int                 StochKPeriod       = 5;
@@ -140,7 +140,7 @@ enum ENUM_BOS_MODE
    BOS_FRACTAL,   // choch-bos style fractal structure bias only
    BOS_BOTH_AND   // both must agree (strict)
 };
-input ENUM_BOS_MODE BosMode = BOS_ZIGZAG; // Which BOS engine(s) when UseBos is ON
+input ENUM_BOS_MODE BosMode = BOS_FRACTAL; // Fractal structure BOS (single-TF template)
 
 // --- Zigzag engine (fibo-gun / fibo.mq5) ---
 input double FibDeviationMult = 3.0;   // Zigzag: deviation multiplier (ATR-based %)
@@ -157,7 +157,7 @@ enum ENUM_BOS_BREAK_MODE
    BOS_BREAK_WICK   // Fractal BOS: wick/shadow may break level
 };
 input int                 BosFractalPeriod   = 2;               // Fractal: bars each side to confirm swing
-input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK;  // Fractal: break confirmation
+input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK;  // Wick = faster, keeps momentum
 input int                 BosFractalLookback = 200;             // Fractal: bars scanned
 
 input group "===== Moving Average Filter (TF1 live gate + virtual SL) ====="
@@ -166,7 +166,7 @@ enum ENUM_MA_CHECK
    MA_CHECK_RUNNING,      // Running: live price vs MA right now (+/- buffer)
    MA_CHECK_CANDLE_CLOSE  // Candle close: last close must confirm too (tighter)
 };
-input bool               UseMAFilter     = false;
+input bool               UseMAFilter     = false; // OFF for this BOS template
 input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_RUNNING;
 input ENUM_MA_METHOD     MA_Method       = MODE_EMA;
 input int                MA_Period       = 34;
@@ -175,17 +175,16 @@ input ENUM_APPLIED_PRICE MA_AppliedPrice = PRICE_CLOSE;
 input double             MABufferPips    = 100;
 
 input group "===== Stop / Exit (broker pip-cap always; virtuals optional) ====="
-// Broker SL line = MaxStopLossPips from avg entry (offline backup) — always.
-// Virtual exits are EA-side only; turn on any combo — first hit closes basket.
-input bool   UseVirtualMaSL     = false; // Virtual MA exit on TF1 (InpTF1)
-input double SLMABufferPips     = 50;    // MA exit: room beyond MA (0 = at MA touch)
+// Broker SL = hard disaster cap (wider). Virtual swing = working/low SL (not MA).
+input bool   UseVirtualMaSL     = false; // OFF — use swing SL instead
+input double SLMABufferPips     = 50;
 
-input bool   UseSwingVirtualSL  = true;  // Virtual swing/last-low exit (follows BosMode, tighten-only)
-input double SwingSLBufferPips  = 0;     // Swing exit: room beyond swing (0 = at swing)
+input bool   UseSwingVirtualSL  = true;  // Working SL: last swing (BosMode fractal), tighten-only
+input double SwingSLBufferPips  = 50;    // Air beyond swing so a wick scrape doesn't auto-close
 
 input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
 input double LotSize         = 0.01;
-input int    MaxStopLossPips = 500;
+input int    MaxStopLossPips = 800;   // Hard broker SL — wider disaster cap
 input int    TakeProfitPips  = 3000;
 input int    MaxSpreadPips   = 0;
 input int    SlippagePoints  = 20;
@@ -197,8 +196,8 @@ input int    LayerStepPips   = 200;
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
 input bool   UseBasketTP         = true;
-input double BasketStartPips     = 300;
-input double BasketGivebackPips  = 100;
+input double BasketStartPips     = 400;  // Arm trail only after solid open profit
+input double BasketGivebackPips  = 150;  // Allow pullback before harvest (not too tight)
 
 input group "===== Basket SL/TP Modify Retry ====="
 input int ModifyRetryMax                = 3;
