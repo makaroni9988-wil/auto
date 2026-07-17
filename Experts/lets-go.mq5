@@ -29,7 +29,6 @@
 #property version   "4.72"
 // v4.72: Fix right-corner panel flip — CORNER_RIGHT_UPPER measures X from the
 //        right edge, so chips are mirrored to keep the same LTR order as left.
-// v4.71: Panel tidy — single full-width title (click collapses; no extra � chips are mirrored to keep the same LTR order as left.
 // v4.71: Panel tidy — single full-width title (click collapses; no extra ▾
 //        chip), mode row is 4 even chips (no wrapped/stacked Conf/AND look).
 // v4.70: Neat journal logging same as 2nd/3rd/fibo-gun — Tag() on every
