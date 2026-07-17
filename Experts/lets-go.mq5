@@ -20,11 +20,17 @@
 //|     and/or swing SL (g_BosMode + tighten-only) — first hit closes. |
 //|   - Optional chip panel: click toggles, remembers via GV,         |
 //|     left/right corner, no blink on TF change, self-heals.        |
+//|   - Journal Tag = "lets-go #magic SYMBOL" (same style as 2nd/3rd).|
+//|     Push: INIT FAILED + BASKET CLOSED only. InpDebugLog = panel. |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.60"
+#property version   "4.70"
+// v4.70: Neat journal logging same as 2nd/3rd/fibo-gun — Tag() on every
+//        line (lets-go #magic SYMBOL), LogInfo for OPEN/CLOSE/FAIL/INIT/
+//        BLOCKED/LINES, push only INIT FAILED + BASKET CLOSED, panel chatter
+//        behind InpDebugLog.
 // v4.60: Best-in-class chip panel — uncle-style input fingerprint memory,
 //        quiet TF init, light paint refresh, collapse, tooltips, click guard,
 //        account+symbol+magic GV scope, no-blink + self-heal.
@@ -240,6 +246,9 @@ input int ModifyRetryMax                = 3;
 input int ModifyRetryDelayMs            = 500;
 input int MaxConsecutiveRetryCooldownMs = 2000;
 
+input group "===== Logging ====="
+input bool InpDebugLog = false; // Extra panel / restore chatter (trade lines always on)
+
 
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
 ENUM_CONF_MODE g_ConfluenceMode;
@@ -297,12 +306,15 @@ double g_pendingSL         = 0;
 double g_pendingTP         = 0;
 ulong  g_lastModifyBurstMs = 0;
 
-//====================== PUSH NOTIFICATIONS ======================
+//====================== LOGGING / PUSH (same style as 2nd / 3rd / fibo-gun) ======================
+// Journal example:  lets-go #777 EURUSD | OPEN BUY 0.01 @ ...
 string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
-void LogInfo(const string msg) { Print(Tag(), " | ", msg); }
+void LogInfo(const string msg)  { Print(Tag(), " | ", msg); }
+void LogDebug(const string msg) { if(InpDebugLog) Print(Tag(), " | ", msg); }
 
 void NotifyPush(const string msg)
 {
+   // Important only: callers already limit to INIT FAILED + BASKET CLOSED.
    if(!SendNotification(msg))
       LogInfo("PUSH FAILED - " + msg);
 }
@@ -579,7 +591,7 @@ void RuntimeLoadFromInputsThenGV()
       // Inputs unchanged -> restore last clicks
       RuntimeLoadFromGV();
       if(!g_quietInit)
-         Print(Tag(), " | PANEL memory restored (inputs unchanged)");
+         LogDebug("PANEL memory restored (inputs unchanged)");
    }
    else
    {
@@ -589,7 +601,7 @@ void RuntimeLoadFromInputsThenGV()
       GlobalVariableSet(kFp, fpHash);
       RuntimeSaveAllToGV();
       if(!g_quietInit)
-         Print(Tag(), " | PANEL defaults from Inputs (fresh or inputs changed)");
+         LogDebug("PANEL defaults from Inputs (fresh or inputs changed)");
    }
 }
 
@@ -934,7 +946,7 @@ bool PanelHandleClick(const string sparam)
       else PanelPaintState();
       ChartRedraw(0);
       if(!g_quietInit)
-         Print(Tag(), " | PANEL ", id);
+         LogDebug("PANEL " + id);
    }
    return true;
 }
@@ -957,10 +969,11 @@ int OnInit()
    if(PivotLeftBars < 1 || PivotRightBars < 1)
    {
       LogInfo("INIT FAILED - PivotLeftBars/PivotRightBars must be >= 1");
+      NotifyPush(Tag() + ": INIT FAILED - PivotLeftBars/PivotRightBars must be >= 1");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(!g_TradeBuy && !g_TradeSell && !g_quietInit)
-      Print(Tag(), " | NOTE Buy and Sell both off — enable from panel/inputs to trade.");
+      LogInfo("NOTE Buy and Sell both off — enable from panel/inputs to trade.");
 
    // With the chip panel, pre-create ALL handles so live toggles work without reattach.
    const bool prepAll = ShowPanel;
@@ -981,7 +994,7 @@ int OnInit()
                           g_stoch2, g_rsi2, g_macd2, g_emaF2, g_emaS2, g_atr2, "TF2"))
          return(INIT_FAILED);
       if(PeriodSeconds(g_tf2) == PeriodSeconds(g_tf1) && !g_quietInit)
-         Print(Tag(), " | NOTE TF1 and TF2 are the same period — confluence adds no extra info.");
+         LogInfo("NOTE TF1 and TF2 are the same period — confluence adds no extra info.");
    }
 
    if(prepAll || g_UseMAFilter || g_UseVirtualMaSL)
@@ -1002,6 +1015,7 @@ int OnInit()
       if(g_atr1 == INVALID_HANDLE)
       {
          LogInfo("INIT FAILED - TF1 ATR");
+         NotifyPush(Tag() + ": INIT FAILED - TF1 ATR");
          return(INIT_FAILED);
       }
    }
@@ -1013,12 +1027,19 @@ int OnInit()
    if(!g_quietInit)
    {
       string mode = (g_ConfluenceMode == CONF_TF1_ONLY) ? "TF1_ONLY" : "TF1_AND_TF2";
-      Print(Tag(), " | INIT ", mode, " TF1=", EnumToString(g_tf1),
-            " TF2=", EnumToString(g_tf2), " BosMode=", EnumToString(g_BosMode),
-            " | panel=", (ShowPanel ? (PanelSide == PANEL_SIDE_LEFT ? "LEFT" : "RIGHT") : "off"));
+      LogInfo("INIT " + mode
+              + " TF1=" + EnumToString(g_tf1)
+              + " TF2=" + EnumToString(g_tf2)
+              + " BosMode=" + EnumToString(g_BosMode)
+              + " | Buy=" + (g_TradeBuy ? "ON" : "OFF")
+              + " Sell=" + (g_TradeSell ? "ON" : "OFF")
+              + " | MaSL=" + (g_UseVirtualMaSL ? "ON" : "OFF")
+              + " SwSL=" + (g_UseSwingVirtualSL ? "ON" : "OFF")
+              + " Trail=" + (g_UseBasketTP ? "ON" : "OFF")
+              + " | panel=" + (ShowPanel ? (PanelSide == PANEL_SIDE_LEFT ? "LEFT" : "RIGHT") : "off"));
       if(_Period != g_tf1)
-         Print(Tag(), " | NOTE chart TF differs from TF1 (", EnumToString(g_tf1),
-               "). Signal clock runs on TF1.");
+         LogInfo("NOTE chart TF differs from TF1 (" + EnumToString(g_tf1)
+                 + "). Signal clock runs on TF1.");
    }
 
    // Adopt existing panel on TF change (no delete/rebuild blink)
@@ -1806,8 +1827,7 @@ void DiagBlock(const string reason)
 {
    if(g_lastDiagBar == g_lastBarTime) return;
    g_lastDiagBar = g_lastBarTime;
-   Print(Tag(), " | BLOCKED ", reason,
-         " | signal=", (g_signalIsBuy ? "BUY" : "SELL"));
+   LogInfo("BLOCKED " + reason + " | signal=" + (g_signalIsBuy ? "BUY" : "SELL"));
 }
 
 void TryEnter()
@@ -1857,7 +1877,7 @@ void LogGuardOnce(const string msg)
 {
    if(TimeCurrent() - g_lastGuardLogTime < 300) return;
    g_lastGuardLogTime = TimeCurrent();
-   Print(Tag(), " | ", msg);
+   LogInfo(msg);
 }
 
 bool IsExpertTradingEnabled()
@@ -2108,9 +2128,9 @@ void ApplyBasketLines(double sl, double tp)
    bool tpMoved = (MathAbs(tp - g_basketTP) > tol);
 
    if(slMoved || tpMoved)
-      Print(Tag(), " | LINES SL ", DoubleToString(g_basketSL, _Digits), " -> ", DoubleToString(sl, _Digits),
-            " | TP ", DoubleToString(g_basketTP, _Digits), " -> ", DoubleToString(tp, _Digits),
-            " (tighter update / wider ignored)");
+      LogInfo("LINES SL " + DoubleToString(g_basketSL, _Digits) + " -> " + DoubleToString(sl, _Digits)
+              + " | TP " + DoubleToString(g_basketTP, _Digits) + " -> " + DoubleToString(tp, _Digits)
+              + " (tighter update / wider ignored)");
 
    // targets are PENDING until every ticket is confirmed by the broker
    g_pendingSL     = sl;
