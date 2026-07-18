@@ -20,7 +20,7 @@
 //|   TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.01"
+#property version   "1.02"
 // v1.00: First release. H1 S/R + M5 bounce/break-retest entry.
 
 #include <Trade\Trade.mqh>
@@ -78,7 +78,7 @@ enum ENUM_SL_TYPE
    SL_FIXED,      // Fixed only: broker pip-cap SL, no MA exit
    SL_MA_VIRTUAL  // Fixed cap on broker + VIRTUAL MA exit watched by the EA
 };
-input ENUM_SL_TYPE SLType         = SL_MA_VIRTUAL; // SL type: fixed only, or fixed + virtual MA exit
+input ENUM_SL_TYPE SLType         = SL_FIXED; // SL type: fixed only, or fixed + virtual MA exit
 input double       SLMABufferPips = 100;           // Virtual MA exit: room BEYOND the MA before closing (0 = exit at MA touch)
 // SL_MA_VIRTUAL uses the SAME MA as the entry filter above (period/method/price).
 // The BROKER SL line stays the fixed pip cap in BOTH modes — that is the

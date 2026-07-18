@@ -29,7 +29,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.28"
+#property version   "5.29"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -234,7 +234,7 @@ input bool           UseVirtualMaSL = false;     // Virtual MA stop ON/OFF
 input ENUM_MASL_LINE MaSLLine       = MASL_SLOW; // Default Fast/Slow (panel)
 input double         SLMABufferPips = 100;       // MA SL buffer (pips)
 
-input bool          UseSwingVirtualSL = true;        // Virtual swing stop (tighten-only)
+input bool          UseSwingVirtualSL = false;       // Virtual swing stop (tighten-only)
 input ENUM_BOS_MODE SwingSLMode       = BOS_FRACTAL; // Swing SL engine (independent of BosMode)
 input double        SwingSLBufferPips = 100;         // Air beyond swing (pips)
 
