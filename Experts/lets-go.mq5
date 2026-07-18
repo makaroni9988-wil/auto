@@ -23,7 +23,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.02"
+#property version   "5.03"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -102,7 +102,8 @@ input group "===== MA (one system: ma / m1 / m2 + MaSL lines) ====="
 // MACheckMode applies to ma / m1 / m2 (not dead on m1/m2):
 //   RUNNING     = live side check only.
 //   CANDLE_CLOSE = live side + last closed bar must confirm.
-// Shared identity for every MA handle. Risk row only toggles MaSL + Fast/Slow.
+// TF1 uses these settings; TF2 shares them unless TF2 MA Override is ON.
+// Risk row only toggles MaSL + Fast/Slow.
 enum ENUM_MA_STYLE
 {
    MA_STYLE_LIVE,   // ma  — live price vs single MA
@@ -132,6 +133,12 @@ input int                 MaFastPeriod   = 13;  // m2 fast
 input int                 MaSlowPeriod   = 34;  // m2 slow
 input ENUM_TREND_MODE     MaTrendMode    = TREND_FOLLOW; // m1 / m2
 input double              MaMinDiffPips  = 100; // m2: 0 = any separation
+
+input group "===== TF2 MA Override (off = share MA settings above) ====="
+input bool TF2_MA_UseOverride = false; // Independent TF2 MA periods
+input int  TF2_MaPeriod       = 55;    // TF2 single line (ma + m1)
+input int  TF2_MaFastPeriod   = 13;    // TF2 m2 fast
+input int  TF2_MaSlowPeriod   = 55;    // TF2 m2 slow
 
 input group "===== S/R Pivot Entry (TF1 entry; levels own or TF2) ====="
 input int    PivotLeftBars       = 5;
@@ -246,7 +253,8 @@ input bool PanelStartCollapsed   = false; // Start minimized
 input uint PanelClickGuardMs     = 200;   // Double-click guard (ms)
 
 input group "===== Logging ====="
-input bool InpDebugLog = false; // Panel clicks + memory notes (trade lines always on)
+input bool InpDetailedBlockedLog = true;  // BLOCKED: enabled modules + fib leg details
+input bool InpDebugLog           = false; // Panel clicks + memory notes
 
 
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
@@ -369,6 +377,7 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
                      const bool useCross, const bool useClassic,
                      const bool useMacd, const bool useRsi, const bool useMA,
                      const bool useFib, const bool useBos,
+                     const int maPeriod, const int maFastPeriod, const int maSlowPeriod,
                      int &hStoch, int &hRsi, int &hMacd,
                      int &hMaSingle, int &hMaFast, int &hMaSlow, int &hAtr,
                      const string label)
@@ -406,9 +415,9 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
    // Single + fast + slow so panel can cycle ma/m1/m2 (and MaSL Fast/Slow) without reattach.
    if(useMA)
    {
-      hMaSingle = iMA(_Symbol, tf, MathMax(1, MaPeriod),     MaShift, MaMethod, MaAppliedPrice);
-      hMaFast   = iMA(_Symbol, tf, MathMax(1, MaFastPeriod), MaShift, MaMethod, MaAppliedPrice);
-      hMaSlow   = iMA(_Symbol, tf, MathMax(1, MaSlowPeriod), MaShift, MaMethod, MaAppliedPrice);
+      hMaSingle = iMA(_Symbol, tf, MathMax(1, maPeriod),     MaShift, MaMethod, MaAppliedPrice);
+      hMaFast   = iMA(_Symbol, tf, MathMax(1, maFastPeriod), MaShift, MaMethod, MaAppliedPrice);
+      hMaSlow   = iMA(_Symbol, tf, MathMax(1, maSlowPeriod), MaShift, MaMethod, MaAppliedPrice);
       if(hMaSingle == INVALID_HANDLE || hMaFast == INVALID_HANDLE || hMaSlow == INVALID_HANDLE)
       {
          LogInfo("INIT FAILED - " + label + " MA");
@@ -496,6 +505,9 @@ string PanelInputFingerprint()
         + IntegerToString((int)TF2_UseRsiBias) + IntegerToString((int)TF2_UseMA) + "|"
         + IntegerToString((int)SrLevelsFromTF2) + "|"
         + IntegerToString((int)MaStyle) + IntegerToString((int)MaMethod)
+        + IntegerToString((int)TF2_MA_UseOverride)
+        + IntegerToString(TF2_MaPeriod) + IntegerToString(TF2_MaFastPeriod)
+        + IntegerToString(TF2_MaSlowPeriod)
         + IntegerToString((int)MaSLLine) + "|"
         + IntegerToString((int)UseVirtualMaSL)
         + IntegerToString((int)UseSwingVirtualSL) + IntegerToString((int)UseBasketTP);
@@ -1160,6 +1172,7 @@ int OnInit()
                        prepAll || MaEnabled(g_TF1_MA) || g_UseVirtualMaSL,
                        prepAll || g_TF1_UseFibZone || (g_UseSwingVirtualSL && g_SwingSLMode != BOS_FRACTAL),
                        prepAll || g_TF1_UseBos || g_UseSwingVirtualSL,
+                       MaPeriod, MaFastPeriod, MaSlowPeriod,
                        g_stoch1, g_rsi1, g_macd1, g_ma1, g_maF1, g_maS1, g_atr1, "TF1"))
       return(INIT_FAILED);
 
@@ -1171,6 +1184,9 @@ int OnInit()
                           prepAll || g_TF2_UseMacdBias, prepAll || g_TF2_UseRsiBias,
                           prepAll || MaEnabled(g_TF2_MA),
                           prepAll || g_TF2_UseFibZone, false, // no TF2 BOS
+                          TF2_MA_UseOverride ? TF2_MaPeriod     : MaPeriod,
+                          TF2_MA_UseOverride ? TF2_MaFastPeriod : MaFastPeriod,
+                          TF2_MA_UseOverride ? TF2_MaSlowPeriod : MaSlowPeriod,
                           g_stoch2, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2, "TF2"))
          return(INIT_FAILED);
       if(PeriodSeconds(g_tf2) == PeriodSeconds(g_tf1) && !g_quietInit)
@@ -1210,6 +1226,11 @@ int OnInit()
               + (g_UseVirtualMaSL ? ("/" + ((g_MaSLLine == MASL_FAST) ? "Fast" : "Slow")) : "")
               + " SwSL=" + (g_UseSwingVirtualSL ? "ON" : "OFF")
               + " Trail=" + (g_UseBasketTP ? "ON" : "OFF")
+              + " | TF2MA=" + (TF2_MA_UseOverride
+                                ? ("override " + IntegerToString(TF2_MaPeriod)
+                                   + "/" + IntegerToString(TF2_MaFastPeriod)
+                                   + "/" + IntegerToString(TF2_MaSlowPeriod))
+                                : "shared")
               + " | panel=" + (ShowPanel ? ("ON inset " + IntegerToString(PanelInsetX) + "," + IntegerToString(PanelInsetY)) : "off"));
       if(_Period != g_tf1)
          LogInfo("NOTE chart TF differs from TF1 (" + EnumToString(g_tf1)
@@ -2085,6 +2106,73 @@ ENUM_TIMEFRAMES SrLevelsTf()
    return g_SrLevelsFromTF2 ? g_tf2 : g_tf1;
 }
 
+string MaStateTag(const int state)
+{
+   if(state == MA_LIVE)   return "ma";
+   if(state == MA_SINGLE) return "m1";
+   if(state == MA_DOUBLE) return "m2";
+   return "";
+}
+
+void AddModuleTag(string &list, const string tag)
+{
+   if(StringLen(tag) == 0) return;
+   if(StringLen(list) > 0) list += ",";
+   list += tag;
+}
+
+string EnabledModulesContext()
+{
+   string tf1 = "";
+   if(g_TF1_UseStochCross)    AddModuleTag(tf1, "stX");
+   if(g_TF1_UseStochClassic)  AddModuleTag(tf1, "stC");
+   if(g_TF1_UseSrBounce)      AddModuleTag(tf1, "srB");
+   if(g_TF1_UseSrBreakRetest) AddModuleTag(tf1, "srR");
+   if(g_TF1_UseFibZone)       AddModuleTag(tf1, "fib");
+   if(g_TF1_UseMacdBias)      AddModuleTag(tf1, "macd");
+   if(g_TF1_UseRsiBias)       AddModuleTag(tf1, "rsi");
+   if(MaEnabled(g_TF1_MA))    AddModuleTag(tf1, MaStateTag(g_TF1_MA));
+   if(g_TF1_UseBos)           AddModuleTag(tf1, "bos");
+
+   string out = " | TF1=" + (StringLen(tf1) > 0 ? tf1 : "none");
+   if(g_ConfluenceMode == CONF_TF1_AND_TF2)
+   {
+      string tf2 = "";
+      if(g_TF2_UseStochCross)   AddModuleTag(tf2, "stX");
+      if(g_TF2_UseStochClassic) AddModuleTag(tf2, "stC");
+      if(g_TF2_UseFibZone)      AddModuleTag(tf2, "fib");
+      if(g_TF2_UseMacdBias)     AddModuleTag(tf2, "macd");
+      if(g_TF2_UseRsiBias)      AddModuleTag(tf2, "rsi");
+      if(MaEnabled(g_TF2_MA))   AddModuleTag(tf2, MaStateTag(g_TF2_MA));
+      out += " | TF2=" + (StringLen(tf2) > 0 ? tf2 : "none");
+   }
+   return out;
+}
+
+string FibBlockedContext()
+{
+   string out = "";
+   if(g_TF1_UseFibZone)
+   {
+      bool have = false, bull = false, bos = false;
+      double older = 0, newer = 0;
+      if(ScanFibLeg(g_tf1, g_atr1, have, bull, older, newer, bos) && have)
+         out += " | TF1fib leg=" + (bull ? "BULL" : "BEAR")
+              + " anchor=" + DoubleToString(newer, _Digits)
+              + " bos=" + (bos ? "Y" : "N");
+   }
+   if(g_ConfluenceMode == CONF_TF1_AND_TF2 && g_TF2_UseFibZone)
+   {
+      bool have = false, bull = false, bos = false;
+      double older = 0, newer = 0;
+      if(ScanFibLeg(g_tf2, g_atr2, have, bull, older, newer, bos) && have)
+         out += " | TF2fib leg=" + (bull ? "BULL" : "BEAR")
+              + " anchor=" + DoubleToString(newer, _Digits)
+              + " bos=" + (bos ? "Y" : "N");
+   }
+   return out;
+}
+
 void UpdateSignal()
 {
    g_haveSignal      = false;
@@ -2167,7 +2255,11 @@ void DiagBlock(const string reason)
    // One line per bar when a signal fired but entry was still blocked.
    if(g_lastDiagBar == g_lastBarTime) return;
    g_lastDiagBar = g_lastBarTime;
-   LogInfo("BLOCKED " + reason + " | signal=" + (g_signalIsBuy ? "BUY" : "SELL"));
+   string msg = "BLOCKED " + reason
+              + " | signal=" + (g_signalIsBuy ? "BUY" : "SELL");
+   if(InpDetailedBlockedLog)
+      msg += EnabledModulesContext() + FibBlockedContext();
+   LogInfo(msg);
 }
 
 void TryEnter()
