@@ -11,8 +11,7 @@
 //|           Signal clock = TF1 new bar.                            |
 //|           Within Stoch: cross OR classic. Within S/R: bounce OR  |
 //|           break-retest. Families AND with each other.            |
-//|           MA: one module per TF — panel OFF / ma / m1 / m2.      |
-//|             ma = live price vs single MA (gun-style).            |
+//|           MA: one module per TF — panel ma (off) / m1 / m2.      |
 //|             m1 = single MA trend. m2 = fast vs slow.             |
 //|           MaSL: ON/OFF + Fast/Slow exit line (TF1 MA lines).     |
 //|           BosMode / SwingSLMode independent. FibZone may arm on  |
@@ -24,7 +23,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.96"
+#property version   "4.97"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -783,45 +782,48 @@ string SwMdTip()
    return "Swing SL method: Zigzag (click to cycle; independent of entry BOS)";
 }
 
+// Panel MA chip: off = "ma" (gray); on = "m1" / "m2" (green).
 string MaChipText(const int state)
 {
-   if(state == MA_LIVE)   return "ma";
    if(state == MA_SINGLE) return "m1";
    if(state == MA_DOUBLE) return "m2";
-   return "MA";
+   return "ma"; // off (and any non m1/m2)
+}
+
+bool MaChipLit(const int state)
+{
+   return (state == MA_SINGLE || state == MA_DOUBLE);
 }
 
 string MaChipTip(const int state, const string tfTag)
 {
-   if(state == MA_LIVE)
-      return tfTag + " MA: live (price vs single). Click: OFF / ma / m1 / m2";
    if(state == MA_SINGLE)
-      return tfTag + " MA: m1 single trend. Click: OFF / ma / m1 / m2";
+      return tfTag + " MA m1. Click: ma → m1 → m2";
    if(state == MA_DOUBLE)
-      return tfTag + " MA: m2 fast vs slow. Click: OFF / ma / m1 / m2";
-   return tfTag + " MA: OFF. Click: OFF / ma / m1 / m2";
+      return tfTag + " MA m2. Click: ma → m1 → m2";
+   return tfTag + " MA off. Click: ma → m1 → m2";
 }
 
 string MaSLLineChipText()
 {
-   return (g_MaSLLine == MASL_FAST) ? "Fst" : "Slw";
+   return (g_MaSLLine == MASL_FAST) ? "Fast" : "Slow";
 }
 
 string MaSLLineTip()
 {
    if(MaExitUsesSingleLine())
-      return "MaSL line: single MA (ma/m1 — Fst/Slw same line). Click to toggle";
+      return "MaSL line: single MA (Fast/Slow same line). Click to toggle";
    return (g_MaSLLine == MASL_FAST)
-      ? "MaSL line: FAST (m2). Click for slow"
-      : "MaSL line: SLOW (m2). Click for fast";
+      ? "MaSL line: Fast (m2). Click for Slow"
+      : "MaSL line: Slow (m2). Click for Fast";
 }
 
 void PanelCycleMA(int &state, const string gvId)
 {
-   if(state == MA_OFF)         state = MA_LIVE;
-   else if(state == MA_LIVE)   state = MA_SINGLE;
-   else if(state == MA_SINGLE) state = MA_DOUBLE;
-   else                        state = MA_OFF;
+   // Panel: ma (off) → m1 → m2 → ma
+   if(state == MA_SINGLE)      state = MA_DOUBLE;
+   else if(state == MA_DOUBLE) state = MA_OFF;
+   else                        state = MA_SINGLE; // off / live → m1
    PanelSaveInt(gvId, state);
 }
 
@@ -854,7 +856,7 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_macd"),"macd","TF1 entry: MACD bias", g_TF1_UseMacdBias, false);
    PanelStyleChip(PanelObj("T1_rsi"), "rsi", "TF1 entry: RSI bias", g_TF1_UseRsiBias, false);
    PanelStyleChip(PanelObj("T1_ma"), MaChipText(g_TF1_MA), MaChipTip(g_TF1_MA, "TF1 entry"),
-                  MaEnabled(g_TF1_MA), false);
+                  MaChipLit(g_TF1_MA), false);
    PanelStyleChip(PanelObj("T1_bos"), "bos", "TF1 entry: BOS (BosMode)", g_TF1_UseBos, false);
 
    PanelStyleChip(PanelObj("L2"), " TF2 bias", "TF2 bias modules (+TF2 mode only)", true, true);
@@ -866,13 +868,13 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T2_macd"),"macd","TF2 bias: MACD", g_TF2_UseMacdBias, false);
    PanelStyleChip(PanelObj("T2_rsi"), "rsi", "TF2 bias: RSI", g_TF2_UseRsiBias, false);
    PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_TF2_MA), MaChipTip(g_TF2_MA, "TF2 bias"),
-                  MaEnabled(g_TF2_MA), false);
+                  MaChipLit(g_TF2_MA), false);
    PanelStyleChip(PanelObj("T2_bos"), "bos", "TF2 bias: BOS (BosMode)", g_TF2_UseBos, false);
 
    PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
-   PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop ON/OFF (TF1 MA line)", g_UseVirtualMaSL, false);
+   PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop ON/OFF", g_UseVirtualMaSL, false);
    PanelStyleChip(PanelObj("MaLn"), MaSLLineChipText(), MaSLLineTip(), true, true);
-   PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop ON/OFF (green=on)", g_UseSwingVirtualSL, false);
+   PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop ON/OFF", g_UseSwingVirtualSL, false);
    PanelStyleChip(PanelObj("SwMd"), SwMdChipText(), SwMdTip(), true, true);
    PanelStyleChip(PanelObj("Trail"),"Trail","Basket pip trail TP", g_UseBasketTP, false);
 }
@@ -903,7 +905,7 @@ void PanelBuild()
    if(ObjectFind(0, PanelObj("MIN")) >= 0)
       ObjectDelete(0, PanelObj("MIN"));
 
-   const int chipW = 40;
+   const int chipW = 44; // fits Fast / Slow / Trail cleanly
    const int chipH = 18;
    const int gap   = 3;
    const int rowW  = chipW * 5 + gap * 4; // full panel width (5-chip rows)
@@ -911,7 +913,7 @@ void PanelBuild()
    const int x0    = MathMax(0, PanelInsetX);
    int y = MathMax(0, PanelInsetY);
 
-   // 4 equal chips spanning full rowW (mode row + filter/risk 4-chip rows)
+   // 4 equal chips spanning full rowW (mode row + macd/rsi/ma/bos)
    const int quadW    = (rowW - gap * 3) / 4;
    const int quadStep = quadW + gap;
    const int quadLast = rowW - quadStep * 3;
@@ -959,7 +961,7 @@ void PanelBuild()
    y += chipH + gap + 2;
 
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
-   // Full-width 5 chips: MaSL | Fst/Slw | SwSL | SwMd | Trail
+   // Full-width 5: MaSL | Fast/Slow | SwSL | SwMd | Trail
    PanelEnsureButton("MaSL",  x0,            y, chipW, chipH);
    PanelEnsureButton("MaLn",  x0 + step,     y, chipW, chipH);
    PanelEnsureButton("SwSL",  x0 + step * 2, y, chipW, chipH);
@@ -1196,7 +1198,7 @@ int OnInit()
               + " | Buy=" + (g_TradeBuy ? "ON" : "OFF")
               + " Sell=" + (g_TradeSell ? "ON" : "OFF")
               + " | MaSL=" + (g_UseVirtualMaSL ? "ON" : "OFF")
-              + (g_UseVirtualMaSL ? ("/" + ((g_MaSLLine == MASL_FAST) ? "Fst" : "Slw")) : "")
+              + (g_UseVirtualMaSL ? ("/" + ((g_MaSLLine == MASL_FAST) ? "Fast" : "Slow")) : "")
               + " SwSL=" + (g_UseSwingVirtualSL ? "ON" : "OFF")
               + " Trail=" + (g_UseBasketTP ? "ON" : "OFF")
               + " | panel=" + (ShowPanel ? ("ON inset " + IntegerToString(PanelInsetX) + "," + IntegerToString(PanelInsetY)) : "off"));
