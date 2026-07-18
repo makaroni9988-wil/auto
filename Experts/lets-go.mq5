@@ -12,7 +12,8 @@
 //|           LTF Stoch: cross OR classic. S/R: bounce OR retest.    |
 //|           Enabled families AND with each other.                  |
 //|           BOS: scan on own LTF or HTF; engine Zig/Frac/Both;     |
-//|           signal evt/bias. S/R levels: own or HTF (PA = LTF).    |
+//|           signal evt/bias (evt = once per structure-TF bar).     |
+//|           S/R levels: own or HTF (PA = LTF).                     |
 //|           HTF stoch: mid (%K vs pullback) or OS/OB zone.         |
 //|           HTF MA source: own HTF or LTF handles.                 |
 //|           MA: one module per TF — panel m1 / m2.                 |
@@ -27,7 +28,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.15"
+#property version   "5.16"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -366,6 +367,10 @@ bool   g_signalIsBuy = false;
 // True when signal is armed by FibZone leg but price not yet in zone at bar eval.
 // TryEnter re-checks live zone every tick while FibZone is ON.
 bool   g_fibZoneTickGate = false;
+
+// BOS EVENT: last structure-TF closed-bar time already consumed by UpdateSignal.
+// Prevents HTF (or slower) structure breaks from re-firing on every LTF clock tick.
+datetime g_bosEventSeenStructBar = 0;
 
 bool   g_basketArmed = false;
 double g_basketPeak  = 0;
@@ -1993,13 +1998,16 @@ void FibProcessPivot(double price, int pivType, double devPct,
 }
 
 // Scan zigzag leg on tf. Returns false only on data failure.
+// Closed-bar only (same discipline as fractal / S/R): forming bar excluded.
+// bosEventOnLastClosed = current BOS leg's newer pivot confirmed on last closed bar.
 bool ScanFibLeg(const ENUM_TIMEFRAMES tf, const int hAtr,
                 bool &haveLeg, bool &bullishLeg,
                 double &olderPrice, double &newerPrice,
-                bool &bosConfirmed)
+                bool &bosConfirmed, bool &bosEventOnLastClosed)
 {
    haveLeg = false; bullishLeg = false;
    olderPrice = 0; newerPrice = 0; bosConfirmed = false;
+   bosEventOnLastClosed = false;
    if(hAtr == INVALID_HANDLE)
    { LogDebugGuard("dbg_fibleg", "ScanFibLeg " + EnumToString(tf) + ": invalid ATR handle"); return false; }
 
@@ -2028,7 +2036,13 @@ bool ScanFibLeg(const ENUM_TIMEFRAMES tf, const int hAtr,
    int lastZZType = -1;
    olderPrice = 0; newerPrice = 0;
 
-   for(int i = 2 * prd; i < bars; i++)
+   // Non-series: [0]=oldest, [bars-1]=forming. Confirm pivots only with closed bars.
+   const int lastClosed = bars - 2;
+   int newerConfirmBar = -1;
+   double trackedNewer = 0;
+   bool   haveTrackedNewer = false;
+
+   for(int i = 2 * prd; i <= lastClosed; i++)
    {
       int pivotIdx = i - prd;
       if(pivotIdx < prd) continue;
@@ -2048,6 +2062,13 @@ bool ScanFibLeg(const ENUM_TIMEFRAMES tf, const int hAtr,
                              haveLastZZ, lastZZPrice, lastZZType,
                              havePrevZZ, olderPrice, newerPrice,
                              havePrevSwing, prevSwing);
+
+      if(havePrevZZ && (!haveTrackedNewer || newerPrice != trackedNewer))
+      {
+         trackedNewer = newerPrice;
+         haveTrackedNewer = true;
+         newerConfirmBar = i;
+      }
    }
 
    if(!havePrevZZ) return true;
@@ -2059,6 +2080,8 @@ bool ScanFibLeg(const ENUM_TIMEFRAMES tf, const int hAtr,
       if(bullishLeg) bosConfirmed = (newerPrice > prevSwing);
       else           bosConfirmed = (newerPrice < prevSwing);
    }
+   if(bosConfirmed && newerConfirmBar == lastClosed)
+      bosEventOnLastClosed = true;
    return true;
 }
 
@@ -2071,9 +2094,9 @@ bool EvalFibZone(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
    buyOK = false; sellOK = false;
    if(!useIt) { buyOK = true; sellOK = true; return true; }
 
-   bool haveLeg = false, bullish = false, bos = false;
+   bool haveLeg = false, bullish = false, bos = false, bosEvt = false;
    double olderP = 0, newerP = 0;
-   if(!ScanFibLeg(tf, hAtr, haveLeg, bullish, olderP, newerP, bos)) return false;
+   if(!ScanFibLeg(tf, hAtr, haveLeg, bullish, olderP, newerP, bos, bosEvt)) return false;
    if(!haveLeg) return true;
 
    double height = MathAbs(newerP - olderP);
@@ -2204,9 +2227,17 @@ bool ScanFractalStructure(const ENUM_TIMEFRAMES tf,
 
    if(g_BosSignalMode == BOS_SIGNAL_EVENT)
    {
-      // Only the bar that actually breaks structure may enter.
-      if(lastBreakBar == lastClosed && lastBreakDir > 0) buyOK = true;
-      if(lastBreakBar == lastClosed && lastBreakDir < 0) sellOK = true;
+      // Break must be on the latest closed structure bar, and that bar must not
+      // already have been consumed by a prior UpdateSignal (HTF scan + LTF clock).
+      if(lastBreakBar == lastClosed && lastBreakDir != 0)
+      {
+         datetime breakBarTime = rates[lastClosed].time;
+         if(breakBarTime != 0 && breakBarTime != g_bosEventSeenStructBar)
+         {
+            if(lastBreakDir > 0) buyOK = true;
+            if(lastBreakDir < 0) sellOK = true;
+         }
+      }
    }
    else
    {
@@ -2229,10 +2260,23 @@ bool EvalZigzagBos(const ENUM_TIMEFRAMES tf, const int hAtr,
                    bool &buyOK, bool &sellOK)
 {
    buyOK = false; sellOK = false;
-   bool haveLeg = false, bullish = false, bos = false;
+   bool haveLeg = false, bullish = false, bos = false, bosEvt = false;
    double olderP = 0, newerP = 0;
-   if(!ScanFibLeg(tf, hAtr, haveLeg, bullish, olderP, newerP, bos)) return false;
+   if(!ScanFibLeg(tf, hAtr, haveLeg, bullish, olderP, newerP, bos, bosEvt)) return false;
    if(!haveLeg || !bos) return true;
+
+   if(g_BosSignalMode == BOS_SIGNAL_EVENT)
+   {
+      // Same once-per-structure-bar gate as fractal EVENT.
+      if(!bosEvt) return true;
+      datetime breakBarTime = iTime(_Symbol, tf, 1);
+      if(breakBarTime == 0 || breakBarTime == g_bosEventSeenStructBar) return true;
+      buyOK  = bullish;
+      sellOK = !bullish;
+      return true;
+   }
+
+   // BIAS — sticky while zigzag BOS leg holds.
    buyOK  = bullish;
    sellOK = !bullish;
    return true;
@@ -2417,6 +2461,14 @@ string EnabledModulesContext()
    return out;
 }
 
+// Consume current structure-TF closed bar for BOS EVENT (call once per UpdateSignal
+// after both Fib passes, so Pass1/Pass2 can still see the same event).
+void MarkBosEventStructBarSeen()
+{
+   datetime t = iTime(_Symbol, BosStructureTf(), 1);
+   if(t > 0) g_bosEventSeenStructBar = t;
+}
+
 void UpdateSignal()
 {
    g_haveSignal      = false;
@@ -2437,7 +2489,7 @@ void UpdateSignal()
               g_ltf, g_maL, g_maFL, g_maSL, g_atrL,
               bosTf, bosAtr,
               false, srLev, b1, s1))
-      return;
+      return; // data not ready — do not consume BOS EVENT bar
 
    bool b2 = true, s2 = true; // ENTRY_ONLY, or empty HTF bias = pass-through
    if(g_ConfluenceMode == CONF_LTF_AND_HTF && HtfBiasModulesOn())
@@ -2456,7 +2508,7 @@ void UpdateSignal()
                  maTf, hMaS, hMaF, hMaL, g_atrH,
                  g_htf, INVALID_HANDLE,
                  false, g_htf, b2, s2))
-         return;
+         return; // data not ready — do not consume BOS EVENT bar
    }
 
    bool isBuy = false;
@@ -2464,13 +2516,18 @@ void UpdateSignal()
    {
       g_haveSignal  = true;
       g_signalIsBuy = isBuy;
+      MarkBosEventStructBarSeen();
       return;
    }
 
    // Pass 2: FibZone leg-armed only (price may enter zone later this bar).
    const bool wantFibGate = (g_LTF_UseFibZone ||
                              (g_ConfluenceMode == CONF_LTF_AND_HTF && g_HTF_UseFibZone));
-   if(!wantFibGate) return;
+   if(!wantFibGate)
+   {
+      MarkBosEventStructBarSeen();
+      return;
+   }
 
    b1 = false; s1 = false;
    if(!EvalTf(g_ltf,
@@ -2481,7 +2538,7 @@ void UpdateSignal()
               g_ltf, g_maL, g_maFL, g_maSL, g_atrL,
               bosTf, bosAtr,
               true, srLev, b1, s1))
-      return;
+      return; // data not ready — do not consume BOS EVENT bar
 
    b2 = true; s2 = true;
    if(g_ConfluenceMode == CONF_LTF_AND_HTF && HtfBiasModulesOn())
@@ -2499,7 +2556,7 @@ void UpdateSignal()
                  maTf, hMaS, hMaF, hMaL, g_atrH,
                  g_htf, INVALID_HANDLE,
                  true, g_htf, b2, s2))
-         return;
+         return; // data not ready — do not consume BOS EVENT bar
    }
 
    if(ResolveSignalSide(b1 && b2, s1 && s2, isBuy))
@@ -2508,6 +2565,7 @@ void UpdateSignal()
       g_signalIsBuy     = isBuy;
       g_fibZoneTickGate = true; // TryEnter waits for live zone
    }
+   MarkBosEventStructBarSeen();
 }
 
 //====================== ENTRY ======================
@@ -3051,9 +3109,9 @@ bool GetSwingAnchor(const bool isBuy, double &swing, string &engineTag)
    bool   haveZ  = false;
    if(needZ)
    {
-      bool haveLeg = false, bullish = false, bos = false;
+      bool haveLeg = false, bullish = false, bos = false, bosEvt = false;
       double olderP = 0, newerP = 0;
-      if(!ScanFibLeg(g_ltf, g_atrL, haveLeg, bullish, olderP, newerP, bos))
+      if(!ScanFibLeg(g_ltf, g_atrL, haveLeg, bullish, olderP, newerP, bos, bosEvt))
          return false;
       if(haveLeg && olderP > 0)
       {
