@@ -46,7 +46,7 @@
 //|   profit guarantee. Grids carry tail risk — mind MaxLayers.       |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.00"
+#property version   "4.01"
 // v4.00: Cross and classic stoch are now two INDEPENDENT true/false switches —
 //        no more mixing (StochClassicMode AND UseStochFilter inputs removed).
 //        UseStochCross (default true) = the %K/%D cross filter, still
@@ -116,8 +116,8 @@ input int    SlippagePoints  = 20;    // Max deviation for market orders (points
 input long   MagicNumber     = 987;   // EA id
 
 input group "===== Grid Layering ====="
-input int    MaxLayers       = 2;     // Max simultaneous positions this EA owns
-input int    LayerStepPips   = 250;   // Price must push this many pips DEEPER before adding a layer
+input int    MaxLayers       = 1;     // Max simultaneous positions this EA owns
+input int    LayerStepPips   = 200;   // Price must push this many pips DEEPER before adding a layer
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
 input bool   UseBasketTP         = true; // Manage profit as a basket in pips (works alongside per-layer TP)
@@ -165,7 +165,7 @@ enum ENUM_MA_CHECK
    MA_CHECK_CANDLE_CLOSE  // Candle close: last close must confirm too (tighter)
 };
 input bool               UseMAFilter     = true;             // Enable MA direction filter
-input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_RUNNING; // Running or candle-close (tighter)
+input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_CANDLE_CLOSE; // Running or candle-close (tighter)
 input ENUM_MA_METHOD     MA_Method       = MODE_EMA;         // MA type: SMA / EMA / SMMA / LWMA
 input int                MA_Period       = 55;               // MA period
 input int                MA_Shift        = 0;                // MA horizontal shift

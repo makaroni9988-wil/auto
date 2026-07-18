@@ -29,7 +29,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.26"
+#property version   "5.28"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -140,7 +140,7 @@ input ENUM_STO_PRICE          StochPriceField      = STO_LOWHIGH;       // Stoch
 input ENUM_STOCH_CROSS_MODE   StochCrossMode       = STOCH_CROSS_OSOB;  // Cross mode (only used when Stoch cross is ON)
 // Classic OS/OB zone entry style.
 input ENUM_STOCH_CLASSIC_MODE StochClassicMode     = STOCH_CLASSIC_REV; // Classic mode (only used when Stoch classic is ON)
-input double                  StochPullbackLevel   = 50;                // Pullback level (cross PULLBACK mode + HTF mid)
+input double                  StochPullbackLevel   = 50;                // Pullback level (cross PULLBACK mode only; HTF mid has its own input)
 input double                  StochOversoldLevel   = 20;                // Oversold level (cross OSOB start zone + classic buy zone)
 input double                  StochOverboughtLevel = 80;                // Overbought level (cross OSOB start zone + classic sell zone)
 
@@ -179,7 +179,7 @@ input ENUM_APPLIED_PRICE MaAppliedPrice = PRICE_CLOSE; // Applied price
 input int                MaShift        = 0;           // MA horizontal shift
 
 input ENUM_MA_STYLE MaStyle        = MA_STYLE_DOUBLE;    // Default when LTF/HTF UseMA is ON
-input ENUM_MA_CHECK LTF_MACheckMode = MA_CHECK_RUNNING; // LTF Running / CandleClose / ClosedOnly (m1 / m2)
+input ENUM_MA_CHECK LTF_MACheckMode = MA_CHECK_CANDLE_CLOSE; // LTF Running / CandleClose / ClosedOnly (m1 / m2)
 input double        MABufferPips   = 100;                // LTF m1 buffer (pips)
 
 input int MaPeriod     = 34; // Single line (m1)
@@ -194,7 +194,7 @@ input group "===== HTF MA (independent when panel source = own) ====="
 input ENUM_MA_METHOD     HTF_MaMethod       = MODE_EMA;         // HTF own MA method
 input ENUM_APPLIED_PRICE HTF_MaAppliedPrice = PRICE_CLOSE;      // HTF own applied price
 input int                HTF_MaShift        = 0;                // HTF own horizontal shift
-input ENUM_MA_CHECK      HTF_MACheckMode    = MA_CHECK_RUNNING; // HTF own Running / CandleClose / ClosedOnly
+input ENUM_MA_CHECK      HTF_MACheckMode    = MA_CHECK_CANDLE_CLOSE; // HTF own Running / CandleClose / ClosedOnly
 input ENUM_MA_TREND_MODE HTF_MaTrendMode    = MA_TREND_FOLLOW;  // HTF own Follow or Reversal
 input double             HTF_MABufferPips   = 100;              // HTF own m1 buffer (pips)
 input double             HTF_MaMinDiffPips  = 100;              // HTF own m2 minimum separation
@@ -224,7 +224,7 @@ input double FibZoneLevelMin  = 0.382; // FibZone: shallow edge
 input double FibZoneLevelMax  = 0.618; // FibZone: deep edge
 
 input int                 BosFractalPeriod   = 3;              // Fractal: bars each side
-input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK; // Fractal break type
+input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_CLOSE; // Fractal break type
 input int                 BosFractalLookback = 200;            // Fractal: bars scanned
 
 input group "===== Stop / Exit ====="
@@ -253,8 +253,8 @@ input int  LayerStepPips = 200;   // Min adverse move before next layer
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
 input bool   UseBasketTP        = true; // Manage profit as a basket in pips (works alongside broker TP)
-input double BasketStartPips    = 500;  // Arm trail after this open profit
-input double BasketGivebackPips = 200;  // Pullback from peak before close
+input double BasketStartPips    = 200;  // Arm trail after this open profit
+input double BasketGivebackPips = 50;   // Pullback from peak before close
 
 input group "===== Basket SL/TP Modify Retry ====="
 input int ModifyRetryMax                = 3;    // Modify retry max (attempts per burst)
@@ -1999,7 +1999,7 @@ bool EvalStoch(const int hStoch, const bool useCross, const bool useClassic,
    return true;
 }
 
-// HTF stoch zone: mid (%K vs StochPullbackLevel) or OS/OB (buy OS / sell OB).
+// HTF stoch zone: mid (%K vs HTF_StochMidLevel) or OS/OB (buy OS / sell OB).
 bool EvalStochZone(const int hStoch, const bool useIt, const bool obOs,
                    const ENUM_STOCH_CLASSIC_MODE obOsMode,
                    const double midLevel, const double oversoldLevel,

@@ -32,7 +32,7 @@
 //|   profit guarantee. Grids carry tail risk — mind MaxLayers.       |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "3.50"
+#property version   "3.51"
 // v3.50: MA filter rebuilt around the CURRENT moment, not bar-1 history.
 //        Both modes require live price on the correct side of the MA NOW
 //        (+/- MABufferPips) -> entries can never print on the wrong side of
@@ -60,20 +60,20 @@ input double ZoneLevelMax   = 0.618;  // Deep edge of zone
 
 input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
 input double LotSize         = 0.05;  // Lots per layer
-input int    MaxStopLossPips = 300;   // SL cap in pips from AVG entry (vs fibo anchor, closer wins)
+input int    MaxStopLossPips = 500;   // SL cap in pips from AVG entry (vs fibo anchor, closer wins)
 input int    TakeProfitPips  = 3000;  // Basket TP: avg entry +/- this many pips (0 = no TP line)
 input int    MaxSpreadPips   = 0;     // Skip new entries above this spread (0 = ignore)
 input int    SlippagePoints  = 20;    // Max deviation for market orders (points)
 input long   MagicNumber     = 789;   // EA id
 
 input group "===== Grid Layering ====="
-input int    MaxLayers       = 2;     // Max simultaneous positions this EA owns
-input int    LayerStepPips   = 100;   // Price must push this many pips DEEPER before adding a layer
+input int    MaxLayers       = 1;     // Max simultaneous positions this EA owns
+input int    LayerStepPips   = 200;   // Price must push this many pips DEEPER before adding a layer
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
 input bool   UseBasketTP         = true; // Manage profit as a basket in pips (works alongside per-layer TP)
-input double BasketStartPips     = 300;  // Arm the basket trail once total pips >= this
-input double BasketGivebackPips  = 300;  // Close ALL layers if basket falls this many pips from its peak
+input double BasketStartPips     = 200;  // Arm the basket trail once total pips >= this
+input double BasketGivebackPips  = 50;   // Close ALL layers if basket falls this many pips from its peak
 
 input group "===== Session Filter (WIB / Jakarta time) ====="
 input int  SessionTZOffset       = 7;    // UTC offset for inputs below (7 = WIB Jakarta)
@@ -116,12 +116,12 @@ enum ENUM_MA_CHECK
    MA_CHECK_CANDLE_CLOSE  // Candle close: last close must confirm too (tighter)
 };
 input bool               UseMAFilter     = true;             // Enable MA direction filter
-input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_RUNNING; // Running or candle-close (tighter)
+input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_CANDLE_CLOSE; // Running or candle-close (tighter)
 input ENUM_MA_METHOD     MA_Method       = MODE_EMA;         // MA type: SMA / EMA / SMMA / LWMA
 input int                MA_Period       = 20;               // MA period
 input int                MA_Shift        = 0;                // MA horizontal shift
 input ENUM_APPLIED_PRICE MA_AppliedPrice = PRICE_CLOSE;      // Applied price
-input double             MABufferPips    = 50;               // Price must clear the MA by this many pips (0 = plain cross)
+input double             MABufferPips    = 100;              // Price must clear the MA by this many pips (0 = plain cross)
 // Rule (BOTH modes): live price NOW must be above MA+buffer for BUYS,
 // below MA-buffer for SELLS — an entry can never sit on the wrong side of
 // the MA you see on the chart.

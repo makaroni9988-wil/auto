@@ -59,7 +59,7 @@
 //|   profit guarantee. Grids carry tail risk - mind MaxLayers.       |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.35"
+#property version   "1.36"
 // v1.35: Cross and classic stoch are now two INDEPENDENT true/false switches —
 //        no more mixing (StochClassicMode input removed). UseStochCross
 //        (default true) = the %K/%D cross trigger, still qualified by
@@ -148,7 +148,7 @@ enum ENUM_MA_CHECK
    MA_CHECK_CANDLE_CLOSE  // Candle close: last close must confirm too (tighter)
 };
 input bool               UseMAFilter     = true;             // Enable MA direction filter
-input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_RUNNING; // Running or candle-close (tighter)
+input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_CANDLE_CLOSE; // Running or candle-close (tighter)
 input ENUM_MA_METHOD     MA_Method       = MODE_EMA;         // MA type: SMA / EMA / SMMA / LWMA
 input int                MA_Period       = 34;               // MA period
 input int                MA_Shift        = 0;                // MA horizontal shift
@@ -167,7 +167,7 @@ enum ENUM_SL_TYPE
    SL_MA_VIRTUAL  // Fixed cap on broker + VIRTUAL MA exit watched by the EA
 };
 input ENUM_SL_TYPE SLType         = SL_MA_VIRTUAL; // SL type: fixed only, or fixed + virtual MA exit
-input double       SLMABufferPips = 50;            // Virtual MA exit: room BEYOND the MA before closing (0 = exit at MA touch)
+input double       SLMABufferPips = 100;           // Virtual MA exit: room BEYOND the MA before closing (0 = exit at MA touch)
 // SL_MA_VIRTUAL uses the SAME MA as the entry filter above (period/method/price).
 // The BROKER SL line stays the fixed pip cap in BOTH modes — that is the
 // backup if the terminal/EA is offline, same idea as the basket pip trail.
@@ -178,14 +178,14 @@ input double       SLMABufferPips = 50;            // Virtual MA exit: room BEYO
 
 input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
 input double LotSize         = 0.01;  // Lots per layer
-input int    MaxStopLossPips = 300;   // SL cap in pips from AVG entry
+input int    MaxStopLossPips = 500;   // SL cap in pips from AVG entry
 input int    TakeProfitPips  = 3000;  // Basket TP: avg entry +/- this many pips (0 = no TP line)
 input int    MaxSpreadPips   = 0;     // Skip new entries above this spread (0 = ignore)
 input int    SlippagePoints  = 20;    // Max deviation for market orders (points)
 input long   MagicNumber     = 222;   // EA id
 
 input group "===== Grid Layering ====="
-input int    MaxLayers       = 2;     // Max simultaneous positions this EA owns
+input int    MaxLayers       = 1;     // Max simultaneous positions this EA owns
 input int    LayerStepPips   = 200;   // Price must push this many pips DEEPER before adding a layer
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
