@@ -11,8 +11,10 @@
 //|           Signal clock = TF1 new bar.                            |
 //|           Within Stoch: cross OR classic. Within S/R: bounce OR  |
 //|           break-retest. Families AND with each other.            |
-//|           MA entry: shared method/price/shift; live gate + m1/m2 |
-//|           trend (panel style). MaSL exits on Fast/Slow line.     |
+//|           MA: one module per TF — panel OFF / ma / m1 / m2.      |
+//|             ma = live price vs single MA (gun-style).            |
+//|             m1 = single MA trend. m2 = fast vs slow.             |
+//|           MaSL: ON/OFF + Fast/Slow exit line (TF1 MA lines).     |
 //|           BosMode / SwingSLMode independent. FibZone may arm on  |
 //|           bar and re-check zone every tick (gun/bomb style).     |
 //|  Exits  : broker pip-cap; optional virtual MaSL and/or SwSL.     |
@@ -22,7 +24,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.95"
+#property version   "4.96"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -46,7 +48,7 @@ input bool TradeSell = true;  // Allow SELL
 
 input group "===== TF1 Entry (every ON module must pass — all AND) ====="
 // Stoch: cross OR classic if both on. S/R: bounce OR retest if both on.
-// Those families then AND with Fib / MACD / RSI / MaTrend / BOS.
+// Those families then AND with Fib / MACD / RSI / MA / BOS.
 input bool TF1_UseStochCross     = false; // Stoch cross
 input bool TF1_UseStochClassic   = false; // Stoch classic OS/OB
 input bool TF1_UseSrBounce       = false; // S/R bounce
@@ -54,7 +56,7 @@ input bool TF1_UseSrBreakRetest  = false; // S/R break-retest
 input bool TF1_UseFibZone        = false; // Fib golden zone
 input bool TF1_UseMacdBias       = false; // MACD bias
 input bool TF1_UseRsiBias        = false; // RSI bias
-input bool TF1_UseMaTrend        = false; // MA trend (m1/m2)
+input bool TF1_UseMA             = false; // MA module (panel: ma / m1 / m2)
 input bool TF1_UseBos            = true;  // BOS (see BosMode)
 
 input group "===== TF2 Bias (every ON module must pass — all AND) ====="
@@ -66,7 +68,7 @@ input bool TF2_UseSrBreakRetest  = false; // S/R break-retest
 input bool TF2_UseFibZone        = false; // Fib golden zone
 input bool TF2_UseMacdBias       = false; // MACD bias
 input bool TF2_UseRsiBias        = false; // RSI bias
-input bool TF2_UseMaTrend        = false; // MA trend (m1/m2)
+input bool TF2_UseMA             = false; // MA module (panel: ma / m1 / m2)
 input bool TF2_UseBos            = false; // BOS (see BosMode)
 
 input group "===== Stochastic (shared params, per-TF handles) ====="
@@ -95,39 +97,41 @@ input int                 MACDSlowEMA      = 26;
 input int                 MACDSignalPeriod = 9;
 input ENUM_APPLIED_PRICE  MACDAppliedPrice = PRICE_CLOSE;
 
-input group "===== MA Entry (shared identity; live gate + m1/m2 trend) ====="
-// Shared method / price / shift for live gate and all trend handles.
-// Panel: live MA chip = gate; TF row m1/m2 = trend style (OFF / Single / Double).
-enum ENUM_MA_TREND_STYLE
+input group "===== MA (one system: ma / m1 / m2 + MaSL lines) ====="
+// One module per TF. Panel chip cycles OFF → ma → m1 → m2.
+//   ma = live price vs single MA (Running / CandleClose).
+//   m1 = single MA trend (Follow / Reversal).
+//   m2 = fast vs slow trend (Follow / Reversal).
+// Shared identity for every MA handle. Risk row only toggles MaSL + Fast/Slow.
+enum ENUM_MA_STYLE
 {
-   MA_TREND_SINGLE, // Price vs one MA
-   MA_TREND_DOUBLE  // Fast vs slow MA
+   MA_STYLE_LIVE,   // ma  — live price vs single MA
+   MA_STYLE_SINGLE, // m1  — single MA trend
+   MA_STYLE_DOUBLE  // m2  — fast vs slow
 };
 enum ENUM_TREND_MODE
 {
-   TREND_FOLLOW,    // Single: price vs MA side. Double: fast vs slow side
+   TREND_FOLLOW,    // Price/fast on buy side of MA/slow
    TREND_REVERSAL   // Fade the follow rule
 };
 enum ENUM_MA_CHECK
 {
-   MA_CHECK_RUNNING,      // Live price vs MA (+/- buffer)
-   MA_CHECK_CANDLE_CLOSE  // Last close must confirm too
+   MA_CHECK_RUNNING,      // ma: live price vs MA (+/- buffer)
+   MA_CHECK_CANDLE_CLOSE  // ma: last close must confirm too
 };
-input ENUM_MA_METHOD      MaMethod       = MODE_EMA;     // SMA / EMA / SMMA / LWMA (all entry MA)
-input ENUM_APPLIED_PRICE  MaAppliedPrice = PRICE_CLOSE;  // Applied price (all entry MA)
-input int                 MaShift        = 0;            // Shift (all entry MA)
+input ENUM_MA_METHOD      MaMethod       = MODE_EMA;     // SMA / EMA / SMMA / LWMA
+input ENUM_APPLIED_PRICE  MaAppliedPrice = PRICE_CLOSE;
+input int                 MaShift        = 0;
 
-input bool                UseMAFilter    = false; // Live MA entry filter (TF1 panel MA)
-input ENUM_MA_CHECK       MACheckMode    = MA_CHECK_RUNNING;
-input int                 MaLivePeriod   = 34;    // Live gate period
-input double              MABufferPips   = 100;   // Live gate buffer (pips)
+input ENUM_MA_STYLE       MaStyle        = MA_STYLE_DOUBLE; // Default when TF UseMA is ON
+input ENUM_MA_CHECK       MACheckMode    = MA_CHECK_RUNNING; // ma mode only
+input double              MABufferPips   = 100;             // ma mode buffer (pips)
 
-input ENUM_MA_TREND_STYLE MaTrendStyle       = MA_TREND_DOUBLE; // Default m1/m2 when module ON
-input int                 MaTrendPeriod      = 34;              // Single (m1) period
-input int                 MaTrendFastPeriod  = 13;              // Double (m2) fast
-input int                 MaTrendSlowPeriod  = 34;              // Double (m2) slow
-input ENUM_TREND_MODE     MaTrendMode        = TREND_FOLLOW;    // Follow / Reversal
-input double              MaTrendMinDiffPips = 100;             // 0 = any separation counts
+input int                 MaPeriod       = 34;  // Single line (ma + m1)
+input int                 MaFastPeriod   = 13;  // m2 fast
+input int                 MaSlowPeriod   = 34;  // m2 slow
+input ENUM_TREND_MODE     MaTrendMode    = TREND_FOLLOW; // m1 / m2
+input double              MaMinDiffPips  = 100; // m1 / m2: 0 = any separation
 
 input group "===== S/R Pivot Entry (shared params, per-TF levels) ====="
 input int    PivotLeftBars       = 5;
@@ -170,15 +174,15 @@ input int                 BosFractalLookback = 200;            // Fractal: bars 
 
 input group "===== Stop / Exit ====="
 // Broker SL = hard pip cap. Virtual MA / swing SL are optional; first hit closes.
-// MaSL uses TF1 m1/m2 lines (panel Fast/Slow). m1: either chip = single MA.
+// MaSL uses TF1 MA lines. ma/m1: Fast/Slow both = single. m2: Fast vs Slow.
 enum ENUM_MASL_LINE
 {
-   MASL_FAST, // Double: fast MA. Single (m1): same as single line
-   MASL_SLOW  // Double: slow MA. Single (m1): same as single line
+   MASL_FAST, // m2: fast. ma/m1: same single line
+   MASL_SLOW  // m2: slow. ma/m1: same single line
 };
-input bool          UseVirtualMaSL    = false;      // Virtual MA stop (TF1 m1/m2 line)
-input ENUM_MASL_LINE MaSLLine         = MASL_SLOW;  // Default Fast/Slow (panel chip)
-input double        SLMABufferPips    = 100;        // MA SL buffer (pips)
+input bool           UseVirtualMaSL = false;      // Virtual MA stop ON/OFF
+input ENUM_MASL_LINE MaSLLine       = MASL_SLOW;  // Default Fast/Slow (panel)
+input double         SLMABufferPips = 100;        // MA SL buffer (pips)
 
 input bool          UseSwingVirtualSL = true;       // Virtual swing stop (tighten-only)
 input ENUM_BOS_MODE SwingSLMode       = BOS_FRACTAL; // Swing SL engine (independent of BosMode)
@@ -245,10 +249,11 @@ input bool InpDebugLog = false; // Extra panel chatter (trade lines always on)
 
 
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
-// MA trend panel state per TF: 0=OFF, 1=Single (m1), 2=Double (m2)
-#define MA_TREND_OFF     0
-#define MA_TREND_ST_SINGLE 1
-#define MA_TREND_ST_DOUBLE 2
+// MA module per TF: 0=OFF, 1=ma (live), 2=m1 (single), 3=m2 (double)
+#define MA_OFF    0
+#define MA_LIVE   1
+#define MA_SINGLE 2
+#define MA_DOUBLE 3
 
 ENUM_CONF_MODE g_ConfluenceMode;
 ENUM_BOS_MODE  g_BosMode;
@@ -258,24 +263,44 @@ bool g_TF1_UseStochCross, g_TF1_UseStochClassic, g_TF1_UseSrBounce, g_TF1_UseSrB
 bool g_TF1_UseFibZone, g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_UseBos;
 bool g_TF2_UseStochCross, g_TF2_UseStochClassic, g_TF2_UseSrBounce, g_TF2_UseSrBreakRetest;
 bool g_TF2_UseFibZone, g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_UseBos;
-int  g_TF1_MaTrend = MA_TREND_OFF;
-int  g_TF2_MaTrend = MA_TREND_OFF;
-bool g_UseMAFilter, g_UseVirtualMaSL, g_UseSwingVirtualSL, g_UseBasketTP;
+int  g_TF1_MA = MA_OFF;
+int  g_TF2_MA = MA_OFF;
+bool g_UseVirtualMaSL, g_UseSwingVirtualSL, g_UseBasketTP;
 ENUM_MASL_LINE g_MaSLLine = MASL_SLOW;
 
-bool MaTrendEnabled(const int state) { return (state == MA_TREND_ST_SINGLE || state == MA_TREND_ST_DOUBLE); }
-
-int MaTrendStateFromInputs(const bool useIt)
+bool MaEnabled(const int state)
 {
-   if(!useIt) return MA_TREND_OFF;
-   return (MaTrendStyle == MA_TREND_SINGLE) ? MA_TREND_ST_SINGLE : MA_TREND_ST_DOUBLE;
+   return (state == MA_LIVE || state == MA_SINGLE || state == MA_DOUBLE);
 }
 
-// Style for MaSL exit line: TF1 panel m1/m2 if ON, else input MaTrendStyle default.
-int MaExitStyleState()
+bool MaUsesSingleLine(const int state)
 {
-   if(MaTrendEnabled(g_TF1_MaTrend)) return g_TF1_MaTrend;
-   return (MaTrendStyle == MA_TREND_SINGLE) ? MA_TREND_ST_SINGLE : MA_TREND_ST_DOUBLE;
+   return (state == MA_LIVE || state == MA_SINGLE);
+}
+
+int MaStyleToState(const ENUM_MA_STYLE style)
+{
+   if(style == MA_STYLE_LIVE)   return MA_LIVE;
+   if(style == MA_STYLE_SINGLE) return MA_SINGLE;
+   return MA_DOUBLE;
+}
+
+int MaStateFromInputs(const bool useIt)
+{
+   if(!useIt) return MA_OFF;
+   return MaStyleToState(MaStyle);
+}
+
+// MaSL line family from TF1 MA module; if OFF, use input MaStyle default.
+int MaExitState()
+{
+   if(MaEnabled(g_TF1_MA)) return g_TF1_MA;
+   return MaStyleToState(MaStyle);
+}
+
+bool MaExitUsesSingleLine()
+{
+   return MaUsesSingleLine(MaExitState());
 }
 
 string g_gvPrefix = "";
@@ -288,10 +313,9 @@ ENUM_TIMEFRAMES g_tf1;
 ENUM_TIMEFRAMES g_tf2;
 
 int g_stoch1 = INVALID_HANDLE, g_rsi1 = INVALID_HANDLE, g_macd1 = INVALID_HANDLE;
-int g_maTr1  = INVALID_HANDLE, g_maF1 = INVALID_HANDLE, g_maS1 = INVALID_HANDLE, g_atr1 = INVALID_HANDLE;
+int g_ma1    = INVALID_HANDLE, g_maF1 = INVALID_HANDLE, g_maS1 = INVALID_HANDLE, g_atr1 = INVALID_HANDLE;
 int g_stoch2 = INVALID_HANDLE, g_rsi2 = INVALID_HANDLE, g_macd2 = INVALID_HANDLE;
-int g_maTr2  = INVALID_HANDLE, g_maF2 = INVALID_HANDLE, g_maS2 = INVALID_HANDLE, g_atr2 = INVALID_HANDLE;
-int g_ma     = INVALID_HANDLE; // TF1 live MA entry gate (shared MaMethod/price/shift)
+int g_ma2    = INVALID_HANDLE, g_maF2 = INVALID_HANDLE, g_maS2 = INVALID_HANDLE, g_atr2 = INVALID_HANDLE;
 
 double   g_pip = 0;
 datetime g_lastBarTime  = 0;
@@ -341,7 +365,7 @@ void NotifyPush(const string msg)
 
 bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
                      const bool useCross, const bool useClassic,
-                     const bool useMacd, const bool useRsi, const bool useMaTrend,
+                     const bool useMacd, const bool useRsi, const bool useMA,
                      const bool useFib, const bool useBos,
                      int &hStoch, int &hRsi, int &hMacd,
                      int &hMaSingle, int &hMaFast, int &hMaSlow, int &hAtr,
@@ -377,16 +401,16 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
          return false;
       }
    }
-   // Create single + double handles so panel can cycle m1/m2 (and MaSL Fast/Slow) without reattach.
-   if(useMaTrend)
+   // Single + fast + slow so panel can cycle ma/m1/m2 (and MaSL Fast/Slow) without reattach.
+   if(useMA)
    {
-      hMaSingle = iMA(_Symbol, tf, MathMax(1, MaTrendPeriod),     MaShift, MaMethod, MaAppliedPrice);
-      hMaFast   = iMA(_Symbol, tf, MathMax(1, MaTrendFastPeriod), MaShift, MaMethod, MaAppliedPrice);
-      hMaSlow   = iMA(_Symbol, tf, MathMax(1, MaTrendSlowPeriod), MaShift, MaMethod, MaAppliedPrice);
+      hMaSingle = iMA(_Symbol, tf, MathMax(1, MaPeriod),     MaShift, MaMethod, MaAppliedPrice);
+      hMaFast   = iMA(_Symbol, tf, MathMax(1, MaFastPeriod), MaShift, MaMethod, MaAppliedPrice);
+      hMaSlow   = iMA(_Symbol, tf, MathMax(1, MaSlowPeriod), MaShift, MaMethod, MaAppliedPrice);
       if(hMaSingle == INVALID_HANDLE || hMaFast == INVALID_HANDLE || hMaSlow == INVALID_HANDLE)
       {
-         LogInfo("INIT FAILED - " + label + " MA trend");
-         NotifyPush(Tag() + ": INIT FAILED - " + label + " MA trend");
+         LogInfo("INIT FAILED - " + label + " MA");
+         NotifyPush(Tag() + ": INIT FAILED - " + label + " MA");
          return false;
       }
    }
@@ -463,16 +487,16 @@ string PanelInputFingerprint()
         + IntegerToString((int)TF1_UseStochCross) + IntegerToString((int)TF1_UseStochClassic)
         + IntegerToString((int)TF1_UseSrBounce) + IntegerToString((int)TF1_UseSrBreakRetest)
         + IntegerToString((int)TF1_UseFibZone) + IntegerToString((int)TF1_UseMacdBias)
-        + IntegerToString((int)TF1_UseRsiBias) + IntegerToString((int)TF1_UseMaTrend)
+        + IntegerToString((int)TF1_UseRsiBias) + IntegerToString((int)TF1_UseMA)
         + IntegerToString((int)TF1_UseBos) + "|"
         + IntegerToString((int)TF2_UseStochCross) + IntegerToString((int)TF2_UseStochClassic)
         + IntegerToString((int)TF2_UseSrBounce) + IntegerToString((int)TF2_UseSrBreakRetest)
         + IntegerToString((int)TF2_UseFibZone) + IntegerToString((int)TF2_UseMacdBias)
-        + IntegerToString((int)TF2_UseRsiBias) + IntegerToString((int)TF2_UseMaTrend)
+        + IntegerToString((int)TF2_UseRsiBias) + IntegerToString((int)TF2_UseMA)
         + IntegerToString((int)TF2_UseBos) + "|"
-        + IntegerToString((int)MaTrendStyle) + IntegerToString((int)MaMethod)
+        + IntegerToString((int)MaStyle) + IntegerToString((int)MaMethod)
         + IntegerToString((int)MaSLLine) + "|"
-        + IntegerToString((int)UseMAFilter) + IntegerToString((int)UseVirtualMaSL)
+        + IntegerToString((int)UseVirtualMaSL)
         + IntegerToString((int)UseSwingVirtualSL) + IntegerToString((int)UseBasketTP);
 }
 
@@ -491,7 +515,7 @@ void RuntimeApplyInputDefaults()
    g_TF1_UseFibZone = TF1_UseFibZone;
    g_TF1_UseMacdBias = TF1_UseMacdBias;
    g_TF1_UseRsiBias = TF1_UseRsiBias;
-   g_TF1_MaTrend = MaTrendStateFromInputs(TF1_UseMaTrend);
+   g_TF1_MA = MaStateFromInputs(TF1_UseMA);
    g_TF1_UseBos = TF1_UseBos;
 
    g_TF2_UseStochCross = TF2_UseStochCross;
@@ -501,10 +525,9 @@ void RuntimeApplyInputDefaults()
    g_TF2_UseFibZone = TF2_UseFibZone;
    g_TF2_UseMacdBias = TF2_UseMacdBias;
    g_TF2_UseRsiBias = TF2_UseRsiBias;
-   g_TF2_MaTrend = MaTrendStateFromInputs(TF2_UseMaTrend);
+   g_TF2_MA = MaStateFromInputs(TF2_UseMA);
    g_TF2_UseBos = TF2_UseBos;
 
-   g_UseMAFilter = UseMAFilter;
    g_UseVirtualMaSL = UseVirtualMaSL;
    g_MaSLLine = MaSLLine;
    g_UseSwingVirtualSL = UseSwingVirtualSL;
@@ -527,7 +550,7 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("T1_fib", g_TF1_UseFibZone);
    PanelSaveBool("T1_macd", g_TF1_UseMacdBias);
    PanelSaveBool("T1_rsi", g_TF1_UseRsiBias);
-   PanelSaveInt("T1_maT", g_TF1_MaTrend);
+   PanelSaveInt("T1_ma", g_TF1_MA);
    PanelSaveBool("T1_bos", g_TF1_UseBos);
 
    PanelSaveBool("T2_stX", g_TF2_UseStochCross);
@@ -537,10 +560,9 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("T2_fib", g_TF2_UseFibZone);
    PanelSaveBool("T2_macd", g_TF2_UseMacdBias);
    PanelSaveBool("T2_rsi", g_TF2_UseRsiBias);
-   PanelSaveInt("T2_maT", g_TF2_MaTrend);
+   PanelSaveInt("T2_ma", g_TF2_MA);
    PanelSaveBool("T2_bos", g_TF2_UseBos);
 
-   PanelSaveBool("MA", g_UseMAFilter);
    PanelSaveBool("MaSL", g_UseVirtualMaSL);
    PanelSaveInt("MaLn", (int)g_MaSLLine);
    PanelSaveBool("SwSL", g_UseSwingVirtualSL);
@@ -563,11 +585,10 @@ void RuntimeLoadFromGV()
    g_TF1_UseFibZone = PanelLoadBool("T1_fib", g_TF1_UseFibZone);
    g_TF1_UseMacdBias = PanelLoadBool("T1_macd", g_TF1_UseMacdBias);
    g_TF1_UseRsiBias = PanelLoadBool("T1_rsi", g_TF1_UseRsiBias);
-   // Prefer new int state; migrate old bool T1_ema if present.
-   if(GlobalVariableCheck(PanelGvKey("T1_maT")))
-      g_TF1_MaTrend = PanelLoadInt("T1_maT", g_TF1_MaTrend);
-   else if(PanelLoadBool("T1_ema", false))
-      g_TF1_MaTrend = MaTrendStateFromInputs(true);
+   if(GlobalVariableCheck(PanelGvKey("T1_ma")))
+      g_TF1_MA = PanelLoadInt("T1_ma", g_TF1_MA);
+   else if(GlobalVariableCheck(PanelGvKey("T1_maT")))
+      g_TF1_MA = PanelLoadInt("T1_maT", g_TF1_MA); // migrate old key
    g_TF1_UseBos = PanelLoadBool("T1_bos", g_TF1_UseBos);
 
    g_TF2_UseStochCross = PanelLoadBool("T2_stX", g_TF2_UseStochCross);
@@ -577,18 +598,17 @@ void RuntimeLoadFromGV()
    g_TF2_UseFibZone = PanelLoadBool("T2_fib", g_TF2_UseFibZone);
    g_TF2_UseMacdBias = PanelLoadBool("T2_macd", g_TF2_UseMacdBias);
    g_TF2_UseRsiBias = PanelLoadBool("T2_rsi", g_TF2_UseRsiBias);
-   if(GlobalVariableCheck(PanelGvKey("T2_maT")))
-      g_TF2_MaTrend = PanelLoadInt("T2_maT", g_TF2_MaTrend);
-   else if(PanelLoadBool("T2_ema", false))
-      g_TF2_MaTrend = MaTrendStateFromInputs(true);
+   if(GlobalVariableCheck(PanelGvKey("T2_ma")))
+      g_TF2_MA = PanelLoadInt("T2_ma", g_TF2_MA);
+   else if(GlobalVariableCheck(PanelGvKey("T2_maT")))
+      g_TF2_MA = PanelLoadInt("T2_maT", g_TF2_MA);
    g_TF2_UseBos = PanelLoadBool("T2_bos", g_TF2_UseBos);
 
-   if(g_TF1_MaTrend != MA_TREND_OFF && g_TF1_MaTrend != MA_TREND_ST_SINGLE && g_TF1_MaTrend != MA_TREND_ST_DOUBLE)
-      g_TF1_MaTrend = MA_TREND_OFF;
-   if(g_TF2_MaTrend != MA_TREND_OFF && g_TF2_MaTrend != MA_TREND_ST_SINGLE && g_TF2_MaTrend != MA_TREND_ST_DOUBLE)
-      g_TF2_MaTrend = MA_TREND_OFF;
+   if(g_TF1_MA != MA_OFF && g_TF1_MA != MA_LIVE && g_TF1_MA != MA_SINGLE && g_TF1_MA != MA_DOUBLE)
+      g_TF1_MA = MA_OFF;
+   if(g_TF2_MA != MA_OFF && g_TF2_MA != MA_LIVE && g_TF2_MA != MA_SINGLE && g_TF2_MA != MA_DOUBLE)
+      g_TF2_MA = MA_OFF;
 
-   g_UseMAFilter = PanelLoadBool("MA", g_UseMAFilter);
    g_UseVirtualMaSL = PanelLoadBool("MaSL", g_UseVirtualMaSL);
    g_MaSLLine = (ENUM_MASL_LINE)PanelLoadInt("MaLn", (int)g_MaSLLine);
    if(g_MaSLLine != MASL_FAST && g_MaSLLine != MASL_SLOW)
@@ -644,8 +664,8 @@ void PanelClearMemory()
    // wipe remembered clicks for this account/symbol/magic
    string ids[] = {
       "INP_FP","Conf","BosMode","SwMode","Buy","Sell","Collapsed",
-      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_maT","T1_bos",
-      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_maT","T2_bos",
+      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ma","T1_maT","T1_ema","T1_bos",
+      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ma","T2_maT","T2_ema","T2_bos",
       "MA","MaSL","MaLn","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(ids); i++)
@@ -763,20 +783,23 @@ string SwMdTip()
    return "Swing SL method: Zigzag (click to cycle; independent of entry BOS)";
 }
 
-string MaTrendChipText(const int state)
+string MaChipText(const int state)
 {
-   if(state == MA_TREND_ST_SINGLE) return "m1";
-   if(state == MA_TREND_ST_DOUBLE) return "m2";
-   return "maT";
+   if(state == MA_LIVE)   return "ma";
+   if(state == MA_SINGLE) return "m1";
+   if(state == MA_DOUBLE) return "m2";
+   return "MA";
 }
 
-string MaTrendTip(const int state, const string tfTag)
+string MaChipTip(const int state, const string tfTag)
 {
-   if(state == MA_TREND_ST_SINGLE)
-      return tfTag + " MA trend: SINGLE (price vs MA). Click: OFF / m1 / m2";
-   if(state == MA_TREND_ST_DOUBLE)
-      return tfTag + " MA trend: DOUBLE (fast vs slow). Click: OFF / m1 / m2";
-   return tfTag + " MA trend: OFF. Click: OFF / m1 / m2";
+   if(state == MA_LIVE)
+      return tfTag + " MA: live (price vs single). Click: OFF / ma / m1 / m2";
+   if(state == MA_SINGLE)
+      return tfTag + " MA: m1 single trend. Click: OFF / ma / m1 / m2";
+   if(state == MA_DOUBLE)
+      return tfTag + " MA: m2 fast vs slow. Click: OFF / ma / m1 / m2";
+   return tfTag + " MA: OFF. Click: OFF / ma / m1 / m2";
 }
 
 string MaSLLineChipText()
@@ -786,18 +809,19 @@ string MaSLLineChipText()
 
 string MaSLLineTip()
 {
-   if(MaExitStyleState() == MA_TREND_ST_SINGLE)
-      return "MaSL line: m1 single MA (Fst/Slw both use the same line). Click to toggle";
+   if(MaExitUsesSingleLine())
+      return "MaSL line: single MA (ma/m1 — Fst/Slw same line). Click to toggle";
    return (g_MaSLLine == MASL_FAST)
       ? "MaSL line: FAST (m2). Click for slow"
       : "MaSL line: SLOW (m2). Click for fast";
 }
 
-void PanelCycleMaTrend(int &state, const string gvId)
+void PanelCycleMA(int &state, const string gvId)
 {
-   if(state == MA_TREND_OFF) state = MA_TREND_ST_SINGLE;
-   else if(state == MA_TREND_ST_SINGLE) state = MA_TREND_ST_DOUBLE;
-   else state = MA_TREND_OFF;
+   if(state == MA_OFF)         state = MA_LIVE;
+   else if(state == MA_LIVE)   state = MA_SINGLE;
+   else if(state == MA_SINGLE) state = MA_DOUBLE;
+   else                        state = MA_OFF;
    PanelSaveInt(gvId, state);
 }
 
@@ -829,8 +853,8 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_fib"), "fib", "TF1 entry: Fib golden zone", g_TF1_UseFibZone, false);
    PanelStyleChip(PanelObj("T1_macd"),"macd","TF1 entry: MACD bias", g_TF1_UseMacdBias, false);
    PanelStyleChip(PanelObj("T1_rsi"), "rsi", "TF1 entry: RSI bias", g_TF1_UseRsiBias, false);
-   PanelStyleChip(PanelObj("T1_ema"), MaTrendChipText(g_TF1_MaTrend), MaTrendTip(g_TF1_MaTrend, "TF1 entry"),
-                  MaTrendEnabled(g_TF1_MaTrend), false);
+   PanelStyleChip(PanelObj("T1_ma"), MaChipText(g_TF1_MA), MaChipTip(g_TF1_MA, "TF1 entry"),
+                  MaEnabled(g_TF1_MA), false);
    PanelStyleChip(PanelObj("T1_bos"), "bos", "TF1 entry: BOS (BosMode)", g_TF1_UseBos, false);
 
    PanelStyleChip(PanelObj("L2"), " TF2 bias", "TF2 bias modules (+TF2 mode only)", true, true);
@@ -841,13 +865,12 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T2_fib"), "fib", "TF2 bias: Fib golden zone", g_TF2_UseFibZone, false);
    PanelStyleChip(PanelObj("T2_macd"),"macd","TF2 bias: MACD", g_TF2_UseMacdBias, false);
    PanelStyleChip(PanelObj("T2_rsi"), "rsi", "TF2 bias: RSI", g_TF2_UseRsiBias, false);
-   PanelStyleChip(PanelObj("T2_ema"), MaTrendChipText(g_TF2_MaTrend), MaTrendTip(g_TF2_MaTrend, "TF2 bias"),
-                  MaTrendEnabled(g_TF2_MaTrend), false);
+   PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_TF2_MA), MaChipTip(g_TF2_MA, "TF2 bias"),
+                  MaEnabled(g_TF2_MA), false);
    PanelStyleChip(PanelObj("T2_bos"), "bos", "TF2 bias: BOS (BosMode)", g_TF2_UseBos, false);
 
    PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
-   PanelStyleChip(PanelObj("MA"),   "MA",   "Live MA entry gate (TF1; shared method/price/shift with m1/m2)", g_UseMAFilter, false);
-   PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop (TF1 m1/m2 line + Fst/Slw)", g_UseVirtualMaSL, false);
+   PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop ON/OFF (TF1 MA line)", g_UseVirtualMaSL, false);
    PanelStyleChip(PanelObj("MaLn"), MaSLLineChipText(), MaSLLineTip(), true, true);
    PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop ON/OFF (green=on)", g_UseSwingVirtualSL, false);
    PanelStyleChip(PanelObj("SwMd"), SwMdChipText(), SwMdTip(), true, true);
@@ -858,9 +881,9 @@ void PanelHideExtras()
 {
    string extras[] = {
       "CONF","BOSM","BUY","SELL","L1","L2","LR",
-      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
-      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
-      "MA","MaSL","MaLn","SwSL","SwMd","Trail"
+      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ma","T1_bos",
+      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ma","T2_bos",
+      "MaSL","MaLn","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(extras); i++)
    {
@@ -918,7 +941,7 @@ void PanelBuild()
    y += chipH + gap;
    PanelEnsureButton("T1_macd", x0,                y, quadW,    chipH);
    PanelEnsureButton("T1_rsi",  x0 + quadStep,     y, quadW,    chipH);
-   PanelEnsureButton("T1_ema",  x0 + quadStep * 2, y, quadW,    chipH);
+   PanelEnsureButton("T1_ma",   x0 + quadStep * 2, y, quadW,    chipH);
    PanelEnsureButton("T1_bos",  x0 + quadStep * 3, y, quadLast, chipH);
    y += chipH + gap + 2;
 
@@ -931,22 +954,26 @@ void PanelBuild()
    y += chipH + gap;
    PanelEnsureButton("T2_macd", x0,                y, quadW,    chipH);
    PanelEnsureButton("T2_rsi",  x0 + quadStep,     y, quadW,    chipH);
-   PanelEnsureButton("T2_ema",  x0 + quadStep * 2, y, quadW,    chipH);
+   PanelEnsureButton("T2_ma",   x0 + quadStep * 2, y, quadW,    chipH);
    PanelEnsureButton("T2_bos",  x0 + quadStep * 3, y, quadLast, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
-   // Full-width 6 chips: MA | MaSL | Fst/Slw | SwSL | SwMd | Trail
-   const int riskN    = 6;
-   const int riskW    = (rowW - gap * (riskN - 1)) / riskN;
-   const int riskStep = riskW + gap;
-   const int riskLast = rowW - riskStep * (riskN - 1);
-   PanelEnsureButton("MA",    x0,                y, riskW,    chipH);
-   PanelEnsureButton("MaSL",  x0 + riskStep,     y, riskW,    chipH);
-   PanelEnsureButton("MaLn",  x0 + riskStep * 2, y, riskW,    chipH);
-   PanelEnsureButton("SwSL",  x0 + riskStep * 3, y, riskW,    chipH);
-   PanelEnsureButton("SwMd",  x0 + riskStep * 4, y, riskW,    chipH);
-   PanelEnsureButton("Trail", x0 + riskStep * 5, y, riskLast, chipH);
+   // Full-width 5 chips: MaSL | Fst/Slw | SwSL | SwMd | Trail
+   PanelEnsureButton("MaSL",  x0,            y, chipW, chipH);
+   PanelEnsureButton("MaLn",  x0 + step,     y, chipW, chipH);
+   PanelEnsureButton("SwSL",  x0 + step * 2, y, chipW, chipH);
+   PanelEnsureButton("SwMd",  x0 + step * 3, y, chipW, chipH);
+   PanelEnsureButton("Trail", x0 + step * 4, y, chipW, chipH);
+
+   // Drop retired chips from older panel builds (risk MA / old ema ids).
+   string retired[] = { "MA", "T1_ema", "T2_ema" };
+   for(int r = 0; r < ArraySize(retired); r++)
+   {
+      string rn = PanelObj(retired[r]);
+      if(ObjectFind(0, rn) >= 0)
+         ObjectDelete(0, rn);
+   }
 
    PanelPaintState();
 }
@@ -1021,7 +1048,7 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T1_fib") PanelToggleBool(g_TF1_UseFibZone, "T1_fib");
    else if(id == "T1_macd") PanelToggleBool(g_TF1_UseMacdBias, "T1_macd");
    else if(id == "T1_rsi") PanelToggleBool(g_TF1_UseRsiBias, "T1_rsi");
-   else if(id == "T1_ema") PanelCycleMaTrend(g_TF1_MaTrend, "T1_maT");
+   else if(id == "T1_ma") PanelCycleMA(g_TF1_MA, "T1_ma");
    else if(id == "T1_bos") PanelToggleBool(g_TF1_UseBos, "T1_bos");
    else if(id == "T2_stX") PanelToggleBool(g_TF2_UseStochCross, "T2_stX");
    else if(id == "T2_stC") PanelToggleBool(g_TF2_UseStochClassic, "T2_stC");
@@ -1030,9 +1057,8 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T2_fib") PanelToggleBool(g_TF2_UseFibZone, "T2_fib");
    else if(id == "T2_macd") PanelToggleBool(g_TF2_UseMacdBias, "T2_macd");
    else if(id == "T2_rsi") PanelToggleBool(g_TF2_UseRsiBias, "T2_rsi");
-   else if(id == "T2_ema") PanelCycleMaTrend(g_TF2_MaTrend, "T2_maT");
+   else if(id == "T2_ma") PanelCycleMA(g_TF2_MA, "T2_ma");
    else if(id == "T2_bos") PanelToggleBool(g_TF2_UseBos, "T2_bos");
-   else if(id == "MA") PanelToggleBool(g_UseMAFilter, "MA");
    else if(id == "MaSL") PanelToggleBool(g_UseVirtualMaSL, "MaSL");
    else if(id == "MaLn") PanelCycleMaSLLine();
    else if(id == "SwSL") PanelToggleBool(g_UseSwingVirtualSL, "SwSL");
@@ -1069,9 +1095,9 @@ void PanelPollClicks()
 
    string ids[] = {
       "TTL","CONF","BOSM","BUY","SELL",
-      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ema","T1_bos",
-      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ema","T2_bos",
-      "MA","MaSL","MaLn","SwSL","SwMd","Trail"
+      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ma","T1_bos",
+      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ma","T2_bos",
+      "MaSL","MaLn","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(ids); i++)
    {
@@ -1124,10 +1150,10 @@ int OnInit()
    if(!CreateTfHandles(g_tf1,
                        prepAll || g_TF1_UseStochCross, prepAll || g_TF1_UseStochClassic,
                        prepAll || g_TF1_UseMacdBias, prepAll || g_TF1_UseRsiBias,
-                       prepAll || MaTrendEnabled(g_TF1_MaTrend) || g_UseVirtualMaSL,
+                       prepAll || MaEnabled(g_TF1_MA) || g_UseVirtualMaSL,
                        prepAll || g_TF1_UseFibZone || (g_UseSwingVirtualSL && g_SwingSLMode != BOS_FRACTAL),
                        prepAll || g_TF1_UseBos || g_UseSwingVirtualSL,
-                       g_stoch1, g_rsi1, g_macd1, g_maTr1, g_maF1, g_maS1, g_atr1, "TF1"))
+                       g_stoch1, g_rsi1, g_macd1, g_ma1, g_maF1, g_maS1, g_atr1, "TF1"))
       return(INIT_FAILED);
 
    if(prepAll || g_ConfluenceMode == CONF_TF1_AND_TF2)
@@ -1135,24 +1161,12 @@ int OnInit()
       if(!CreateTfHandles(g_tf2,
                           prepAll || g_TF2_UseStochCross, prepAll || g_TF2_UseStochClassic,
                           prepAll || g_TF2_UseMacdBias, prepAll || g_TF2_UseRsiBias,
-                          prepAll || MaTrendEnabled(g_TF2_MaTrend),
+                          prepAll || MaEnabled(g_TF2_MA),
                           prepAll || g_TF2_UseFibZone, prepAll || g_TF2_UseBos,
-                          g_stoch2, g_rsi2, g_macd2, g_maTr2, g_maF2, g_maS2, g_atr2, "TF2"))
+                          g_stoch2, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2, "TF2"))
          return(INIT_FAILED);
       if(PeriodSeconds(g_tf2) == PeriodSeconds(g_tf1) && !g_quietInit)
          LogInfo("NOTE TF1 entry and TF2 bias are the same period — bias adds no extra info.");
-   }
-
-   if(prepAll || g_UseMAFilter)
-   {
-      if(g_ma == INVALID_HANDLE)
-         g_ma = iMA(_Symbol, g_tf1, MathMax(1, MaLivePeriod), MaShift, MaMethod, MaAppliedPrice);
-      if(g_ma == INVALID_HANDLE)
-      {
-         LogInfo("INIT FAILED - TF1 MA handle (live entry gate)");
-         NotifyPush(Tag() + ": INIT FAILED - TF1 MA handle");
-         return(INIT_FAILED);
-      }
    }
 
    if((prepAll || g_TF1_UseFibZone ||
@@ -1215,10 +1229,9 @@ void OnDeinit(const int reason)
       PanelClearMemory();
 
    ReleaseHandle(g_stoch1); ReleaseHandle(g_rsi1); ReleaseHandle(g_macd1);
-   ReleaseHandle(g_maTr1);  ReleaseHandle(g_maF1); ReleaseHandle(g_maS1); ReleaseHandle(g_atr1);
+   ReleaseHandle(g_ma1);    ReleaseHandle(g_maF1); ReleaseHandle(g_maS1); ReleaseHandle(g_atr1);
    ReleaseHandle(g_stoch2); ReleaseHandle(g_rsi2); ReleaseHandle(g_macd2);
-   ReleaseHandle(g_maTr2);  ReleaseHandle(g_maF2); ReleaseHandle(g_maS2); ReleaseHandle(g_atr2);
-   ReleaseHandle(g_ma);
+   ReleaseHandle(g_ma2);    ReleaseHandle(g_maF2); ReleaseHandle(g_maS2); ReleaseHandle(g_atr2);
 }
 
 void OnTimer()
@@ -1511,19 +1524,51 @@ bool EvalRsi(const int hRsi, const bool useIt, bool &buyOK, bool &sellOK)
    return true;
 }
 
-// MA trend filter: Single = close vs one MA; Double = fast vs slow.
-// Follow / Reversal applies to both. Shared MaMethod/price/shift with live gate.
-bool EvalMaTrend(const ENUM_TIMEFRAMES tf,
-                 const int hSingle, const int hFast, const int hSlow,
-                 const int state, bool &buyOK, bool &sellOK)
+// Live "ma" side check (gun-style). Used by EvalMA and TryEnter re-gate.
+bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBuy)
+{
+   if(hSingle == INVALID_HANDLE) return false;
+
+   double m[];
+   ArraySetAsSeries(m, true);
+   if(CopyBuffer(hSingle, 0, 0, 2, m) != 2) return false; // [0]=now, [1]=last closed bar MA
+
+   double buffer = MathMax(0.0, MABufferPips) * g_pip;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   bool liveOK = wantBuy ? (ask > m[0] + buffer) : (bid < m[0] - buffer);
+   if(!liveOK) return false;
+
+   if(MACheckMode == MA_CHECK_RUNNING) return true;
+
+   double c[];
+   ArraySetAsSeries(c, true);
+   if(CopyClose(_Symbol, tf, 1, 1, c) != 1) return false;
+   if(wantBuy) return (c[0] > m[1] + buffer);
+   return (c[0] < m[1] - buffer);
+}
+
+// One MA module: ma (live) / m1 (single trend) / m2 (fast vs slow).
+bool EvalMA(const ENUM_TIMEFRAMES tf,
+            const int hSingle, const int hFast, const int hSlow,
+            const int state, bool &buyOK, bool &sellOK)
 {
    buyOK = true; sellOK = true;
-   if(!MaTrendEnabled(state)) return true;
+   if(!MaEnabled(state)) return true;
 
-   double thr = MathMax(0.0, MaTrendMinDiffPips) * g_pip;
+   if(state == MA_LIVE)
+   {
+      if(hSingle == INVALID_HANDLE) return false;
+      buyOK  = PassesMALive(tf, hSingle, true);
+      sellOK = PassesMALive(tf, hSingle, false);
+      return true;
+   }
+
+   double thr = MathMax(0.0, MaMinDiffPips) * g_pip;
    int dir = 0; // +1 buy-side follow, -1 sell-side follow, 0 range
 
-   if(state == MA_TREND_ST_SINGLE)
+   if(state == MA_SINGLE)
    {
       if(hSingle == INVALID_HANDLE) return false;
       double m[];
@@ -1536,7 +1581,7 @@ bool EvalMaTrend(const ENUM_TIMEFRAMES tf,
       if(diff >  thr) dir = 1;
       if(diff < -thr) dir = -1;
    }
-   else // DOUBLE
+   else // MA_DOUBLE
    {
       if(hFast == INVALID_HANDLE || hSlow == INVALID_HANDLE) return false;
       double f[], s[];
@@ -1937,7 +1982,7 @@ bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
 bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useCross, const bool useClassic,
             const bool useBounce, const bool useRetest, const bool useFib,
-            const bool useMacd, const bool useRsi, const int maTrendState, const bool useBos,
+            const bool useMacd, const bool useRsi, const int maState, const bool useBos,
             const int hStoch, const int hRsi, const int hMacd,
             const int hMaSingle, const int hMaFast, const int hMaSlow, const int hAtr,
             const bool fibLegOnly,
@@ -1945,10 +1990,10 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
 {
    outBuy = false; outSell = false;
 
-   const bool useStoch   = (useCross || useClassic);
-   const bool useSr      = (useBounce || useRetest);
-   const bool useMaTrend = MaTrendEnabled(maTrendState);
-   if(!useStoch && !useSr && !useFib && !useMacd && !useRsi && !useMaTrend && !useBos)
+   const bool useStoch = (useCross || useClassic);
+   const bool useSr    = (useBounce || useRetest);
+   const bool useMA    = MaEnabled(maState);
+   if(!useStoch && !useSr && !useFib && !useMacd && !useRsi && !useMA && !useBos)
       return true;
 
    bool buy = true, sell = true;
@@ -1983,10 +2028,10 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
       if(!EvalRsi(hRsi, true, rsiBuy, rsiSell)) return false;
       buy &= rsiBuy; sell &= rsiSell;
    }
-   if(useMaTrend)
+   if(useMA)
    {
       bool maBuy = false, maSell = false;
-      if(!EvalMaTrend(tf, hMaSingle, hMaFast, hMaSlow, maTrendState, maBuy, maSell)) return false;
+      if(!EvalMA(tf, hMaSingle, hMaFast, hMaSlow, maState, maBuy, maSell)) return false;
       buy &= maBuy; sell &= maSell;
    }
    if(useBos)
@@ -2014,7 +2059,7 @@ bool Tf2BiasModulesOn()
 {
    return (g_TF2_UseStochCross || g_TF2_UseStochClassic ||
            g_TF2_UseSrBounce || g_TF2_UseSrBreakRetest || g_TF2_UseFibZone ||
-           g_TF2_UseMacdBias || g_TF2_UseRsiBias || MaTrendEnabled(g_TF2_MaTrend) ||
+           g_TF2_UseMacdBias || g_TF2_UseRsiBias || MaEnabled(g_TF2_MA) ||
            g_TF2_UseBos);
 }
 
@@ -2029,8 +2074,8 @@ void UpdateSignal()
    if(!EvalTf(g_tf1,
               g_TF1_UseStochCross, g_TF1_UseStochClassic,
               g_TF1_UseSrBounce, g_TF1_UseSrBreakRetest, g_TF1_UseFibZone,
-              g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_MaTrend, g_TF1_UseBos,
-              g_stoch1, g_rsi1, g_macd1, g_maTr1, g_maF1, g_maS1, g_atr1,
+              g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_MA, g_TF1_UseBos,
+              g_stoch1, g_rsi1, g_macd1, g_ma1, g_maF1, g_maS1, g_atr1,
               false, b1, s1))
       return;
 
@@ -2041,8 +2086,8 @@ void UpdateSignal()
       if(!EvalTf(g_tf2,
                  g_TF2_UseStochCross, g_TF2_UseStochClassic,
                  g_TF2_UseSrBounce, g_TF2_UseSrBreakRetest, g_TF2_UseFibZone,
-                 g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_MaTrend, g_TF2_UseBos,
-                 g_stoch2, g_rsi2, g_macd2, g_maTr2, g_maF2, g_maS2, g_atr2,
+                 g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_MA, g_TF2_UseBos,
+                 g_stoch2, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2,
                  false, b2, s2))
          return;
    }
@@ -2064,8 +2109,8 @@ void UpdateSignal()
    if(!EvalTf(g_tf1,
               g_TF1_UseStochCross, g_TF1_UseStochClassic,
               g_TF1_UseSrBounce, g_TF1_UseSrBreakRetest, g_TF1_UseFibZone,
-              g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_MaTrend, g_TF1_UseBos,
-              g_stoch1, g_rsi1, g_macd1, g_maTr1, g_maF1, g_maS1, g_atr1,
+              g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_MA, g_TF1_UseBos,
+              g_stoch1, g_rsi1, g_macd1, g_ma1, g_maF1, g_maS1, g_atr1,
               true, b1, s1))
       return;
 
@@ -2076,8 +2121,8 @@ void UpdateSignal()
       if(!EvalTf(g_tf2,
                  g_TF2_UseStochCross, g_TF2_UseStochClassic,
                  g_TF2_UseSrBounce, g_TF2_UseSrBreakRetest, g_TF2_UseFibZone,
-                 g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_MaTrend, g_TF2_UseBos,
-                 g_stoch2, g_rsi2, g_macd2, g_maTr2, g_maF2, g_maS2, g_atr2,
+                 g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_MA, g_TF2_UseBos,
+                 g_stoch2, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2,
                  true, b2, s2))
          return;
    }
@@ -2120,8 +2165,12 @@ void TryEnter()
    if(MaxSpreadPips > 0 && (ask - bid) / g_pip > MaxSpreadPips)
    { DiagBlock("spread " + DoubleToString((ask - bid) / g_pip, 1) + " > " + IntegerToString(MaxSpreadPips)); return; }
 
-   if(!PassesMAFilter(g_signalIsBuy))
-   { DiagBlock("MA filter"); return; }
+   // ma mode: re-check live side at the entry tick (gun-style), including layers.
+   if(g_TF1_MA == MA_LIVE && !PassesMALive(g_tf1, g_ma1, g_signalIsBuy))
+   { DiagBlock("MA live filter"); return; }
+   if(g_ConfluenceMode == CONF_TF1_AND_TF2 && g_TF2_MA == MA_LIVE &&
+      !PassesMALive(g_tf2, g_ma2, g_signalIsBuy))
+   { DiagBlock("TF2 MA live filter"); return; }
 
    int    layers; double deepest; bool existingIsBuy;
    CountLayers(layers, deepest, existingIsBuy);
@@ -2518,11 +2567,10 @@ bool GetMASLAnchor(const bool isBuy, double &anchor)
 {
    anchor = 0;
 
-   // m1: Fst/Slw both resolve to the single MA. m2: Fst=fast, Slw=slow.
-   const int style = MaExitStyleState();
+   // ma/m1: Fst/Slw both = single MaPeriod line. m2: Fst=fast, Slw=slow.
    int h = INVALID_HANDLE;
-   if(style == MA_TREND_ST_SINGLE)
-      h = g_maTr1;
+   if(MaExitUsesSingleLine())
+      h = g_ma1;
    else
       h = (g_MaSLLine == MASL_FAST) ? g_maF1 : g_maS1;
    if(h == INVALID_HANDLE) return false;
@@ -2553,9 +2601,11 @@ void CheckVirtualMASL()
    bool breached = isBuy ? (bid <= maSL) : (ask >= maSL);
    if(!breached) return;
 
-   string lineTag = (MaExitStyleState() == MA_TREND_ST_SINGLE)
-                    ? "m1"
-                    : ((g_MaSLLine == MASL_FAST) ? "m2-Fst" : "m2-Slw");
+   string lineTag;
+   const int exitSt = MaExitState();
+   if(exitSt == MA_LIVE)        lineTag = "ma";
+   else if(exitSt == MA_SINGLE) lineTag = "m1";
+   else                         lineTag = (g_MaSLLine == MASL_FAST) ? "m2-Fst" : "m2-Slw";
    LogGuardOnce("EXIT virtual MA SL hit " + (isBuy ? "bid " + DoubleToString(bid, _Digits) + " <= " : "ask " + DoubleToString(ask, _Digits) + " >= ") +
                 DoubleToString(maSL, _Digits) + " (TF1 " + lineTag + " " + (isBuy ? "-" : "+") + " " +
                 DoubleToString(SLMABufferPips, 1) + " pips) — closing basket");
@@ -2759,38 +2809,6 @@ void CloseAllEA(const string reason = "")
       ResetBasket();
       ResetBasketLines();
    }
-}
-
-bool PassesMAFilter(bool wantBuy)
-{
-   if(!g_UseMAFilter) return true;
-   if(g_ma == INVALID_HANDLE) return false;
-
-   double m[];
-   ArraySetAsSeries(m, true);
-   if(CopyBuffer(g_ma, 0, 0, 2, m) != 2) return false;   // [0]=MA now, [1]=MA of last closed bar
-
-   double buffer = MathMax(0.0, MABufferPips) * g_pip;
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-   // BOTH modes: live price at this exact moment must be on the correct side
-   // of the current MA (+/- buffer). No entry can print on the wrong side of
-   // the MA line on the chart.
-   bool liveOK = wantBuy ? (ask > m[0] + buffer) : (bid < m[0] - buffer);
-   if(!liveOK) return false;
-
-   if(MACheckMode == MA_CHECK_RUNNING) return true;
-
-   // CANDLE_CLOSE (tighter): the last finished candle must ALSO have closed
-   // on the correct side of its MA (+/- buffer). Skips the first spike
-   // across the MA — needs a close to confirm before entries are allowed.
-   double c[];
-   ArraySetAsSeries(c, true);
-   if(CopyClose(_Symbol, g_tf1, 1, 1, c) != 1) return false;
-
-   if(wantBuy) return (c[0] > m[1] + buffer);
-   return (c[0] < m[1] - buffer);
 }
 
 double PipSize()
