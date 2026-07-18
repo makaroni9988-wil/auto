@@ -34,87 +34,23 @@ CTrade trade;
 
 #define EA_LABEL "lets-go"
 
-//====================== INPUTS ======================
-input group "===== Confluence (LTF entry, optional HTF bias) ====="
+//====================== ENUMS ======================
 enum ENUM_CONF_MODE
 {
    CONF_LTF_ONLY,     // LTF entry only
    CONF_LTF_AND_HTF   // LTF entry AND HTF bias must agree
 };
-input ENUM_CONF_MODE   ConfluenceMode = CONF_LTF_ONLY; // LTF only, or LTF+HTF
-input ENUM_TIMEFRAMES  InpLTF         = PERIOD_M30;    // LTF entry (signal clock + virtual exits)
-input ENUM_TIMEFRAMES  InpHTF         = PERIOD_H1;     // HTF bias (AND mode only)
-
-input group "===== Direction Master ====="
-input bool TradeBuy  = true;  // Allow BUY
-input bool TradeSell = true;  // Allow SELL
-
-input group "===== LTF Entry (every ON module must pass — all AND) ====="
-// Stoch: cross OR classic if both on. S/R: bounce OR retest if both on.
-// Those families then AND with Fib / MACD / RSI / MA / BOS.
-input bool LTF_UseStochCross     = false; // Stoch cross
-input bool LTF_UseStochClassic   = false; // Stoch classic OS/OB
-input bool LTF_UseSrBounce       = false; // S/R bounce
-input bool LTF_UseSrBreakRetest  = false; // S/R break-retest
-input bool LTF_UseFibZone        = false; // Fib golden zone
-input bool LTF_UseMacdBias       = false; // MACD bias
-input bool LTF_UseRsiBias        = false; // RSI bias
-input bool LTF_UseMA             = false; // MA module (panel: m1 / m2)
-input bool LTF_UseBos            = true;  // BOS (see BosMode)
-
-input group "===== HTF Bias — zone modules (every ON must pass — all AND) ====="
-// Ignored when ConfluenceMode = LTF_ONLY.
-// Zone bias: rsi / stoch / fib / macd / ma. (S/R + BOS stay LTF entry only.)
-input bool HTF_UseStoch          = false; // HTF stoch on/off (mid or OS/OB)
-input bool HTF_StochObOs         = false; // false=mid (%K vs pullback); true=OS/OB
-input bool HTF_UseFibZone        = false; // Fib golden zone
-input bool HTF_UseMacdBias       = false; // MACD bias
-input bool HTF_UseRsiBias        = false; // RSI bias (mid-only)
-input bool HTF_UseMA             = false; // MA module (panel: m1 / m2)
-input bool HTF_MaFromLTF         = false; // HTF MA eval uses LTF handles (panel own/LTF)
-
-input group "===== Stochastic (shared params, per-TF handles) ====="
-input int                   StochKPeriod         = 5;           // Stochastic %K period
-input int                   StochDPeriod         = 3;           // Stochastic %D period
-input int                   StochSlowing         = 3;           // Stochastic slowing
-input ENUM_MA_METHOD        StochMAMethod        = MODE_SMA;    // Stochastic MA method
-input ENUM_STO_PRICE        StochPriceField      = STO_LOWHIGH; // Stochastic price field
 enum ENUM_STOCH_CROSS_MODE
 {
    STOCH_CROSS_PULLBACK, // Cross must land below/above pullback level
    STOCH_CROSS_ANY,      // Any %K/%D cross
    STOCH_CROSS_OSOB      // Cross must come FROM OS (buy) / OB (sell)
 };
-input ENUM_STOCH_CROSS_MODE StochCrossMode       = STOCH_CROSS_OSOB; // Cross mode (only used when Stoch cross is ON)
-// Classic OS/OB zone entry style.
 enum ENUM_STOCH_CLASSIC_MODE
 {
    STOCH_CLASSIC_MOM, // Momentum: buy in OB / sell in OS (ride the extreme)
    STOCH_CLASSIC_REV  // Reversal: buy in OS / sell in OB (fade the extreme)
 };
-input ENUM_STOCH_CLASSIC_MODE StochClassicMode   = STOCH_CLASSIC_REV; // Classic mode (only used when Stoch classic is ON)
-input double                StochPullbackLevel   = 50;          // Pullback level (cross PULLBACK mode + HTF mid)
-input double                StochOversoldLevel   = 20;          // Oversold level (cross OSOB start zone + classic buy zone)
-input double                StochOverboughtLevel = 80;          // Overbought level (cross OSOB start zone + classic sell zone)
-
-input group "===== RSI / MACD (shared params) ====="
-input int                 RSIPeriod        = 14;          // RSI period
-input ENUM_APPLIED_PRICE  RSIAppliedPrice  = PRICE_CLOSE; // RSI applied price
-input double              RSIMidLevel      = 50;          // RSI must be above(buy)/below(sell) this level
-input int                 MACDFastEMA      = 12;          // MACD fast EMA
-input int                 MACDSlowEMA      = 26;          // MACD slow EMA
-input int                 MACDSignalPeriod = 9;           // MACD signal period
-input ENUM_APPLIED_PRICE  MACDAppliedPrice = PRICE_CLOSE; // MACD applied price
-
-input group "===== MA (m1 single line / m2 double line + MaSL lines) ====="
-// One MA module per TF. Panel chip cycles OFF → m1 → m2.
-//   m1 = single MA line (price vs MA, Follow / Reversal).
-//   m2 = double line (fast vs slow, Follow / Reversal).
-// MACheckMode applies to both:
-//   RUNNING      = live side check only.
-//   CANDLE_CLOSE = live side + last closed bar must confirm.
-// LTF uses these settings; HTF shares them unless HTF MA Override is ON.
-// Risk row only toggles MaSL + Fast/Slow.
 enum ENUM_MA_STYLE
 {
    MA_STYLE_SINGLE, // m1 — single MA line
@@ -125,26 +61,113 @@ enum ENUM_MA_CHECK
    MA_CHECK_RUNNING,      // Live side only (+/- buffer)
    MA_CHECK_CANDLE_CLOSE  // Live side + last close must confirm
 };
-input ENUM_MA_METHOD      MaMethod       = MODE_EMA;        // SMA / EMA / SMMA / LWMA
-input ENUM_APPLIED_PRICE  MaAppliedPrice = PRICE_CLOSE;    // Applied price
-input int                 MaShift        = 0;              // MA horizontal shift
-
-input ENUM_MA_STYLE       MaStyle        = MA_STYLE_DOUBLE; // Default when TF UseMA is ON
-input ENUM_MA_CHECK       MACheckMode    = MA_CHECK_RUNNING; // Running or CandleClose (m1 / m2)
-input double              MABufferPips   = 100;              // m1 buffer (pips)
-
-input int                 MaPeriod       = 34;  // Single line (m1)
-input int                 MaFastPeriod   = 13;  // m2 fast
-input int                 MaSlowPeriod   = 34;  // m2 slow
-
-// m1 / m2 entry direction.
 enum ENUM_MA_TREND_MODE
 {
    MA_TREND_FOLLOW,   // Buy when price/fast is on the buy side of MA/slow
    MA_TREND_REVERSAL  // Fade: buy when price/fast is on the sell side of MA/slow
 };
-input ENUM_MA_TREND_MODE  MaTrendMode    = MA_TREND_FOLLOW; // m1 / m2
-input double              MaMinDiffPips  = 100;             // m2: 0 = any separation
+enum ENUM_BOS_MODE
+{
+   BOS_ZIGZAG,    // Zigzag structural BOS
+   BOS_FRACTAL,   // Fractal structure BOS
+   BOS_BOTH_AND   // Both engines must agree
+};
+enum ENUM_BOS_SIGNAL_MODE
+{
+   BOS_SIGNAL_EVENT, // Enter only on the bar that breaks structure
+   BOS_SIGNAL_BIAS   // Stay buy/sell every bar while bias holds
+};
+enum ENUM_BOS_BREAK_MODE
+{
+   BOS_BREAK_CLOSE, // Fractal: close must break level
+   BOS_BREAK_WICK   // Fractal: wick may break level
+};
+enum ENUM_MASL_LINE
+{
+   MASL_FAST, // m2: fast. m1: same single line
+   MASL_SLOW  // m2: slow. m1: same single line
+};
+
+//====================== INPUTS ======================
+input group "===== Confluence (LTF entry, optional HTF bias) ====="
+input ENUM_CONF_MODE  ConfluenceMode = CONF_LTF_ONLY; // LTF only, or LTF+HTF
+input ENUM_TIMEFRAMES InpLTF         = PERIOD_M30;    // LTF entry (signal clock + virtual exits)
+input ENUM_TIMEFRAMES InpHTF         = PERIOD_H1;     // HTF bias (AND mode only)
+
+input group "===== Direction Master ====="
+input bool TradeBuy  = true; // Allow BUY
+input bool TradeSell = true; // Allow SELL
+
+input group "===== LTF Entry (every ON module must pass — all AND) ====="
+// Stoch: cross OR classic if both on. S/R: bounce OR retest if both on.
+// Those families then AND with Fib / MACD / RSI / MA / BOS.
+input bool LTF_UseStochCross    = false; // Stoch cross
+input bool LTF_UseStochClassic  = false; // Stoch classic OS/OB
+input bool LTF_UseSrBounce      = false; // S/R bounce
+input bool LTF_UseSrBreakRetest = false; // S/R break-retest
+input bool LTF_UseFibZone       = false; // Fib golden zone
+input bool LTF_UseMacdBias      = false; // MACD bias
+input bool LTF_UseRsiBias       = false; // RSI bias
+input bool LTF_UseMA            = false; // MA module (panel: m1 / m2)
+input bool LTF_UseBos           = true;  // BOS (see BosMode)
+
+input group "===== HTF Bias — zone modules (every ON must pass — all AND) ====="
+// Ignored when ConfluenceMode = LTF_ONLY.
+// Zone bias: rsi / stoch / fib / macd / ma. (S/R + BOS stay LTF entry only.)
+input bool HTF_UseStoch    = false; // HTF stoch on/off (mid or OS/OB)
+input bool HTF_StochObOs   = false; // false=mid (%K vs pullback); true=OS/OB
+input bool HTF_UseFibZone  = false; // Fib golden zone
+input bool HTF_UseMacdBias = false; // MACD bias
+input bool HTF_UseRsiBias  = false; // RSI bias (mid-only)
+input bool HTF_UseMA       = false; // MA module (panel: m1 / m2)
+input bool HTF_MaFromLTF   = false; // HTF MA eval uses LTF handles (panel own/LTF)
+
+input group "===== Stochastic (shared params, per-TF handles) ====="
+input int                     StochKPeriod         = 5;                 // Stochastic %K period
+input int                     StochDPeriod         = 3;                 // Stochastic %D period
+input int                     StochSlowing         = 3;                 // Stochastic slowing
+input ENUM_MA_METHOD          StochMAMethod        = MODE_SMA;          // Stochastic MA method
+input ENUM_STO_PRICE          StochPriceField      = STO_LOWHIGH;       // Stochastic price field
+input ENUM_STOCH_CROSS_MODE   StochCrossMode       = STOCH_CROSS_OSOB;  // Cross mode (only used when Stoch cross is ON)
+// Classic OS/OB zone entry style.
+input ENUM_STOCH_CLASSIC_MODE StochClassicMode     = STOCH_CLASSIC_REV; // Classic mode (only used when Stoch classic is ON)
+input double                  StochPullbackLevel   = 50;                // Pullback level (cross PULLBACK mode + HTF mid)
+input double                  StochOversoldLevel   = 20;                // Oversold level (cross OSOB start zone + classic buy zone)
+input double                  StochOverboughtLevel = 80;                // Overbought level (cross OSOB start zone + classic sell zone)
+
+input group "===== RSI / MACD (shared params) ====="
+input int                RSIPeriod        = 14;          // RSI period
+input ENUM_APPLIED_PRICE RSIAppliedPrice  = PRICE_CLOSE; // RSI applied price
+input double             RSIMidLevel      = 50;          // RSI must be above(buy)/below(sell) this level
+input int                MACDFastEMA      = 12;          // MACD fast EMA
+input int                MACDSlowEMA      = 26;          // MACD slow EMA
+input int                MACDSignalPeriod = 9;           // MACD signal period
+input ENUM_APPLIED_PRICE MACDAppliedPrice = PRICE_CLOSE; // MACD applied price
+
+input group "===== MA (m1 single line / m2 double line + MaSL lines) ====="
+// One MA module per TF. Panel chip cycles OFF → m1 → m2.
+//   m1 = single MA line (price vs MA, Follow / Reversal).
+//   m2 = double line (fast vs slow, Follow / Reversal).
+// MACheckMode applies to both:
+//   RUNNING      = live side check only.
+//   CANDLE_CLOSE = live side + last closed bar must confirm.
+// LTF uses these settings; HTF shares them unless HTF MA Override is ON.
+// Risk row only toggles MaSL + Fast/Slow.
+input ENUM_MA_METHOD     MaMethod       = MODE_EMA;    // SMA / EMA / SMMA / LWMA
+input ENUM_APPLIED_PRICE MaAppliedPrice = PRICE_CLOSE; // Applied price
+input int                MaShift        = 0;           // MA horizontal shift
+
+input ENUM_MA_STYLE MaStyle      = MA_STYLE_DOUBLE;  // Default when TF UseMA is ON
+input ENUM_MA_CHECK MACheckMode  = MA_CHECK_RUNNING; // Running or CandleClose (m1 / m2)
+input double        MABufferPips = 100;              // m1 buffer (pips)
+
+input int MaPeriod     = 34; // Single line (m1)
+input int MaFastPeriod = 13; // m2 fast
+input int MaSlowPeriod = 34; // m2 slow
+
+// m1 / m2 entry direction.
+input ENUM_MA_TREND_MODE MaTrendMode   = MA_TREND_FOLLOW; // m1 / m2
+input double             MaMinDiffPips = 100;             // m2: 0 = any separation
 
 input group "===== HTF MA Override (off = share MA settings above) ====="
 input bool HTF_MA_UseOverride = false; // Independent HTF MA periods
@@ -153,27 +176,16 @@ input int  HTF_MaFastPeriod   = 13;    // HTF m2 fast
 input int  HTF_MaSlowPeriod   = 55;    // HTF m2 slow
 
 input group "===== S/R Pivot Entry (LTF entry; levels own or HTF) ====="
-input int    PivotLeftBars       = 5;    // Pivot left bars (levels TF)
-input int    PivotRightBars      = 5;    // Pivot right bars (levels TF)
-input int    LevelsLookback      = 200;  // Bars to scan for pivots on levels TF
-input double TouchPips           = 50;   // How close price must get to the level (pips)
-input bool   RequireRejectCandle = true; // Bounce/retest candle must be bullish(buy)/bearish(sell)
-input int    BreakLookbackBars   = 12;   // Break-retest: bars to search for the break (LTF)
+input int    PivotLeftBars       = 5;     // Pivot left bars (levels TF)
+input int    PivotRightBars      = 5;     // Pivot right bars (levels TF)
+input int    LevelsLookback      = 200;   // Bars to scan for pivots on levels TF
+input double TouchPips           = 50;    // How close price must get to the level (pips)
+input bool   RequireRejectCandle = true;  // Bounce/retest candle must be bullish(buy)/bearish(sell)
+input int    BreakLookbackBars   = 12;    // Break-retest: bars to search for the break (LTF)
 input bool   SrLevelsFromHTF     = false; // Default levels TF (panel chip: own / htf)
 
 input group "===== Fib / BOS entry (shared params, per-TF scan) ====="
-enum ENUM_BOS_MODE
-{
-   BOS_ZIGZAG,    // Zigzag structural BOS
-   BOS_FRACTAL,   // Fractal structure BOS
-   BOS_BOTH_AND   // Both engines must agree
-};
-input ENUM_BOS_MODE BosMode = BOS_FRACTAL; // Entry BOS engine
-enum ENUM_BOS_SIGNAL_MODE
-{
-   BOS_SIGNAL_EVENT, // Enter only on the bar that breaks structure
-   BOS_SIGNAL_BIAS   // Stay buy/sell every bar while bias holds
-};
+input ENUM_BOS_MODE        BosMode             = BOS_FRACTAL;      // Entry BOS engine
 input ENUM_BOS_SIGNAL_MODE BosSignalMode       = BOS_SIGNAL_EVENT; // BOS entry mode (evt/bias)
 input bool                 BosStructureFromHTF = false;            // BOS scan on HTF (panel own/htf)
 
@@ -184,11 +196,6 @@ input int    FibLookbackBars  = 100;   // Zigzag: bars scanned
 input double FibZoneLevelMin  = 0.382; // FibZone: shallow edge
 input double FibZoneLevelMax  = 0.618; // FibZone: deep edge
 
-enum ENUM_BOS_BREAK_MODE
-{
-   BOS_BREAK_CLOSE, // Fractal: close must break level
-   BOS_BREAK_WICK   // Fractal: wick may break level
-};
 input int                 BosFractalPeriod   = 3;              // Fractal: bars each side
 input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_WICK; // Fractal break type
 input int                 BosFractalLookback = 200;            // Fractal: bars scanned
@@ -196,36 +203,31 @@ input int                 BosFractalLookback = 200;            // Fractal: bars 
 input group "===== Stop / Exit ====="
 // Broker SL = hard pip cap. Virtual MA / swing SL are optional; first hit closes.
 // MaSL uses LTF MA lines. m1: Fast/Slow both = single. m2: Fast vs Slow.
-enum ENUM_MASL_LINE
-{
-   MASL_FAST, // m2: fast. m1: same single line
-   MASL_SLOW  // m2: slow. m1: same single line
-};
-input bool           UseVirtualMaSL    = false;       // Virtual MA stop ON/OFF
-input ENUM_MASL_LINE MaSLLine          = MASL_SLOW;   // Default Fast/Slow (panel)
-input double         SLMABufferPips    = 100;         // MA SL buffer (pips)
+input bool           UseVirtualMaSL = false;     // Virtual MA stop ON/OFF
+input ENUM_MASL_LINE MaSLLine       = MASL_SLOW; // Default Fast/Slow (panel)
+input double         SLMABufferPips = 100;       // MA SL buffer (pips)
 
-input bool           UseSwingVirtualSL = true;        // Virtual swing stop (tighten-only)
-input ENUM_BOS_MODE  SwingSLMode       = BOS_FRACTAL; // Swing SL engine (independent of BosMode)
-input double         SwingSLBufferPips = 100;         // Air beyond swing (pips)
+input bool          UseSwingVirtualSL = true;        // Virtual swing stop (tighten-only)
+input ENUM_BOS_MODE SwingSLMode       = BOS_FRACTAL; // Swing SL engine (independent of BosMode)
+input double        SwingSLBufferPips = 100;         // Air beyond swing (pips)
 
 input group "===== Orders / Risk (basket lines: shared SL/TP, tighter-only) ====="
-input double LotSize         = 0.01;  // Lots per layer
-input int    MaxStopLossPips = 500;   // Hard broker SL (pips)
-input int    TakeProfitPips  = 3000;  // Broker TP (pips)
-input int    MaxSpreadPips   = 0;     // Skip new entries above this spread (0 = ignore)
-input int    SlippagePoints  = 20;    // Max deviation for market orders (points)
+input double LotSize         = 0.01;   // Lots per layer
+input int    MaxStopLossPips = 500;    // Hard broker SL (pips)
+input int    TakeProfitPips  = 3000;   // Broker TP (pips)
+input int    MaxSpreadPips   = 0;      // Skip new entries above this spread (0 = ignore)
+input int    SlippagePoints  = 20;     // Max deviation for market orders (points)
 input long   MagicNumber     = 778899; // EA id
 
 input group "===== Grid Layering ====="
-input bool   UseGrid         = false; // Panel Grid OFF = 1 layer; ON = MaxLayers
-input int    MaxLayers       = 1;     // Max open layers when Grid ON
-input int    LayerStepPips   = 200;   // Min adverse move before next layer
+input bool UseGrid       = false; // Panel Grid OFF = 1 layer; ON = MaxLayers
+input int  MaxLayers     = 1;     // Max open layers when Grid ON
+input int  LayerStepPips = 200;   // Min adverse move before next layer
 
 input group "===== Basket Take-Profit (pips, trailing) ====="
-input bool   UseBasketTP         = true; // Manage profit as a basket in pips (works alongside broker TP)
-input double BasketStartPips     = 500;  // Arm trail after this open profit
-input double BasketGivebackPips  = 200;  // Pullback from peak before close
+input bool   UseBasketTP        = true; // Manage profit as a basket in pips (works alongside broker TP)
+input double BasketStartPips    = 500;  // Arm trail after this open profit
+input double BasketGivebackPips = 200;  // Pullback from peak before close
 
 input group "===== Basket SL/TP Modify Retry ====="
 input int ModifyRetryMax                = 3;    // Modify retry max (attempts per burst)
@@ -233,25 +235,25 @@ input int ModifyRetryDelayMs            = 500;  // Modify retry delay ms (betwee
 input int MaxConsecutiveRetryCooldownMs = 2000; // Max consecutive retry cooldown ms (between failed bursts)
 
 input group "===== Session Filter (WIB / Jakarta time) ====="
-input int  SessionTZOffset       = 7;    // UTC offset for inputs below (7 = WIB Jakarta)
-input bool UseSession            = true; // Enable daily trading-hours window
-input int  SessionStartHour      = 6;    // Daily window FROM this hour WIB (0-23)
-input int  SessionEndHour        = 3;    // NO new entries from this hour WIB (crosses midnight: 6→3)
-input bool CloseAtSessionEnd     = true; // Flatten when outside the daily window (e.g. at 03:00)
-input bool UseWeekendFilter      = true; // Block weekend gap (WIB)
-input int  WeekendStopDayWIB     = 6;    // Weekend starts this day (0=Sun … 5=Fri 6=Sat)
-input int  WeekendStopHourWIB    = 3;    // …from this hour (Sat 03:00 = after last Fri session)
-input int  WeekendStartDayWIB    = 1;    // Weekend ends this day (1=Mon)
-input int  WeekendStartHourWIB   = 6;    // …resume from this hour (Mon 06:00)
-input bool CloseAtWeekend        = true; // Flatten when the weekend block starts
+input int  SessionTZOffset     = 7;    // UTC offset for inputs below (7 = WIB Jakarta)
+input bool UseSession          = true; // Enable daily trading-hours window
+input int  SessionStartHour    = 6;    // Daily window FROM this hour WIB (0-23)
+input int  SessionEndHour      = 3;    // NO new entries from this hour WIB (crosses midnight: 6→3)
+input bool CloseAtSessionEnd   = true; // Flatten when outside the daily window (e.g. at 03:00)
+input bool UseWeekendFilter    = true; // Block weekend gap (WIB)
+input int  WeekendStopDayWIB   = 6;    // Weekend starts this day (0=Sun … 5=Fri 6=Sat)
+input int  WeekendStopHourWIB  = 3;    // …from this hour (Sat 03:00 = after last Fri session)
+input int  WeekendStartDayWIB  = 1;    // Weekend ends this day (1=Mon)
+input int  WeekendStartHourWIB = 6;    // …resume from this hour (Mon 06:00)
+input bool CloseAtWeekend      = true; // Flatten when the weekend block starts
 
 input group "===== News Filter (economic calendar) ====="
-input bool   UseNewsFilter        = true;                                              // Block/flatten around economic news
+input bool                           UseNewsFilter     = true;                         // Block/flatten around economic news
 input ENUM_CALENDAR_EVENT_IMPORTANCE NewsMinImportance = CALENDAR_IMPORTANCE_MODERATE; // Minimum importance to react to
-input string NewsCurrency         = "USD";                                             // Currency to watch (USD for XAUUSD)
-input int    NewsMinutesBefore    = 15;                                                // Stop entries this long before the event
-input int    NewsMinutesAfter     = 15;                                                // Resume this long after the event
-input bool   CloseAtNews          = true;                                              // Flatten when the news blackout starts
+input string                         NewsCurrency      = "USD";                        // Currency to watch (USD for XAUUSD)
+input int                            NewsMinutesBefore = 15;                           // Stop entries this long before the event
+input int                            NewsMinutesAfter  = 15;                           // Resume this long after the event
+input bool                           CloseAtNews       = true;                         // Flatten when the news blackout starts
 
 input group "===== Market Guard (holidays / early close) ====="
 input bool UseBrokerSessionGuard = true; // Respect broker symbol trade sessions (Jul 4, etc.)
@@ -259,12 +261,12 @@ input int  MaxStaleTickSeconds   = 120;  // No new trades if no tick for this lo
 input int  OrderRetryCooldownSec = 60;   // After a failed order/close, wait before retrying
 
 input group "===== Chip Panel (click toggles) ====="
-input bool ShowPanel             = true;  // Show chip panel (top-left)
-input int  PanelInsetX           = 3;     // Inset from left
-input int  PanelInsetY           = 25;    // Inset from top
-input bool PanelRemember         = true;  // Remember toggles (GV)
-input bool PanelStartCollapsed   = false; // Start minimized
-input uint PanelClickGuardMs     = 200;   // Double-click guard (ms)
+input bool ShowPanel           = true;  // Show chip panel (top-left)
+input int  PanelInsetX         = 3;     // Inset from left
+input int  PanelInsetY         = 25;    // Inset from top
+input bool PanelRemember       = true;  // Remember toggles (GV)
+input bool PanelStartCollapsed = false; // Start minimized
+input uint PanelClickGuardMs   = 200;   // Double-click guard (ms)
 
 input group "===== Logging ====="
 input bool InpDetailedBlockedLog = true;  // BLOCKED: list enabled LTF / HTF modules
