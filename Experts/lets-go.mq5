@@ -16,7 +16,6 @@
 //|           MaSL: ON/OFF + Fast/Slow exit line (TF1 MA lines).     |
 //|           BosMode / SwingSLMode independent. FibZone may arm on  |
 //|           bar and re-check zone every tick while module is ON.   |
-//|           Optional SrLevelsFromTF2: TF2 levels + TF1 price action.|
 //|  Exits  : broker pip-cap; optional virtual MaSL and/or SwSL.     |
 //|  Panel  : chip toggles (top-left), GV memory.                    |
 //|  Journal: Tag "lets-go #magic SYMBOL". Push INIT/BASKET only.    |
@@ -140,7 +139,6 @@ input int    LevelsLookback      = 200;
 input double TouchPips           = 50;
 input bool   RequireRejectCandle = true;
 input int    BreakLookbackBars   = 12;
-input bool   SrLevelsFromTF2     = false; // TF1 S/R: levels on TF2, price action on TF1
 
 input group "===== Fib / BOS entry (shared params, per-TF scan) ====="
 enum ENUM_BOS_MODE
@@ -1202,14 +1200,6 @@ int OnInit()
               + " SwSL=" + (g_UseSwingVirtualSL ? "ON" : "OFF")
               + " Trail=" + (g_UseBasketTP ? "ON" : "OFF")
               + " | panel=" + (ShowPanel ? ("ON inset " + IntegerToString(PanelInsetX) + "," + IntegerToString(PanelInsetY)) : "off"));
-      if(SrLevelsFromTF2)
-      {
-         if(PeriodSeconds(g_tf2) > PeriodSeconds(g_tf1))
-            LogInfo("NOTE SrLevelsFromTF2 ON — TF1 S/R levels=" + EnumToString(g_tf2)
-                    + " PA=" + EnumToString(g_tf1));
-         else
-            LogInfo("NOTE SrLevelsFromTF2 ON but TF2 is not higher than TF1 — using same-TF levels.");
-      }
       if(_Period != g_tf1)
          LogInfo("NOTE chart TF differs from TF1 (" + EnumToString(g_tf1)
                  + "). Signal clock runs on TF1.");
@@ -1619,17 +1609,14 @@ bool EvalMA(const ENUM_TIMEFRAMES tf,
    return true;
 }
 
-// paTf = price-action TF. levelsTf = pivot levels TF (may differ for cross-TF S/R).
-bool EvalSr(const ENUM_TIMEFRAMES paTf, const bool useBounce, const bool useRetest,
-            bool &buyOK, bool &sellOK, const ENUM_TIMEFRAMES levelsTf)
+bool EvalSr(const ENUM_TIMEFRAMES tf, const bool useBounce, const bool useRetest,
+            bool &buyOK, bool &sellOK)
 {
    buyOK = false; sellOK = false;
    if(!useBounce && !useRetest) { buyOK = true; sellOK = true; return true; }
 
-   ENUM_TIMEFRAMES levTf = (levelsTf == PERIOD_CURRENT) ? paTf : levelsTf;
-
    double support = 0, resistance = 0;
-   if(!GetActiveSR(levTf, support, resistance)) return false;
+   if(!GetActiveSR(tf, support, resistance)) return false;
    if(support <= 0 || resistance <= 0 || support >= resistance) return false;
 
    double touch = MathMax(0.0, TouchPips) * g_pip;
@@ -1641,10 +1628,10 @@ bool EvalSr(const ENUM_TIMEFRAMES paTf, const bool useBounce, const bool useRete
    ArraySetAsSeries(c, true);
 
    int need = MathMax(BreakLookbackBars + 4, 6);
-   if(CopyOpen (_Symbol, paTf, 0, need, o) != need) return false;
-   if(CopyHigh (_Symbol, paTf, 0, need, h) != need) return false;
-   if(CopyLow  (_Symbol, paTf, 0, need, l) != need) return false;
-   if(CopyClose(_Symbol, paTf, 0, need, c) != need) return false;
+   if(CopyOpen (_Symbol, tf, 0, need, o) != need) return false;
+   if(CopyHigh (_Symbol, tf, 0, need, h) != need) return false;
+   if(CopyLow  (_Symbol, tf, 0, need, l) != need) return false;
+   if(CopyClose(_Symbol, tf, 0, need, c) != need) return false;
 
    double o1 = o[1], h1 = h[1], l1 = l[1], c1 = c[1];
    bool bullReject = (c1 > o1);
@@ -1992,14 +1979,13 @@ bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
 // Within Stoch: cross OR classic. Within S/R: bounce OR retest.
 // If nothing enabled: outBuy/outSell stay false (caller may treat empty TF2 as pass).
 // fibLegOnly: FibZone arms from leg direction only (price checked later per tick).
-// srLevelsTf: PERIOD_CURRENT = levels on same tf; else cross-TF levels source.
 bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useCross, const bool useClassic,
             const bool useBounce, const bool useRetest, const bool useFib,
             const bool useMacd, const bool useRsi, const int maState, const bool useBos,
             const int hStoch, const int hRsi, const int hMacd,
             const int hMaSingle, const int hMaFast, const int hMaSlow, const int hAtr,
-            const bool fibLegOnly, const ENUM_TIMEFRAMES srLevelsTf,
+            const bool fibLegOnly,
             bool &outBuy, bool &outSell)
 {
    outBuy = false; outSell = false;
@@ -2021,7 +2007,7 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
    if(useSr)
    {
       bool srB = false, srS = false;
-      if(!EvalSr(tf, useBounce, useRetest, srB, srS, srLevelsTf)) return false;
+      if(!EvalSr(tf, useBounce, useRetest, srB, srS)) return false;
       buy &= srB; sell &= srS;
    }
    if(useFib)
@@ -2077,21 +2063,11 @@ bool Tf2BiasModulesOn()
            g_TF2_UseBos);
 }
 
-// Cross-TF S/R: TF1 price action vs TF2 pivot levels (when TF2 is higher).
-ENUM_TIMEFRAMES SrLevelsTfForTF1()
-{
-   if(!SrLevelsFromTF2) return PERIOD_CURRENT;
-   if(PeriodSeconds(g_tf2) > PeriodSeconds(g_tf1)) return g_tf2;
-   return PERIOD_CURRENT;
-}
-
 void UpdateSignal()
 {
    g_haveSignal      = false;
    g_signalIsBuy     = false;
    g_fibZoneTickGate = false;
-
-   const ENUM_TIMEFRAMES t1SrLevels = SrLevelsTfForTF1();
 
    // Pass 1: normal eval (FibZone requires price in zone now)
    bool b1 = false, s1 = false;
@@ -2100,7 +2076,7 @@ void UpdateSignal()
               g_TF1_UseSrBounce, g_TF1_UseSrBreakRetest, g_TF1_UseFibZone,
               g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_MA, g_TF1_UseBos,
               g_stoch1, g_rsi1, g_macd1, g_ma1, g_maF1, g_maS1, g_atr1,
-              false, t1SrLevels, b1, s1))
+              false, b1, s1))
       return;
 
    bool b2 = true, s2 = true; // ENTRY_ONLY, or empty TF2 bias = pass-through
@@ -2112,7 +2088,7 @@ void UpdateSignal()
                  g_TF2_UseSrBounce, g_TF2_UseSrBreakRetest, g_TF2_UseFibZone,
                  g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_MA, g_TF2_UseBos,
                  g_stoch2, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2,
-                 false, PERIOD_CURRENT, b2, s2))
+                 false, b2, s2))
          return;
    }
 
@@ -2135,7 +2111,7 @@ void UpdateSignal()
               g_TF1_UseSrBounce, g_TF1_UseSrBreakRetest, g_TF1_UseFibZone,
               g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_MA, g_TF1_UseBos,
               g_stoch1, g_rsi1, g_macd1, g_ma1, g_maF1, g_maS1, g_atr1,
-              true, t1SrLevels, b1, s1))
+              true, b1, s1))
       return;
 
    b2 = true; s2 = true;
@@ -2147,7 +2123,7 @@ void UpdateSignal()
                  g_TF2_UseSrBounce, g_TF2_UseSrBreakRetest, g_TF2_UseFibZone,
                  g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_MA, g_TF2_UseBos,
                  g_stoch2, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2,
-                 true, PERIOD_CURRENT, b2, s2))
+                 true, b2, s2))
          return;
    }
 
