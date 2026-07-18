@@ -23,7 +23,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.03"
+#property version   "5.04"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -253,7 +253,7 @@ input bool PanelStartCollapsed   = false; // Start minimized
 input uint PanelClickGuardMs     = 200;   // Double-click guard (ms)
 
 input group "===== Logging ====="
-input bool InpDetailedBlockedLog = true;  // BLOCKED: enabled modules + fib leg details
+input bool InpDetailedBlockedLog = true;  // BLOCKED: list enabled TF1 / TF2 modules
 input bool InpDebugLog           = false; // Panel clicks + memory notes
 
 
@@ -2149,30 +2149,6 @@ string EnabledModulesContext()
    return out;
 }
 
-string FibBlockedContext()
-{
-   string out = "";
-   if(g_TF1_UseFibZone)
-   {
-      bool have = false, bull = false, bos = false;
-      double older = 0, newer = 0;
-      if(ScanFibLeg(g_tf1, g_atr1, have, bull, older, newer, bos) && have)
-         out += " | TF1fib leg=" + (bull ? "BULL" : "BEAR")
-              + " anchor=" + DoubleToString(newer, _Digits)
-              + " bos=" + (bos ? "Y" : "N");
-   }
-   if(g_ConfluenceMode == CONF_TF1_AND_TF2 && g_TF2_UseFibZone)
-   {
-      bool have = false, bull = false, bos = false;
-      double older = 0, newer = 0;
-      if(ScanFibLeg(g_tf2, g_atr2, have, bull, older, newer, bos) && have)
-         out += " | TF2fib leg=" + (bull ? "BULL" : "BEAR")
-              + " anchor=" + DoubleToString(newer, _Digits)
-              + " bos=" + (bos ? "Y" : "N");
-   }
-   return out;
-}
-
 void UpdateSignal()
 {
    g_haveSignal      = false;
@@ -2258,7 +2234,7 @@ void DiagBlock(const string reason)
    string msg = "BLOCKED " + reason
               + " | signal=" + (g_signalIsBuy ? "BUY" : "SELL");
    if(InpDetailedBlockedLog)
-      msg += EnabledModulesContext() + FibBlockedContext();
+      msg += EnabledModulesContext();
    LogInfo(msg);
 }
 
