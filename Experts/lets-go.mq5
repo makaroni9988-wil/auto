@@ -23,7 +23,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.99"
+#property version   "5.00"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -98,14 +98,17 @@ input ENUM_APPLIED_PRICE  MACDAppliedPrice = PRICE_CLOSE;
 
 input group "===== MA (one system: ma / m1 / m2 + MaSL lines) ====="
 // One module per TF. Panel chip cycles OFF → ma → m1 → m2.
-//   ma = live price vs single MA (Running / CandleClose).
-//   m1 = single MA trend (Follow / Reversal).
-//   m2 = fast vs slow trend (Follow / Reversal).
+//   ma  = live price vs single MA.
+//   m1  = single MA (same live filter as 2nd/gun/bomb/3rd).
+//   m2  = fast vs slow.
+// MACheckMode applies to ma / m1 / m2 (not dead on m1/m2):
+//   RUNNING     = live side check only.
+//   CANDLE_CLOSE = live side + last closed bar must confirm.
 // Shared identity for every MA handle. Risk row only toggles MaSL + Fast/Slow.
 enum ENUM_MA_STYLE
 {
    MA_STYLE_LIVE,   // ma  — live price vs single MA
-   MA_STYLE_SINGLE, // m1  — single MA trend
+   MA_STYLE_SINGLE, // m1  — single MA (live filter)
    MA_STYLE_DOUBLE  // m2  — fast vs slow
 };
 enum ENUM_TREND_MODE
@@ -115,22 +118,22 @@ enum ENUM_TREND_MODE
 };
 enum ENUM_MA_CHECK
 {
-   MA_CHECK_RUNNING,      // ma: live price vs MA (+/- buffer)
-   MA_CHECK_CANDLE_CLOSE  // ma: last close must confirm too
+   MA_CHECK_RUNNING,      // Live side only (+/- buffer)
+   MA_CHECK_CANDLE_CLOSE  // Live side + last close must confirm
 };
 input ENUM_MA_METHOD      MaMethod       = MODE_EMA;     // SMA / EMA / SMMA / LWMA
 input ENUM_APPLIED_PRICE  MaAppliedPrice = PRICE_CLOSE;
 input int                 MaShift        = 0;
 
 input ENUM_MA_STYLE       MaStyle        = MA_STYLE_DOUBLE; // Default when TF UseMA is ON
-input ENUM_MA_CHECK       MACheckMode    = MA_CHECK_RUNNING; // ma mode only
-input double              MABufferPips   = 100;             // ma mode buffer (pips)
+input ENUM_MA_CHECK       MACheckMode    = MA_CHECK_RUNNING; // Running or CandleClose (ma / m1 / m2)
+input double              MABufferPips   = 100;             // ma / m1 buffer (pips)
 
 input int                 MaPeriod       = 34;  // Single line (ma + m1)
 input int                 MaFastPeriod   = 13;  // m2 fast
 input int                 MaSlowPeriod   = 34;  // m2 slow
 input ENUM_TREND_MODE     MaTrendMode    = TREND_FOLLOW; // m1 / m2
-input double              MaMinDiffPips  = 100; // m1 / m2: 0 = any separation
+input double              MaMinDiffPips  = 100; // m2: 0 = any separation
 
 input group "===== S/R Pivot Entry (shared params, per-TF levels) ====="
 input int    PivotLeftBars       = 5;
@@ -1549,7 +1552,8 @@ bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBu
    return (c[0] < m[1] - buffer);
 }
 
-// One MA module: ma (live) / m1 (single trend) / m2 (fast vs slow).
+// One MA module: ma (live) / m1 (single) / m2 (fast vs slow).
+// MACheckMode is live for all three — same idea as 2nd/gun/bomb/3rd.
 bool EvalMA(const ENUM_TIMEFRAMES tf,
             const int hSingle, const int hFast, const int hSlow,
             const int state, bool &buyOK, bool &sellOK)
@@ -1557,43 +1561,48 @@ bool EvalMA(const ENUM_TIMEFRAMES tf,
    buyOK = true; sellOK = true;
    if(!MaEnabled(state)) return true;
 
-   if(state == MA_LIVE)
+   // ma + m1: single-line live filter (Running / CandleClose via PassesMALive)
+   if(state == MA_LIVE || state == MA_SINGLE)
    {
       if(hSingle == INVALID_HANDLE) return false;
-      buyOK  = PassesMALive(tf, hSingle, true);
-      sellOK = PassesMALive(tf, hSingle, false);
+      bool followBuy  = PassesMALive(tf, hSingle, true);
+      bool followSell = PassesMALive(tf, hSingle, false);
+      if(state == MA_LIVE || MaTrendMode == TREND_FOLLOW)
+      {
+         buyOK  = followBuy;
+         sellOK = followSell;
+      }
+      else // m1 + TREND_REVERSAL
+      {
+         buyOK  = followSell;
+         sellOK = followBuy;
+      }
       return true;
    }
 
+   // m2: fast vs slow — always require live (bar 0); CandleClose also needs bar 1
+   if(hFast == INVALID_HANDLE || hSlow == INVALID_HANDLE) return false;
+   double f[], s[];
+   ArraySetAsSeries(f, true);
+   ArraySetAsSeries(s, true);
+   if(CopyBuffer(hFast, 0, 0, 2, f) != 2) return false; // [0]=now, [1]=last closed
+   if(CopyBuffer(hSlow, 0, 0, 2, s) != 2) return false;
+
    double thr = MathMax(0.0, MaMinDiffPips) * g_pip;
-   int dir = 0; // +1 buy-side follow, -1 sell-side follow, 0 range
+   int dirLive = 0, dirClosed = 0;
+   double diffLive = f[0] - s[0];
+   double diffClosed = f[1] - s[1];
+   if(diffLive >  thr) dirLive = 1;
+   if(diffLive < -thr) dirLive = -1;
+   if(diffClosed >  thr) dirClosed = 1;
+   if(diffClosed < -thr) dirClosed = -1;
 
-   if(state == MA_SINGLE)
+   int dir = dirLive;
+   if(MACheckMode == MA_CHECK_CANDLE_CLOSE)
    {
-      if(hSingle == INVALID_HANDLE) return false;
-      double m[];
-      ArraySetAsSeries(m, true);
-      if(CopyBuffer(hSingle, 0, 1, 1, m) != 1) return false;
-      double close[];
-      ArraySetAsSeries(close, true);
-      if(CopyClose(_Symbol, tf, 1, 1, close) != 1) return false;
-      double diff = close[0] - m[0];
-      if(diff >  thr) dir = 1;
-      if(diff < -thr) dir = -1;
+      if(dirLive == 0 || dirClosed == 0 || dirLive != dirClosed)
+         dir = 0;
    }
-   else // MA_DOUBLE
-   {
-      if(hFast == INVALID_HANDLE || hSlow == INVALID_HANDLE) return false;
-      double f[], s[];
-      ArraySetAsSeries(f, true);
-      ArraySetAsSeries(s, true);
-      if(CopyBuffer(hFast, 0, 1, 1, f) != 1) return false;
-      if(CopyBuffer(hSlow, 0, 1, 1, s) != 1) return false;
-      double diff = f[0] - s[0];
-      if(diff >  thr) dir = 1;
-      if(diff < -thr) dir = -1;
-   }
-
    if(dir == 0) { buyOK = false; sellOK = false; return true; }
 
    if(MaTrendMode == TREND_FOLLOW)
@@ -2170,12 +2179,21 @@ void TryEnter()
    if(MaxSpreadPips > 0 && (ask - bid) / g_pip > MaxSpreadPips)
    { DiagBlock("spread " + DoubleToString((ask - bid) / g_pip, 1) + " > " + IntegerToString(MaxSpreadPips)); return; }
 
-   // ma mode: re-check live side at the entry tick, including layers.
-   if(g_TF1_MA == MA_LIVE && !PassesMALive(g_tf1, g_ma1, g_signalIsBuy))
-   { DiagBlock("MA live filter"); return; }
-   if(g_ConfluenceMode == CONF_TF1_AND_TF2 && g_TF2_MA == MA_LIVE &&
-      !PassesMALive(g_tf2, g_ma2, g_signalIsBuy))
-   { DiagBlock("TF2 MA live filter"); return; }
+   // MA module: re-check at entry tick (incl. layers) — ma / m1 / m2 all live.
+   if(MaEnabled(g_TF1_MA))
+   {
+      bool maB = false, maS = false;
+      if(!EvalMA(g_tf1, g_ma1, g_maF1, g_maS1, g_TF1_MA, maB, maS) ||
+         (g_signalIsBuy ? !maB : !maS))
+      { DiagBlock("MA filter"); return; }
+   }
+   if(g_ConfluenceMode == CONF_TF1_AND_TF2 && MaEnabled(g_TF2_MA))
+   {
+      bool maB = false, maS = false;
+      if(!EvalMA(g_tf2, g_ma2, g_maF2, g_maS2, g_TF2_MA, maB, maS) ||
+         (g_signalIsBuy ? !maB : !maS))
+      { DiagBlock("TF2 MA filter"); return; }
+   }
 
    int    layers; double deepest; bool existingIsBuy;
    CountLayers(layers, deepest, existingIsBuy);
