@@ -28,7 +28,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.22"
+#property version   "5.23"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -1242,10 +1242,7 @@ void PanelPaintState()
       PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF bias: Fib golden zone", g_HTF_UseFibZone, false);
       PanelStyleChip(PanelObj("T2_stoch"), "stoch", "HTF bias: Stoch on/off", g_HTF_UseStoch, false);
       PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeTip(), true, true);
-      if(g_HTF_StochObOs)
-         PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(), "HTF OB/OS momentum / reversal", true, true);
-      else
-         PanelStyleDisabled(PanelObj("T2_stDir"), T2StochDirText(), "Only used in OB/OS mode");
+      PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(), "HTF OB/OS mom/rev (used when mode=obos)", true, true);
       PanelStyleChip(PanelObj("T2_maSrc"), T2MaSrcChipText(), T2MaSrcTip(), true, true);
       PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_HTF_MA), MaChipTip(g_HTF_MA, "HTF bias"), MaChipLit(g_HTF_MA), false);
       if(g_HTF_MaFromLTF)
@@ -1331,6 +1328,8 @@ void PanelBuild()
    if(StringLen(g_panelPrefix) == 0)
       PanelInitPrefix();
 
+   PanelDeleteAll();
+
    const int chipW = 56;
    const int chipH = 19;
    const int gap   = 3;
@@ -1342,17 +1341,9 @@ void PanelBuild()
 
    if(g_panelCollapsed)
    {
-      PanelHideExtras();
       PanelPaintState();
       return;
    }
-
-   string oldObjs[] = {
-      "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2",
-      "FamAND","FamMA","FamStOR","FamBOS","FamSrOR","FamAND2","FamSTO","FamMA2",
-      "TagLTF","TagHTF","TagZone"
-   };
-   for(int sp=0; sp<ArraySize(oldObjs); sp++) ObjectDelete(0, PanelObj(oldObjs[sp]));
 
    y += chipH + gap;
    string modeIds[] = { "CONF", "GRID", "GRIDN", "BUY", "SELL" };
@@ -1496,7 +1487,6 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T2_stMd") PanelToggleBool(g_HTF_StochObOs, "T2_stOb");
    else if(id == "T2_stDir")
    {
-      if(!g_HTF_StochObOs) return true;
       g_HTF_StochObOsMode = (g_HTF_StochObOsMode == STOCH_CLASSIC_MOM) ? STOCH_CLASSIC_REV : STOCH_CLASSIC_MOM;
       PanelSaveInt("T2_stDir", (int)g_HTF_StochObOsMode);
    }
