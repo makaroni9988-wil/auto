@@ -900,16 +900,6 @@ void PanelStyleFamily(const string name, const string text, const string tip, co
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
 
-void PanelStyleTag(const string name, const string text, const string tip)
-{
-   ObjectSetString (0, name, OBJPROP_TEXT, text);
-   ObjectSetString (0, name, OBJPROP_TOOLTIP, tip);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, C'110,110,110');
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'30,30,30');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'40,40,40');
-   ObjectSetInteger(0, name, OBJPROP_STATE, false);
-}
-
 void PanelStyleStatus(const string name, const bool blocked)
 {
    ObjectSetString (0, name, OBJPROP_TEXT, blocked ? "BLOCK" : "OPEN");
@@ -1200,7 +1190,6 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_rsi"), "rsi", "LTF entry: RSI bias (mid)", g_LTF_UseRsiBias, false);
    PanelStyleChip(PanelObj("T1_macd"),"macd","LTF entry: MACD bias", g_LTF_UseMacdBias, false);
    PanelStyleChip(PanelObj("T1_fib"), "fib", "LTF entry: Fib golden zone", g_LTF_UseFibZone, false);
-   PanelStyleTag(PanelObj("TagOsc"), "·", "LTF oscillator bias family");
 
    PanelStyleFamily(PanelObj("FamSt"), "st or", "LTF Stoch family: stX OR stC (either arms it), then ANDs with others", true);
    PanelStyleChip(PanelObj("T1_stX"), "stX", "LTF entry: Stoch cross", g_LTF_UseStochCross, false);
@@ -1213,7 +1202,6 @@ void PanelPaintState()
                   MaChipLit(g_LTF_MA), false);
    PanelStyleChip(PanelObj("T1_maDir"), MaDirText(g_LTF_MaTrendMode), "LTF MA follow / reversal", true, true);
    PanelStyleChip(PanelObj("T1_maChk"), MaCheckText(g_LTF_MACheckMode), "LTF MA running / candle close", true, true);
-   PanelStyleTag(PanelObj("TagMa"), "·", "LTF MA settings");
 
    PanelStyleChip(PanelObj("T1_bos"), "bos", "LTF entry: BOS on/off (ANDs when ON)", g_LTF_UseBos, false);
    PanelStyleChip(PanelObj("BosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
@@ -1234,8 +1222,6 @@ void PanelPaintState()
       PanelStyleFamily(PanelObj("FamOsc2"), "osc", "HTF oscillator bias: each ON module ANDs", false);
       PanelStyleFamily(PanelObj("FamSt2"), "st", "HTF Stoch family: toggle + mid/obos + mom/rev", false);
       PanelStyleFamily(PanelObj("FamMa2"), "ma", "HTF MA family (ANDs when ON)", false);
-      PanelStyleTag(PanelObj("TagOsc2"), "·", "HTF oscillator bias family");
-      PanelStyleTag(PanelObj("TagSt2"), "·", "HTF stoch row spacer");
 
       PanelStyleChip(PanelObj("T2_rsi"), "rsi", "HTF bias: RSI mid", g_HTF_UseRsiBias, false);
       PanelStyleChip(PanelObj("T2_macd"),"macd","HTF bias: MACD", g_HTF_UseMacdBias, false);
@@ -1261,8 +1247,6 @@ void PanelPaintState()
       PanelStyleDisabled(PanelObj("FamOsc2"), "osc", "HTF bias locked while mode=LTF");
       PanelStyleDisabled(PanelObj("FamSt2"), "st", "HTF bias locked while mode=LTF");
       PanelStyleDisabled(PanelObj("FamMa2"), "ma", "HTF bias locked while mode=LTF");
-      PanelStyleDisabled(PanelObj("TagOsc2"), "·", "HTF bias locked while mode=LTF");
-      PanelStyleDisabled(PanelObj("TagSt2"), "·", "HTF bias locked while mode=LTF");
       string hIds[] = {"T2_rsi","T2_macd","T2_fib","T2_stoch","T2_stMd","T2_stDir","T2_maSrc","T2_ma","T2_maDir","T2_maChk"};
       string hTxt[10];
       hTxt[0]="rsi"; hTxt[1]="macd"; hTxt[2]="fib"; hTxt[3]="stoch";
@@ -1298,27 +1282,22 @@ void PanelPaintState()
 
 }
 
-void PanelHideExtras()
+// Delete any panel button/label whose id is not in this build's live set —
+// catches orphans left behind by an older panel layout (e.g. a recompiled
+// version that renamed/dropped ids) without touching objects that are still
+// current, so a TF-change reinit reuses existing objects (no blink).
+void PanelPruneOrphans(const string &liveIds[])
 {
-   string extras[] = {
-      "CONF","GRID","GRIDN","BUY","SELL","L1","L2","LG","LR",
-      "FamOsc","FamSt","FamMa","TagOsc","TagMa",
-      "T1_rsi","T1_ma","T1_maDir","T1_maChk","T1_fib","T1_macd",
-      "T1_stX","T1_stXm","T1_stC","T1_stCm",
-      "BosSrc","T1_bos","BosEng","BosSig","BosBrk",
-      "SRLBL","SrLv","T1_srR","T1_srB","SrRej",
-      "FamOsc2","FamSt2","FamMa2","TagOsc2","TagSt2",
-      "T2_rsi","T2_stoch","T2_stMd","T2_stDir","T2_maSrc","T2_ma","T2_maDir","T2_maChk","T2_fib","T2_macd",
-      "Session","Weekend","News","Broker","GuardSt",
-      "MaSL","MaLn","SwSL","SwMd","Trail",
-      "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"
-   };
-   for(int i = 0; i < ArraySize(extras); i++)
+   int total = ObjectsTotal(0, -1, OBJ_BUTTON);
+   for(int i = total - 1; i >= 0; i--)
    {
-      string name = PanelObj(extras[i]);
-      if(ObjectFind(0, name) < 0) continue;
-      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, -5000);
-      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, -5000);
+      string name = ObjectName(0, i, -1, OBJ_BUTTON);
+      if(StringFind(name, g_panelPrefix) != 0) continue;
+      string id = StringSubstr(name, StringLen(g_panelPrefix));
+      bool keep = false;
+      for(int j = 0; j < ArraySize(liveIds); j++)
+         if(liveIds[j] == id) { keep = true; break; }
+      if(!keep) ObjectDelete(0, name);
    }
 }
 
@@ -1327,8 +1306,6 @@ void PanelBuild()
    if(!ShowPanel) { PanelDeleteAll(); return; }
    if(StringLen(g_panelPrefix) == 0)
       PanelInitPrefix();
-
-   PanelDeleteAll();
 
    const int chipW = 56;
    const int chipH = 19;
@@ -1341,6 +1318,8 @@ void PanelBuild()
 
    if(g_panelCollapsed)
    {
+      string liveCollapsed[] = { "TTL" };
+      PanelPruneOrphans(liveCollapsed);
       PanelPaintState();
       return;
    }
@@ -1351,14 +1330,14 @@ void PanelBuild()
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
-   string t1osc[] = { "FamOsc", "T1_rsi", "T1_macd", "T1_fib", "TagOsc" };
-   PanelPlaceEvenRow(t1osc, 5, x0, y, rowW, gap, chipH);
+   string t1osc[] = { "FamOsc", "T1_rsi", "T1_macd", "T1_fib" };
+   PanelPlaceEvenRow(t1osc, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
    string t1st[] = { "FamSt", "T1_stX", "T1_stXm", "T1_stC", "T1_stCm" };
    PanelPlaceEvenRow(t1st, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1ma[] = { "FamMa", "T1_ma", "T1_maDir", "T1_maChk", "TagMa" };
-   PanelPlaceEvenRow(t1ma, 5, x0, y, rowW, gap, chipH);
+   string t1ma[] = { "FamMa", "T1_ma", "T1_maDir", "T1_maChk" };
+   PanelPlaceEvenRow(t1ma, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
    string t1bos[] = { "T1_bos", "BosSrc", "BosEng", "BosSig", "BosBrk" };
    PanelPlaceEvenRow(t1bos, 5, x0, y, rowW, gap, chipH);
@@ -1368,11 +1347,11 @@ void PanelBuild()
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
-   string t2osc[] = { "FamOsc2", "T2_rsi", "T2_macd", "T2_fib", "TagOsc2" };
-   PanelPlaceEvenRow(t2osc, 5, x0, y, rowW, gap, chipH);
+   string t2osc[] = { "FamOsc2", "T2_rsi", "T2_macd", "T2_fib" };
+   PanelPlaceEvenRow(t2osc, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t2st[] = { "FamSt2", "TagSt2", "T2_stoch", "T2_stMd", "T2_stDir" };
-   PanelPlaceEvenRow(t2st, 5, x0, y, rowW, gap, chipH);
+   string t2st[] = { "FamSt2", "T2_stoch", "T2_stMd", "T2_stDir" };
+   PanelPlaceEvenRow(t2st, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
    string t2ma[] = { "FamMa2", "T2_maSrc", "T2_ma", "T2_maDir", "T2_maChk" };
    PanelPlaceEvenRow(t2ma, 5, x0, y, rowW, gap, chipH);
@@ -1386,6 +1365,21 @@ void PanelBuild()
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
    string risk[] = { "MaSL", "MaLn", "SwSL", "SwMd", "Trail" };
    PanelPlaceEvenRow(risk, 5, x0, y, rowW, gap, chipH);
+
+   string liveIds[] = {
+      "TTL","CONF","GRID","GRIDN","BUY","SELL","L1",
+      "FamOsc","T1_rsi","T1_macd","T1_fib",
+      "FamSt","T1_stX","T1_stXm","T1_stC","T1_stCm",
+      "FamMa","T1_ma","T1_maDir","T1_maChk",
+      "T1_bos","BosSrc","BosEng","BosSig","BosBrk",
+      "SRLBL","SrLv","T1_srR","T1_srB","SrRej","L2",
+      "FamOsc2","T2_rsi","T2_macd","T2_fib",
+      "FamSt2","T2_stoch","T2_stMd","T2_stDir",
+      "FamMa2","T2_maSrc","T2_ma","T2_maDir","T2_maChk","LG",
+      "Session","Weekend","News","Broker","GuardSt","LR",
+      "MaSL","MaLn","SwSL","SwMd","Trail"
+   };
+   PanelPruneOrphans(liveIds);
 
    PanelPaintState();
 }
