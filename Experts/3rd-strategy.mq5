@@ -595,6 +595,7 @@ void TryEnter()
    {
       if(g_lastEntryBar == g_lastBarTime)
       { DiagBlock("one first-layer entry per bar"); return; }
+      ResetBasket();
       ResetBasketLines();   // fresh basket: never inherit lines from a previous one
    }
 
@@ -726,7 +727,12 @@ void OpenLayer(const bool isFirstLayer)
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double minStop = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
    double lots  = NormalizeLots(LotSize);
-   if(lots <= 0) return;
+   if(lots <= 0)
+   {
+      LogGuardOnce("BLOCKED open — NormalizeLots(LotSize=" +
+                   DoubleToString(LotSize, 2) + ") = 0 (check LotSize vs broker min/max/step)");
+      return;
+   }
 
    // Order is never sent naked: attach the existing basket lines if we have
    // them, otherwise a first-layer estimate. SyncBasketLines() recomputes the

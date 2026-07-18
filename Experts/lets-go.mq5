@@ -17,6 +17,7 @@
 //|           HTF stoch: independent mid or OS/OB mom/rev zone.      |
 //|           HTF MA: independent own setup or shared LTF handles.   |
 //|           MA: one module per TF — panel m1 / m2.                 |
+//|           MA check per TF: run / close / closed (no live gate).  |
 //|           MaSL: ON/OFF + Fast/Slow exit line (LTF MA lines).     |
 //|           Grid chip OFF → 1 layer; ON → MaxLayers.               |
 //|           BosMode / SwingSLMode independent. FibZone may arm on  |
@@ -28,7 +29,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.24"
+#property version   "5.25"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -60,7 +61,8 @@ enum ENUM_MA_STYLE
 enum ENUM_MA_CHECK
 {
    MA_CHECK_RUNNING,      // Live side only (+/- buffer)
-   MA_CHECK_CANDLE_CLOSE  // Live side + last close must confirm
+   MA_CHECK_CANDLE_CLOSE, // Live side + last close must confirm
+   MA_CHECK_CLOSED_ONLY   // Last close only — no live gate (bias style)
 };
 enum ENUM_MA_TREND_MODE
 {
@@ -169,6 +171,7 @@ input group "===== MA (m1 single line / m2 double line + MaSL lines) ====="
 // LTF MACheckMode:
 //   RUNNING      = live side check only.
 //   CANDLE_CLOSE = live side + last closed bar must confirm.
+//   CLOSED_ONLY  = last closed bar only, no live gate (bias style).
 // LTF uses these settings. HTF has an independent own setup below.
 // Risk row only toggles MaSL + Fast/Slow.
 input ENUM_MA_METHOD     MaMethod       = MODE_EMA;    // SMA / EMA / SMMA / LWMA
@@ -176,7 +179,7 @@ input ENUM_APPLIED_PRICE MaAppliedPrice = PRICE_CLOSE; // Applied price
 input int                MaShift        = 0;           // MA horizontal shift
 
 input ENUM_MA_STYLE MaStyle        = MA_STYLE_DOUBLE;    // Default when LTF/HTF UseMA is ON
-input ENUM_MA_CHECK LTF_MACheckMode = MA_CHECK_RUNNING; // LTF Running or CandleClose (m1 / m2)
+input ENUM_MA_CHECK LTF_MACheckMode = MA_CHECK_RUNNING; // LTF Running / CandleClose / ClosedOnly (m1 / m2)
 input double        MABufferPips   = 100;                // LTF m1 buffer (pips)
 
 input int MaPeriod     = 34; // Single line (m1)
@@ -191,7 +194,7 @@ input group "===== HTF MA (independent when panel source = own) ====="
 input ENUM_MA_METHOD     HTF_MaMethod       = MODE_EMA;         // HTF own MA method
 input ENUM_APPLIED_PRICE HTF_MaAppliedPrice = PRICE_CLOSE;      // HTF own applied price
 input int                HTF_MaShift        = 0;                // HTF own horizontal shift
-input ENUM_MA_CHECK      HTF_MACheckMode    = MA_CHECK_RUNNING; // HTF own Running or CandleClose
+input ENUM_MA_CHECK      HTF_MACheckMode    = MA_CHECK_RUNNING; // HTF own Running / CandleClose / ClosedOnly
 input ENUM_MA_TREND_MODE HTF_MaTrendMode    = MA_TREND_FOLLOW;  // HTF own Follow or Reversal
 input double             HTF_MABufferPips   = 100;              // HTF own m1 buffer (pips)
 input double             HTF_MaMinDiffPips  = 100;              // HTF own m2 minimum separation
@@ -1096,7 +1099,12 @@ string SrLvTip()
 }
 
 string MaDirText(const ENUM_MA_TREND_MODE mode) { return mode == MA_TREND_FOLLOW ? "fol" : "rev"; }
-string MaCheckText(const ENUM_MA_CHECK mode) { return mode == MA_CHECK_RUNNING ? "run" : "close"; }
+string MaCheckText(const ENUM_MA_CHECK mode)
+{
+   if(mode == MA_CHECK_RUNNING)      return "run";
+   if(mode == MA_CHECK_CANDLE_CLOSE) return "close";
+   return "closed"; // MA_CHECK_CLOSED_ONLY
+}
 string BosBreakText() { return g_BosBreakMode == BOS_BREAK_CLOSE ? "close" : "wick"; }
 string RejectText() { return g_RequireRejectCandle ? "reject" : "free"; }
 string GridCountText() { return "G" + IntegerToString(g_MaxLayers); }
@@ -1117,6 +1125,15 @@ void PanelCycleMA(int &state, const string gvId)
    else if(state == MA_DOUBLE) state = MA_OFF;
    else                        state = MA_SINGLE;
    PanelSaveInt(gvId, state);
+}
+
+void PanelCycleMaCheck(ENUM_MA_CHECK &mode, const string gvId)
+{
+   // Panel: run → close → closed → run
+   if(mode == MA_CHECK_RUNNING)           mode = MA_CHECK_CANDLE_CLOSE;
+   else if(mode == MA_CHECK_CANDLE_CLOSE) mode = MA_CHECK_CLOSED_ONLY;
+   else                                   mode = MA_CHECK_RUNNING;
+   PanelSaveInt(gvId, (int)mode);
 }
 
 void PanelCycleMaSLLine()
@@ -1201,7 +1218,7 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_ma"), MaChipText(g_LTF_MA), MaChipTip(g_LTF_MA, "LTF entry"),
                   MaChipLit(g_LTF_MA), false);
    PanelStyleChip(PanelObj("T1_maDir"), MaDirText(g_LTF_MaTrendMode), "LTF MA follow / reversal", true, true);
-   PanelStyleChip(PanelObj("T1_maChk"), MaCheckText(g_LTF_MACheckMode), "LTF MA running / candle close", true, true);
+   PanelStyleChip(PanelObj("T1_maChk"), MaCheckText(g_LTF_MACheckMode), "LTF MA running / candle close / closed only", true, true);
 
    PanelStyleChip(PanelObj("T1_bos"), "bos", "LTF entry: BOS on/off (ANDs when ON)", g_LTF_UseBos, false);
    PanelStyleChip(PanelObj("BosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
@@ -1239,7 +1256,7 @@ void PanelPaintState()
       else
       {
          PanelStyleChip(PanelObj("T2_maDir"), MaDirText(g_HTF_MaTrendMode), "HTF-own MA follow / reversal", true, true);
-         PanelStyleChip(PanelObj("T2_maChk"), MaCheckText(g_HTF_MACheckMode), "HTF-own MA running / candle close", true, true);
+         PanelStyleChip(PanelObj("T2_maChk"), MaCheckText(g_HTF_MACheckMode), "HTF-own MA running / candle close / closed only", true, true);
       }
    }
    else
@@ -1469,11 +1486,7 @@ bool PanelHandleClick(const string sparam)
       g_LTF_MaTrendMode = (g_LTF_MaTrendMode == MA_TREND_FOLLOW) ? MA_TREND_REVERSAL : MA_TREND_FOLLOW;
       PanelSaveInt("T1_MaDir", (int)g_LTF_MaTrendMode);
    }
-   else if(id == "T1_maChk")
-   {
-      g_LTF_MACheckMode = (g_LTF_MACheckMode == MA_CHECK_RUNNING) ? MA_CHECK_CANDLE_CLOSE : MA_CHECK_RUNNING;
-      PanelSaveInt("T1_MaChk", (int)g_LTF_MACheckMode);
-   }
+   else if(id == "T1_maChk") PanelCycleMaCheck(g_LTF_MACheckMode, "T1_MaChk");
    else if(id == "T1_bos") PanelToggleBool(g_LTF_UseBos, "T1_bos");
    else if(id == "SrLv") PanelCycleSource(g_SrSource, "SrLv");
    else if(id == "SrRej") PanelToggleBool(g_RequireRejectCandle, "SrRej");
@@ -1498,8 +1511,7 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T2_maChk")
    {
       if(g_HTF_MaFromLTF) return true;
-      g_HTF_MACheckMode = (g_HTF_MACheckMode == MA_CHECK_RUNNING) ? MA_CHECK_CANDLE_CLOSE : MA_CHECK_RUNNING;
-      PanelSaveInt("T2_MaChk", (int)g_HTF_MACheckMode);
+      PanelCycleMaCheck(g_HTF_MACheckMode, "T2_MaChk");
    }
    else if(id == "Session") PanelToggleBool(g_UseSession, "Session");
    else if(id == "Weekend") PanelToggleBool(g_UseWeekendFilter, "Weekend");
@@ -2060,13 +2072,18 @@ bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBu
    { LogDebugGuard("dbg_malive", "PassesMALive: buffer not ready"); return false; } // [0]=now, [1]=last closed bar MA
 
    double buffer = MathMax(0.0, bufferPips) * g_pip;
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   bool liveOK = wantBuy ? (ask > m[0] + buffer) : (bid < m[0] - buffer);
-   if(!liveOK) return false;
+   // CLOSED_ONLY: last closed bar vs its MA only — no live gate (bias style).
+   if(checkMode != MA_CHECK_CLOSED_ONLY)
+   {
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   if(checkMode == MA_CHECK_RUNNING) return true;
+      bool liveOK = wantBuy ? (ask > m[0] + buffer) : (bid < m[0] - buffer);
+      if(!liveOK) return false;
+
+      if(checkMode == MA_CHECK_RUNNING) return true;
+   }
 
    double c[];
    ArraySetAsSeries(c, true);
@@ -2077,7 +2094,7 @@ bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBu
 }
 
 // One MA module: m1 (single line) / m2 (fast vs slow).
-// Per-TF MA check mode (Running / CandleClose) applies to m1 and m2.
+// Per-TF MA check mode (Running / CandleClose / ClosedOnly) applies to m1 and m2.
 bool EvalMA(const ENUM_TIMEFRAMES tf,
             const int hSingle, const int hFast, const int hSlow,
             const int state, const ENUM_MA_TREND_MODE trendMode,
@@ -2087,7 +2104,7 @@ bool EvalMA(const ENUM_TIMEFRAMES tf,
    buyOK = true; sellOK = true;
    if(!MaEnabled(state)) return true;
 
-   // m1: single-line filter (Running / CandleClose via PassesMALive)
+   // m1: single-line filter (Running / CandleClose / ClosedOnly via PassesMALive)
    if(state == MA_SINGLE)
    {
       if(hSingle == INVALID_HANDLE)
@@ -2133,6 +2150,8 @@ bool EvalMA(const ENUM_TIMEFRAMES tf,
       if(dirLive == 0 || dirClosed == 0 || dirLive != dirClosed)
          dir = 0;
    }
+   else if(checkMode == MA_CHECK_CLOSED_ONLY)
+      dir = dirClosed; // last closed bar only — no live gate (bias style)
    if(dir == 0) { buyOK = false; sellOK = false; return true; }
 
    if(trendMode == MA_TREND_FOLLOW)
