@@ -29,7 +29,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.25"
+#property version   "5.26"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -773,6 +773,16 @@ void RuntimeLoadFromGV()
       g_StochClassicMode = STOCH_CLASSIC_REV;
    if(g_HTF_StochObOsMode != STOCH_CLASSIC_MOM && g_HTF_StochObOsMode != STOCH_CLASSIC_REV)
       g_HTF_StochObOsMode = STOCH_CLASSIC_REV;
+   if(g_LTF_MACheckMode != MA_CHECK_RUNNING && g_LTF_MACheckMode != MA_CHECK_CANDLE_CLOSE
+      && g_LTF_MACheckMode != MA_CHECK_CLOSED_ONLY)
+      g_LTF_MACheckMode = MA_CHECK_RUNNING;
+   if(g_HTF_MACheckMode != MA_CHECK_RUNNING && g_HTF_MACheckMode != MA_CHECK_CANDLE_CLOSE
+      && g_HTF_MACheckMode != MA_CHECK_CLOSED_ONLY)
+      g_HTF_MACheckMode = MA_CHECK_RUNNING;
+   if(g_LTF_MaTrendMode != MA_TREND_FOLLOW && g_LTF_MaTrendMode != MA_TREND_REVERSAL)
+      g_LTF_MaTrendMode = MA_TREND_FOLLOW;
+   if(g_HTF_MaTrendMode != MA_TREND_FOLLOW && g_HTF_MaTrendMode != MA_TREND_REVERSAL)
+      g_HTF_MaTrendMode = MA_TREND_FOLLOW;
 }
 
 void RuntimeLoadFromInputsThenGV()
