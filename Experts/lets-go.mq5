@@ -129,7 +129,7 @@ input bool HTF_UseRsiBias  = false; // RSI bias (mid-only)
 input bool HTF_UseMA       = false; // MA module (panel: m1 / m2)
 input bool HTF_MaFromLTF   = false; // HTF MA eval uses LTF handles (panel own/LTF)
 
-input group "===== Stochastic (shared params, per-TF handles) ====="
+input group "===== LTF Stochastic ====="
 input int                     StochKPeriod         = 5;                 // Stochastic %K period
 input int                     StochDPeriod         = 3;                 // Stochastic %D period
 input int                     StochSlowing         = 3;                 // Stochastic slowing
@@ -143,15 +143,15 @@ input double                  StochOversoldLevel   = 20;                // Overs
 input double                  StochOverboughtLevel = 80;                // Overbought level (cross OSOB start zone + classic sell zone)
 
 input group "===== HTF Stochastic (independent) ====="
-input int                     HTF_StochKPeriod         = 5;
-input int                     HTF_StochDPeriod         = 3;
-input int                     HTF_StochSlowing         = 3;
-input ENUM_MA_METHOD          HTF_StochMAMethod        = MODE_SMA;
-input ENUM_STO_PRICE          HTF_StochPriceField      = STO_LOWHIGH;
-input ENUM_STOCH_CLASSIC_MODE HTF_StochObOsMode        = STOCH_CLASSIC_REV;
-input double                  HTF_StochMidLevel        = 50;
-input double                  HTF_StochOversoldLevel   = 20;
-input double                  HTF_StochOverboughtLevel = 80;
+input int                     HTF_StochKPeriod         = 5;                 // HTF Stochastic %K period
+input int                     HTF_StochDPeriod         = 3;                 // HTF Stochastic %D period
+input int                     HTF_StochSlowing         = 3;                 // HTF Stochastic slowing
+input ENUM_MA_METHOD          HTF_StochMAMethod        = MODE_SMA;          // HTF Stochastic smoothing method
+input ENUM_STO_PRICE          HTF_StochPriceField      = STO_LOWHIGH;       // HTF Stochastic price field
+input ENUM_STOCH_CLASSIC_MODE HTF_StochObOsMode        = STOCH_CLASSIC_REV; // HTF OB/OS style: momentum or reversal
+input double                  HTF_StochMidLevel        = 50;                // HTF mid-mode threshold
+input double                  HTF_StochOversoldLevel   = 20;                // HTF oversold threshold
+input double                  HTF_StochOverboughtLevel = 80;                // HTF overbought threshold
 
 input group "===== RSI / MACD (shared params) ====="
 input int                RSIPeriod        = 14;          // RSI period
@@ -175,29 +175,29 @@ input ENUM_MA_METHOD     MaMethod       = MODE_EMA;    // SMA / EMA / SMMA / LWM
 input ENUM_APPLIED_PRICE MaAppliedPrice = PRICE_CLOSE; // Applied price
 input int                MaShift        = 0;           // MA horizontal shift
 
-input ENUM_MA_STYLE MaStyle      = MA_STYLE_DOUBLE;  // Default when TF UseMA is ON
-input ENUM_MA_CHECK LTF_MACheckMode  = MA_CHECK_RUNNING; // Running or CandleClose (m1 / m2)
-input double        MABufferPips = 100;              // m1 buffer (pips)
+input ENUM_MA_STYLE MaStyle        = MA_STYLE_DOUBLE;    // Default when LTF/HTF UseMA is ON
+input ENUM_MA_CHECK LTF_MACheckMode = MA_CHECK_RUNNING; // LTF Running or CandleClose (m1 / m2)
+input double        MABufferPips   = 100;                // LTF m1 buffer (pips)
 
 input int MaPeriod     = 34; // Single line (m1)
 input int MaFastPeriod = 13; // m2 fast
 input int MaSlowPeriod = 34; // m2 slow
 
 // m1 / m2 entry direction.
-input ENUM_MA_TREND_MODE LTF_MaTrendMode   = MA_TREND_FOLLOW; // m1 / m2
-input double             MaMinDiffPips = 100;             // m2: 0 = any separation
+input ENUM_MA_TREND_MODE LTF_MaTrendMode = MA_TREND_FOLLOW; // LTF m1 / m2 direction
+input double             MaMinDiffPips   = 100;             // LTF m2: 0 = any separation
 
 input group "===== HTF MA (independent when panel source = own) ====="
-input ENUM_MA_METHOD     HTF_MaMethod       = MODE_EMA;
-input ENUM_APPLIED_PRICE HTF_MaAppliedPrice = PRICE_CLOSE;
-input int                HTF_MaShift        = 0;
-input ENUM_MA_CHECK      HTF_MACheckMode    = MA_CHECK_RUNNING;
-input ENUM_MA_TREND_MODE HTF_MaTrendMode    = MA_TREND_FOLLOW;
-input double             HTF_MABufferPips   = 100;
-input double             HTF_MaMinDiffPips  = 100;
-input int                HTF_MaPeriod       = 55;
-input int                HTF_MaFastPeriod   = 13;
-input int                HTF_MaSlowPeriod   = 55;
+input ENUM_MA_METHOD     HTF_MaMethod       = MODE_EMA;         // HTF own MA method
+input ENUM_APPLIED_PRICE HTF_MaAppliedPrice = PRICE_CLOSE;      // HTF own applied price
+input int                HTF_MaShift        = 0;                // HTF own horizontal shift
+input ENUM_MA_CHECK      HTF_MACheckMode    = MA_CHECK_RUNNING; // HTF own Running or CandleClose
+input ENUM_MA_TREND_MODE HTF_MaTrendMode    = MA_TREND_FOLLOW;  // HTF own Follow or Reversal
+input double             HTF_MABufferPips   = 100;              // HTF own m1 buffer (pips)
+input double             HTF_MaMinDiffPips  = 100;              // HTF own m2 minimum separation
+input int                HTF_MaPeriod       = 55;               // HTF own single line (m1)
+input int                HTF_MaFastPeriod   = 13;               // HTF own m2 fast line
+input int                HTF_MaSlowPeriod   = 55;               // HTF own m2 slow line
 
 input group "===== S/R Pivot Entry (LTF entry; levels own or HTF) ====="
 input int    PivotLeftBars       = 5;     // Pivot left bars (levels TF)
@@ -206,12 +206,12 @@ input int    LevelsLookback      = 200;   // Bars to scan for pivots on levels T
 input double TouchPips           = 50;    // How close price must get to the level (pips)
 input bool   RequireRejectCandle = true;  // Bounce/retest candle must be bullish(buy)/bearish(sell)
 input int    BreakLookbackBars   = 12;    // Break-retest: bars to search for the break (LTF)
-input ENUM_TF_SOURCE SrLevelsSource = TF_SOURCE_OWN; // own / HTF / both (same-side AND)
+input ENUM_TF_SOURCE SrLevelsSource = TF_SOURCE_OWN; // S/R levels: own / HTF / both (same-side AND)
 
 input group "===== Fib / BOS entry (shared params, per-TF scan) ====="
 input ENUM_BOS_MODE        BosMode             = BOS_FRACTAL;      // Entry BOS engine
 input ENUM_BOS_SIGNAL_MODE BosSignalMode       = BOS_SIGNAL_EVENT; // BOS entry mode (evt/bias)
-input ENUM_TF_SOURCE       BosStructureSource = TF_SOURCE_OWN;     // own / HTF / both (same-side AND)
+input ENUM_TF_SOURCE       BosStructureSource = TF_SOURCE_OWN;     // BOS structure: own / HTF / both (same-side AND)
 
 input double FibDeviationMult = 3.0;   // Zigzag: ATR deviation multiplier
 input int    FibDepth         = 6;     // Zigzag: depth (confirm = Depth/2)
