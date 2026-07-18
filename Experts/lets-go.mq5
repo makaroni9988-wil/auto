@@ -6,7 +6,7 @@
 //|  news/market guards, modify-retry.                               |
 //|                                                                  |
 //|  Entry  : TF1 = entry (every ON module must pass — all AND).     |
-//|           TF2 = zone bias only (fib / macd / rsi / ma).          |
+//|           TF2 = zone bias (stoch / fib / macd / rsi / ma).       |
 //|           Open when TF1 ready, and TF2 ready if AND mode.        |
 //|           Signal clock = TF1 new bar.                            |
 //|           Within Stoch: cross OR classic. Within S/R: bounce OR  |
@@ -23,7 +23,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.01"
+#property version   "5.02"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -58,9 +58,11 @@ input bool TF1_UseRsiBias        = false; // RSI bias
 input bool TF1_UseMA             = false; // MA module (panel: ma / m1 / m2)
 input bool TF1_UseBos            = true;  // BOS (see BosMode)
 
-input group "===== TF2 Bias — zone modules only (every ON must pass — all AND) ====="
+input group "===== TF2 Bias — zone modules (every ON must pass — all AND) ====="
 // Ignored when ConfluenceMode = TF1_ONLY.
-// Zone bias only: fib / macd / rsi / ma. (stoch / S/R / BOS are TF1 entry.)
+// Zone bias: stoch / fib / macd / rsi / ma. (S/R + BOS stay TF1 entry only.)
+input bool TF2_UseStochCross     = false; // Stoch cross
+input bool TF2_UseStochClassic   = false; // Stoch classic OS/OB
 input bool TF2_UseFibZone        = false; // Fib golden zone
 input bool TF2_UseMacdBias       = false; // MACD bias
 input bool TF2_UseRsiBias        = false; // RSI bias
@@ -260,6 +262,7 @@ ENUM_BOS_MODE  g_SwingSLMode;
 bool g_TradeBuy, g_TradeSell;
 bool g_TF1_UseStochCross, g_TF1_UseStochClassic, g_TF1_UseSrBounce, g_TF1_UseSrBreakRetest;
 bool g_TF1_UseFibZone, g_TF1_UseMacdBias, g_TF1_UseRsiBias, g_TF1_UseBos;
+bool g_TF2_UseStochCross, g_TF2_UseStochClassic;
 bool g_TF2_UseFibZone, g_TF2_UseMacdBias, g_TF2_UseRsiBias;
 bool g_SrLevelsFromTF2 = false; // false = S/R levels on TF1 (own); true = levels on TF2
 int  g_TF1_MA = MA_OFF;
@@ -488,6 +491,7 @@ string PanelInputFingerprint()
         + IntegerToString((int)TF1_UseFibZone) + IntegerToString((int)TF1_UseMacdBias)
         + IntegerToString((int)TF1_UseRsiBias) + IntegerToString((int)TF1_UseMA)
         + IntegerToString((int)TF1_UseBos) + "|"
+        + IntegerToString((int)TF2_UseStochCross) + IntegerToString((int)TF2_UseStochClassic)
         + IntegerToString((int)TF2_UseFibZone) + IntegerToString((int)TF2_UseMacdBias)
         + IntegerToString((int)TF2_UseRsiBias) + IntegerToString((int)TF2_UseMA) + "|"
         + IntegerToString((int)SrLevelsFromTF2) + "|"
@@ -515,6 +519,8 @@ void RuntimeApplyInputDefaults()
    g_TF1_MA = MaStateFromInputs(TF1_UseMA);
    g_TF1_UseBos = TF1_UseBos;
 
+   g_TF2_UseStochCross = TF2_UseStochCross;
+   g_TF2_UseStochClassic = TF2_UseStochClassic;
    g_TF2_UseFibZone = TF2_UseFibZone;
    g_TF2_UseMacdBias = TF2_UseMacdBias;
    g_TF2_UseRsiBias = TF2_UseRsiBias;
@@ -547,6 +553,8 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("T1_bos", g_TF1_UseBos);
    PanelSaveBool("SrLv", g_SrLevelsFromTF2);
 
+   PanelSaveBool("T2_stX", g_TF2_UseStochCross);
+   PanelSaveBool("T2_stC", g_TF2_UseStochClassic);
    PanelSaveBool("T2_fib", g_TF2_UseFibZone);
    PanelSaveBool("T2_macd", g_TF2_UseMacdBias);
    PanelSaveBool("T2_rsi", g_TF2_UseRsiBias);
@@ -581,6 +589,8 @@ void RuntimeLoadFromGV()
    g_TF1_UseBos = PanelLoadBool("T1_bos", g_TF1_UseBos);
    g_SrLevelsFromTF2 = PanelLoadBool("SrLv", g_SrLevelsFromTF2);
 
+   g_TF2_UseStochCross = PanelLoadBool("T2_stX", g_TF2_UseStochCross);
+   g_TF2_UseStochClassic = PanelLoadBool("T2_stC", g_TF2_UseStochClassic);
    g_TF2_UseFibZone = PanelLoadBool("T2_fib", g_TF2_UseFibZone);
    g_TF2_UseMacdBias = PanelLoadBool("T2_macd", g_TF2_UseMacdBias);
    g_TF2_UseRsiBias = PanelLoadBool("T2_rsi", g_TF2_UseRsiBias);
@@ -876,7 +886,9 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_bos"), "bos", "TF1 entry: BOS (BosMode)", g_TF1_UseBos, false);
    PanelStyleChip(PanelObj("SrLv"), SrLvChipText(), SrLvTip(), true, true);
 
-   PanelStyleChip(PanelObj("L2"), " TF2 bias", "TF2 zone bias (+TF2): fib / macd / rsi / ma", true, true);
+   PanelStyleChip(PanelObj("L2"), " TF2 bias", "TF2 zone bias (+TF2): stoch / fib / macd / rsi / ma", true, true);
+   PanelStyleChip(PanelObj("T2_stX"), "stX", "TF2 bias: Stoch cross", g_TF2_UseStochCross, false);
+   PanelStyleChip(PanelObj("T2_stC"), "stC", "TF2 bias: Stoch classic OS/OB", g_TF2_UseStochClassic, false);
    PanelStyleChip(PanelObj("T2_fib"), "fib", "TF2 bias: Fib golden zone", g_TF2_UseFibZone, false);
    PanelStyleChip(PanelObj("T2_macd"),"macd","TF2 bias: MACD", g_TF2_UseMacdBias, false);
    PanelStyleChip(PanelObj("T2_rsi"), "rsi", "TF2 bias: RSI", g_TF2_UseRsiBias, false);
@@ -896,7 +908,7 @@ void PanelHideExtras()
    string extras[] = {
       "CONF","BOSM","BUY","SELL","L1","L2","LR",
       "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ma","T1_bos","SrLv",
-      "T2_fib","T2_macd","T2_rsi","T2_ma",
+      "T2_stX","T2_stC","T2_fib","T2_macd","T2_rsi","T2_ma",
       "MaSL","MaLn","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(extras); i++)
@@ -947,10 +959,13 @@ void PanelBuild()
    PanelPlaceEvenRow(t1b, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
-   // TF2 zone bias only: fib / macd / rsi / ma
+   // TF2 zone bias: stX stC fib | macd rsi ma  (no S/R, no BOS)
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
-   string t2[] = { "T2_fib", "T2_macd", "T2_rsi", "T2_ma" };
-   PanelPlaceEvenRow(t2, 4, x0, y, rowW, gap, chipH);
+   string t2a[] = { "T2_stX", "T2_stC", "T2_fib" };
+   PanelPlaceEvenRow(t2a, 3, x0, y, rowW, gap, chipH);
+   y += chipH + gap;
+   string t2b[] = { "T2_macd", "T2_rsi", "T2_ma" };
+   PanelPlaceEvenRow(t2b, 3, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
@@ -960,7 +975,7 @@ void PanelBuild()
    // Remove obsolete chip objects if still on the chart from older builds.
    string retired[] = {
       "MA", "T1_ema", "T2_ema",
-      "T2_stX", "T2_stC", "T2_srB", "T2_srR", "T2_bos"
+      "T2_srB", "T2_srR", "T2_bos"
    };
    for(int r = 0; r < ArraySize(retired); r++)
    {
@@ -1045,6 +1060,8 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T1_ma") PanelCycleMA(g_TF1_MA, "T1_ma");
    else if(id == "T1_bos") PanelToggleBool(g_TF1_UseBos, "T1_bos");
    else if(id == "SrLv") PanelToggleBool(g_SrLevelsFromTF2, "SrLv");
+   else if(id == "T2_stX") PanelToggleBool(g_TF2_UseStochCross, "T2_stX");
+   else if(id == "T2_stC") PanelToggleBool(g_TF2_UseStochClassic, "T2_stC");
    else if(id == "T2_fib") PanelToggleBool(g_TF2_UseFibZone, "T2_fib");
    else if(id == "T2_macd") PanelToggleBool(g_TF2_UseMacdBias, "T2_macd");
    else if(id == "T2_rsi") PanelToggleBool(g_TF2_UseRsiBias, "T2_rsi");
@@ -1086,7 +1103,7 @@ void PanelPollClicks()
    string ids[] = {
       "TTL","CONF","BOSM","BUY","SELL",
       "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ma","T1_bos","SrLv",
-      "T2_fib","T2_macd","T2_rsi","T2_ma",
+      "T2_stX","T2_stC","T2_fib","T2_macd","T2_rsi","T2_ma",
       "MaSL","MaLn","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(ids); i++)
@@ -1150,7 +1167,7 @@ int OnInit()
    if(prepAll || g_ConfluenceMode == CONF_TF1_AND_TF2)
    {
       if(!CreateTfHandles(g_tf2,
-                          false, false, // no TF2 stoch
+                          prepAll || g_TF2_UseStochCross, prepAll || g_TF2_UseStochClassic,
                           prepAll || g_TF2_UseMacdBias, prepAll || g_TF2_UseRsiBias,
                           prepAll || MaEnabled(g_TF2_MA),
                           prepAll || g_TF2_UseFibZone, false, // no TF2 BOS
@@ -2059,7 +2076,8 @@ bool ResolveSignalSide(const bool buyOK, const bool sellOK, bool &isBuy)
 
 bool Tf2BiasModulesOn()
 {
-   return (g_TF2_UseFibZone || g_TF2_UseMacdBias || g_TF2_UseRsiBias || MaEnabled(g_TF2_MA));
+   return (g_TF2_UseStochCross || g_TF2_UseStochClassic ||
+           g_TF2_UseFibZone || g_TF2_UseMacdBias || g_TF2_UseRsiBias || MaEnabled(g_TF2_MA));
 }
 
 ENUM_TIMEFRAMES SrLevelsTf()
@@ -2088,13 +2106,13 @@ void UpdateSignal()
    bool b2 = true, s2 = true; // ENTRY_ONLY, or empty TF2 bias = pass-through
    if(g_ConfluenceMode == CONF_TF1_AND_TF2 && Tf2BiasModulesOn())
    {
-      // TF2 = zone bias only (no stoch / S/R / BOS)
+      // TF2 = zone bias (stoch / fib / macd / rsi / ma). No S/R, no BOS.
       b2 = false; s2 = false;
       if(!EvalTf(g_tf2,
-                 false, false,
+                 g_TF2_UseStochCross, g_TF2_UseStochClassic,
                  false, false, g_TF2_UseFibZone,
                  g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_MA, false,
-                 INVALID_HANDLE, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2,
+                 g_stoch2, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2,
                  false, g_tf2, b2, s2))
          return;
    }
@@ -2126,10 +2144,10 @@ void UpdateSignal()
    {
       b2 = false; s2 = false;
       if(!EvalTf(g_tf2,
-                 false, false,
+                 g_TF2_UseStochCross, g_TF2_UseStochClassic,
                  false, false, g_TF2_UseFibZone,
                  g_TF2_UseMacdBias, g_TF2_UseRsiBias, g_TF2_MA, false,
-                 INVALID_HANDLE, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2,
+                 g_stoch2, g_rsi2, g_macd2, g_ma2, g_maF2, g_maS2, g_atr2,
                  true, g_tf2, b2, s2))
          return;
    }
