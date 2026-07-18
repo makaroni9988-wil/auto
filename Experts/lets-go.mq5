@@ -11,11 +11,11 @@
 //|           Signal clock = LTF new bar.                            |
 //|           LTF Stoch: cross OR classic. S/R: bounce OR retest.    |
 //|           Enabled families AND with each other.                  |
-//|           BOS: scan on own LTF or HTF; engine Zig/Frac/Both;     |
+//|           BOS: scan own/HTF/both; engine Zig/Frac/Both;          |
 //|           signal evt/bias (evt = once per structure-TF bar).     |
 //|           S/R levels: own or HTF (PA = LTF).                     |
-//|           HTF stoch: mid (%K vs pullback) or OS/OB zone.         |
-//|           HTF MA source: own HTF or LTF handles.                 |
+//|           HTF stoch: independent mid or OS/OB mom/rev zone.      |
+//|           HTF MA: independent own setup or shared LTF handles.   |
 //|           MA: one module per TF — panel m1 / m2.                 |
 //|           MaSL: ON/OFF + Fast/Slow exit line (LTF MA lines).     |
 //|           Grid chip OFF → 1 layer; ON → MaxLayers.               |
@@ -28,7 +28,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.16"
+#property version   "5.17"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -88,6 +88,12 @@ enum ENUM_MASL_LINE
    MASL_FAST, // m2: fast. m1: same single line
    MASL_SLOW  // m2: slow. m1: same single line
 };
+enum ENUM_TF_SOURCE
+{
+   TF_SOURCE_OWN,
+   TF_SOURCE_HTF,
+   TF_SOURCE_BOTH
+};
 
 //====================== INPUTS ======================
 input group "===== Confluence (LTF entry, optional HTF bias) ====="
@@ -136,6 +142,17 @@ input double                  StochPullbackLevel   = 50;                // Pullb
 input double                  StochOversoldLevel   = 20;                // Oversold level (cross OSOB start zone + classic buy zone)
 input double                  StochOverboughtLevel = 80;                // Overbought level (cross OSOB start zone + classic sell zone)
 
+input group "===== HTF Stochastic (independent) ====="
+input int                     HTF_StochKPeriod         = 5;
+input int                     HTF_StochDPeriod         = 3;
+input int                     HTF_StochSlowing         = 3;
+input ENUM_MA_METHOD          HTF_StochMAMethod        = MODE_SMA;
+input ENUM_STO_PRICE          HTF_StochPriceField      = STO_LOWHIGH;
+input ENUM_STOCH_CLASSIC_MODE HTF_StochObOsMode        = STOCH_CLASSIC_REV;
+input double                  HTF_StochMidLevel        = 50;
+input double                  HTF_StochOversoldLevel   = 20;
+input double                  HTF_StochOverboughtLevel = 80;
+
 input group "===== RSI / MACD (shared params) ====="
 input int                RSIPeriod        = 14;          // RSI period
 input ENUM_APPLIED_PRICE RSIAppliedPrice  = PRICE_CLOSE; // RSI applied price
@@ -149,17 +166,17 @@ input group "===== MA (m1 single line / m2 double line + MaSL lines) ====="
 // One MA module per TF. Panel chip cycles OFF → m1 → m2.
 //   m1 = single MA line (price vs MA, Follow / Reversal).
 //   m2 = double line (fast vs slow, Follow / Reversal).
-// MACheckMode applies to both:
+// LTF MACheckMode:
 //   RUNNING      = live side check only.
 //   CANDLE_CLOSE = live side + last closed bar must confirm.
-// LTF uses these settings; HTF shares them unless HTF MA Override is ON.
+// LTF uses these settings. HTF has an independent own setup below.
 // Risk row only toggles MaSL + Fast/Slow.
 input ENUM_MA_METHOD     MaMethod       = MODE_EMA;    // SMA / EMA / SMMA / LWMA
 input ENUM_APPLIED_PRICE MaAppliedPrice = PRICE_CLOSE; // Applied price
 input int                MaShift        = 0;           // MA horizontal shift
 
 input ENUM_MA_STYLE MaStyle      = MA_STYLE_DOUBLE;  // Default when TF UseMA is ON
-input ENUM_MA_CHECK MACheckMode  = MA_CHECK_RUNNING; // Running or CandleClose (m1 / m2)
+input ENUM_MA_CHECK LTF_MACheckMode  = MA_CHECK_RUNNING; // Running or CandleClose (m1 / m2)
 input double        MABufferPips = 100;              // m1 buffer (pips)
 
 input int MaPeriod     = 34; // Single line (m1)
@@ -167,14 +184,20 @@ input int MaFastPeriod = 13; // m2 fast
 input int MaSlowPeriod = 34; // m2 slow
 
 // m1 / m2 entry direction.
-input ENUM_MA_TREND_MODE MaTrendMode   = MA_TREND_FOLLOW; // m1 / m2
+input ENUM_MA_TREND_MODE LTF_MaTrendMode   = MA_TREND_FOLLOW; // m1 / m2
 input double             MaMinDiffPips = 100;             // m2: 0 = any separation
 
-input group "===== HTF MA Override (off = share MA settings above) ====="
-input bool HTF_MA_UseOverride = false; // Independent HTF MA periods
-input int  HTF_MaPeriod       = 55;    // HTF single line (m1)
-input int  HTF_MaFastPeriod   = 13;    // HTF m2 fast
-input int  HTF_MaSlowPeriod   = 55;    // HTF m2 slow
+input group "===== HTF MA (independent when panel source = own) ====="
+input ENUM_MA_METHOD     HTF_MaMethod       = MODE_EMA;
+input ENUM_APPLIED_PRICE HTF_MaAppliedPrice = PRICE_CLOSE;
+input int                HTF_MaShift        = 0;
+input ENUM_MA_CHECK      HTF_MACheckMode    = MA_CHECK_RUNNING;
+input ENUM_MA_TREND_MODE HTF_MaTrendMode    = MA_TREND_FOLLOW;
+input double             HTF_MABufferPips   = 100;
+input double             HTF_MaMinDiffPips  = 100;
+input int                HTF_MaPeriod       = 55;
+input int                HTF_MaFastPeriod   = 13;
+input int                HTF_MaSlowPeriod   = 55;
 
 input group "===== S/R Pivot Entry (LTF entry; levels own or HTF) ====="
 input int    PivotLeftBars       = 5;     // Pivot left bars (levels TF)
@@ -183,12 +206,12 @@ input int    LevelsLookback      = 200;   // Bars to scan for pivots on levels T
 input double TouchPips           = 50;    // How close price must get to the level (pips)
 input bool   RequireRejectCandle = true;  // Bounce/retest candle must be bullish(buy)/bearish(sell)
 input int    BreakLookbackBars   = 12;    // Break-retest: bars to search for the break (LTF)
-input bool   SrLevelsFromHTF     = false; // Default levels TF (panel chip: own / htf)
+input ENUM_TF_SOURCE SrLevelsSource = TF_SOURCE_OWN; // own / HTF / both (same-side AND)
 
 input group "===== Fib / BOS entry (shared params, per-TF scan) ====="
 input ENUM_BOS_MODE        BosMode             = BOS_FRACTAL;      // Entry BOS engine
 input ENUM_BOS_SIGNAL_MODE BosSignalMode       = BOS_SIGNAL_EVENT; // BOS entry mode (evt/bias)
-input bool                 BosStructureFromHTF = false;            // BOS scan on HTF (panel own/htf)
+input ENUM_TF_SOURCE       BosStructureSource = TF_SOURCE_OWN;     // own / HTF / both (same-side AND)
 
 input double FibDeviationMult = 3.0;   // Zigzag: ATR deviation multiplier
 input int    FibDepth         = 6;     // Zigzag: depth (confirm = Depth/2)
@@ -283,25 +306,31 @@ ENUM_CONF_MODE g_ConfluenceMode;
 ENUM_BOS_MODE  g_BosMode;
 ENUM_BOS_MODE  g_SwingSLMode;
 ENUM_BOS_SIGNAL_MODE g_BosSignalMode;
+ENUM_BOS_BREAK_MODE g_BosBreakMode;
 ENUM_STOCH_CROSS_MODE g_StochCrossMode;
 ENUM_STOCH_CLASSIC_MODE g_StochClassicMode;
+ENUM_STOCH_CLASSIC_MODE g_HTF_StochObOsMode;
+ENUM_MA_CHECK g_LTF_MACheckMode, g_HTF_MACheckMode;
+ENUM_MA_TREND_MODE g_LTF_MaTrendMode, g_HTF_MaTrendMode;
+ENUM_TF_SOURCE g_BosSource, g_SrSource;
 bool g_TradeBuy, g_TradeSell;
 bool g_UseGrid;
+int  g_MaxLayers;
 bool g_LTF_UseStochCross, g_LTF_UseStochClassic, g_LTF_UseSrBounce, g_LTF_UseSrBreakRetest;
 bool g_LTF_UseFibZone, g_LTF_UseMacdBias, g_LTF_UseRsiBias, g_LTF_UseBos;
 bool g_HTF_UseStoch, g_HTF_StochObOs;
 bool g_HTF_UseFibZone, g_HTF_UseMacdBias, g_HTF_UseRsiBias;
 bool g_HTF_MaFromLTF = false;   // HTF MA eval on LTF handles
-bool g_BosFromHTF = false;      // BOS structure scan on HTF
-bool g_SrLevelsFromHTF = false; // false = S/R levels on LTF (own); true = HTF
 int  g_LTF_MA = MA_OFF;
 int  g_HTF_MA = MA_OFF;
 bool g_UseVirtualMaSL, g_UseSwingVirtualSL, g_UseBasketTP;
+bool g_RequireRejectCandle;
+bool g_UseSession, g_UseWeekendFilter, g_UseNewsFilter, g_UseBrokerSessionGuard;
 ENUM_MASL_LINE g_MaSLLine = MASL_SLOW;
 
 int EffectiveMaxLayers()
 {
-   return g_UseGrid ? MathMax(1, MaxLayers) : 1;
+   return g_UseGrid ? MathMax(1, g_MaxLayers) : 1;
 }
 
 bool MaEnabled(const int state)
@@ -368,9 +397,9 @@ bool   g_signalIsBuy = false;
 // TryEnter re-checks live zone every tick while FibZone is ON.
 bool   g_fibZoneTickGate = false;
 
-// BOS EVENT: last structure-TF closed-bar time already consumed by UpdateSignal.
-// Prevents HTF (or slower) structure breaks from re-firing on every LTF clock tick.
-datetime g_bosEventSeenStructBar = 0;
+// BOS EVENT: one latch per structure TF (BOTH must never share one timestamp).
+datetime g_bosEventSeenLtfBar = 0;
+datetime g_bosEventSeenHtfBar = 0;
 
 bool   g_basketArmed = false;
 double g_basketPeak  = 0;
@@ -411,14 +440,18 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
                      const bool useCross, const bool useClassic,
                      const bool useMacd, const bool useRsi, const bool useMA,
                      const bool useFib, const bool useBos,
+                     const int stochK, const int stochD, const int stochSlowing,
+                     const ENUM_MA_METHOD stochMethod, const ENUM_STO_PRICE stochPrice,
                      const int maPeriod, const int maFastPeriod, const int maSlowPeriod,
+                     const int maShift, const ENUM_MA_METHOD maMethod,
+                     const ENUM_APPLIED_PRICE maPrice,
                      int &hStoch, int &hRsi, int &hMacd,
                      int &hMaSingle, int &hMaFast, int &hMaSlow, int &hAtr,
                      const string label)
 {
    if(useCross || useClassic)
    {
-      hStoch = iStochastic(_Symbol, tf, StochKPeriod, StochDPeriod, StochSlowing, StochMAMethod, StochPriceField);
+      hStoch = iStochastic(_Symbol, tf, stochK, stochD, stochSlowing, stochMethod, stochPrice);
       if(hStoch == INVALID_HANDLE)
       {
          LogInfo("INIT FAILED - " + label + " Stochastic");
@@ -449,9 +482,9 @@ bool CreateTfHandles(const ENUM_TIMEFRAMES tf,
    // Single + fast + slow so panel can cycle m1/m2 (and MaSL Fast/Slow) without reattach.
    if(useMA)
    {
-      hMaSingle = iMA(_Symbol, tf, MathMax(1, maPeriod),     MaShift, MaMethod, MaAppliedPrice);
-      hMaFast   = iMA(_Symbol, tf, MathMax(1, maFastPeriod), MaShift, MaMethod, MaAppliedPrice);
-      hMaSlow   = iMA(_Symbol, tf, MathMax(1, maSlowPeriod), MaShift, MaMethod, MaAppliedPrice);
+      hMaSingle = iMA(_Symbol, tf, MathMax(1, maPeriod),     maShift, maMethod, maPrice);
+      hMaFast   = iMA(_Symbol, tf, MathMax(1, maFastPeriod), maShift, maMethod, maPrice);
+      hMaSlow   = iMA(_Symbol, tf, MathMax(1, maSlowPeriod), maShift, maMethod, maPrice);
       if(hMaSingle == INVALID_HANDLE || hMaFast == INVALID_HANDLE || hMaSlow == INVALID_HANDLE)
       {
          LogInfo("INIT FAILED - " + label + " MA");
@@ -524,31 +557,35 @@ int PanelLoadInt(const string id, const int fallback)
 // Compact fingerprint of every panel-backed INPUT default.
 string PanelInputFingerprint()
 {
-   return "v512|" + IntegerToString((int)ConfluenceMode) + "|"
+   return "v517|" + IntegerToString((int)ConfluenceMode) + "|"
         + IntegerToString((int)BosMode) + "|"
         + IntegerToString((int)BosSignalMode) + "|"
-        + IntegerToString((int)BosStructureFromHTF) + "|"
+        + IntegerToString((int)BosBreakMode) + "|"
+        + IntegerToString((int)BosStructureSource) + "|"
         + IntegerToString((int)SwingSLMode) + "|"
         + IntegerToString((int)TradeBuy) + IntegerToString((int)TradeSell) + "|"
-        + IntegerToString((int)UseGrid) + "|"
+        + IntegerToString((int)UseGrid) + "|" + IntegerToString(MaxLayers) + "|"
         + IntegerToString((int)LTF_UseStochCross) + IntegerToString((int)LTF_UseStochClassic)
         + IntegerToString((int)LTF_UseSrBounce) + IntegerToString((int)LTF_UseSrBreakRetest)
         + IntegerToString((int)LTF_UseFibZone) + IntegerToString((int)LTF_UseMacdBias)
         + IntegerToString((int)LTF_UseRsiBias) + IntegerToString((int)LTF_UseMA)
         + IntegerToString((int)LTF_UseBos) + "|"
         + IntegerToString((int)StochCrossMode) + IntegerToString((int)StochClassicMode) + "|"
+        + IntegerToString((int)LTF_MaTrendMode) + "|" + IntegerToString((int)LTF_MACheckMode) + "|"
         + IntegerToString((int)HTF_UseStoch) + IntegerToString((int)HTF_StochObOs)
         + IntegerToString((int)HTF_UseFibZone) + IntegerToString((int)HTF_UseMacdBias)
         + IntegerToString((int)HTF_UseRsiBias) + IntegerToString((int)HTF_UseMA)
-        + IntegerToString((int)HTF_MaFromLTF) + "|"
-        + IntegerToString((int)SrLevelsFromHTF) + "|"
+        + IntegerToString((int)HTF_MaFromLTF) + "|" + IntegerToString((int)HTF_StochObOsMode) + "|"
+        + IntegerToString((int)HTF_MaTrendMode) + "|" + IntegerToString((int)HTF_MACheckMode) + "|"
+        + IntegerToString((int)SrLevelsSource) + "|" + IntegerToString((int)RequireRejectCandle) + "|"
         + IntegerToString((int)MaStyle) + IntegerToString((int)MaMethod)
-        + IntegerToString((int)HTF_MA_UseOverride)
         + IntegerToString(HTF_MaPeriod) + IntegerToString(HTF_MaFastPeriod)
         + IntegerToString(HTF_MaSlowPeriod)
         + IntegerToString((int)MaSLLine) + "|"
         + IntegerToString((int)UseVirtualMaSL)
-        + IntegerToString((int)UseSwingVirtualSL) + IntegerToString((int)UseBasketTP);
+        + IntegerToString((int)UseSwingVirtualSL) + IntegerToString((int)UseBasketTP) + "|"
+        + IntegerToString((int)UseSession) + IntegerToString((int)UseWeekendFilter)
+        + IntegerToString((int)UseNewsFilter) + IntegerToString((int)UseBrokerSessionGuard);
 }
 
 void RuntimeApplyInputDefaults()
@@ -556,13 +593,17 @@ void RuntimeApplyInputDefaults()
    g_ConfluenceMode = ConfluenceMode;
    g_BosMode = BosMode;
    g_BosSignalMode = BosSignalMode;
-   g_BosFromHTF = BosStructureFromHTF;
+   g_BosBreakMode = BosBreakMode;
+   g_BosSource = BosStructureSource;
    g_SwingSLMode = SwingSLMode;
    g_TradeBuy = TradeBuy;
    g_TradeSell = TradeSell;
    g_UseGrid = UseGrid;
+   g_MaxLayers = MathMax(1, MathMin(3, MaxLayers));
    g_StochCrossMode = StochCrossMode;
    g_StochClassicMode = StochClassicMode;
+   g_LTF_MaTrendMode = LTF_MaTrendMode;
+   g_LTF_MACheckMode = LTF_MACheckMode;
 
    g_LTF_UseStochCross = LTF_UseStochCross;
    g_LTF_UseStochClassic = LTF_UseStochClassic;
@@ -576,17 +617,25 @@ void RuntimeApplyInputDefaults()
 
    g_HTF_UseStoch = HTF_UseStoch;
    g_HTF_StochObOs = HTF_StochObOs;
+   g_HTF_StochObOsMode = HTF_StochObOsMode;
    g_HTF_UseFibZone = HTF_UseFibZone;
    g_HTF_UseMacdBias = HTF_UseMacdBias;
    g_HTF_UseRsiBias = HTF_UseRsiBias;
    g_HTF_MA = MaStateFromInputs(HTF_UseMA);
    g_HTF_MaFromLTF = HTF_MaFromLTF;
-   g_SrLevelsFromHTF = SrLevelsFromHTF;
+   g_HTF_MaTrendMode = HTF_MaTrendMode;
+   g_HTF_MACheckMode = HTF_MACheckMode;
+   g_SrSource = SrLevelsSource;
+   g_RequireRejectCandle = RequireRejectCandle;
 
    g_UseVirtualMaSL = UseVirtualMaSL;
    g_MaSLLine = MaSLLine;
    g_UseSwingVirtualSL = UseSwingVirtualSL;
    g_UseBasketTP = UseBasketTP;
+   g_UseSession = UseSession;
+   g_UseWeekendFilter = UseWeekendFilter;
+   g_UseNewsFilter = UseNewsFilter;
+   g_UseBrokerSessionGuard = UseBrokerSessionGuard;
 }
 
 void RuntimeSaveAllToGV()
@@ -595,13 +644,17 @@ void RuntimeSaveAllToGV()
    PanelSaveInt("Conf", (int)g_ConfluenceMode);
    PanelSaveInt("BosMode", (int)g_BosMode);
    PanelSaveInt("BosSig", (int)g_BosSignalMode);
-   PanelSaveBool("BosSrc", g_BosFromHTF);
+   PanelSaveInt("BosBrk", (int)g_BosBreakMode);
+   PanelSaveInt("BosSrc", (int)g_BosSource);
    PanelSaveInt("SwMode", (int)g_SwingSLMode);
    PanelSaveBool("Buy", g_TradeBuy);
    PanelSaveBool("Sell", g_TradeSell);
    PanelSaveBool("Grid", g_UseGrid);
+   PanelSaveInt("GridN", g_MaxLayers);
    PanelSaveInt("StXMode", (int)g_StochCrossMode);
    PanelSaveInt("StCMode", (int)g_StochClassicMode);
+   PanelSaveInt("T1_MaDir", (int)g_LTF_MaTrendMode);
+   PanelSaveInt("T1_MaChk", (int)g_LTF_MACheckMode);
 
    PanelSaveBool("T1_stX", g_LTF_UseStochCross);
    PanelSaveBool("T1_stC", g_LTF_UseStochClassic);
@@ -612,20 +665,28 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("T1_rsi", g_LTF_UseRsiBias);
    PanelSaveInt("T1_ma", g_LTF_MA);
    PanelSaveBool("T1_bos", g_LTF_UseBos);
-   PanelSaveBool("SrLv", g_SrLevelsFromHTF);
+   PanelSaveInt("SrLv", (int)g_SrSource);
+   PanelSaveBool("SrRej", g_RequireRejectCandle);
 
    PanelSaveBool("T2_stoch", g_HTF_UseStoch);
    PanelSaveBool("T2_stOb", g_HTF_StochObOs);
+   PanelSaveInt("T2_stDir", (int)g_HTF_StochObOsMode);
    PanelSaveBool("T2_fib", g_HTF_UseFibZone);
    PanelSaveBool("T2_macd", g_HTF_UseMacdBias);
    PanelSaveBool("T2_rsi", g_HTF_UseRsiBias);
    PanelSaveInt("T2_ma", g_HTF_MA);
    PanelSaveBool("T2_maLTF", g_HTF_MaFromLTF);
+   PanelSaveInt("T2_MaDir", (int)g_HTF_MaTrendMode);
+   PanelSaveInt("T2_MaChk", (int)g_HTF_MACheckMode);
 
    PanelSaveBool("MaSL", g_UseVirtualMaSL);
    PanelSaveInt("MaLn", (int)g_MaSLLine);
    PanelSaveBool("SwSL", g_UseSwingVirtualSL);
    PanelSaveBool("Trail", g_UseBasketTP);
+   PanelSaveBool("Session", g_UseSession);
+   PanelSaveBool("Weekend", g_UseWeekendFilter);
+   PanelSaveBool("News", g_UseNewsFilter);
+   PanelSaveBool("Broker", g_UseBrokerSessionGuard);
    PanelSaveBool("Collapsed", g_panelCollapsed);
 }
 
@@ -634,13 +695,17 @@ void RuntimeLoadFromGV()
    g_ConfluenceMode = (ENUM_CONF_MODE)PanelLoadInt("Conf", (int)g_ConfluenceMode);
    g_BosMode = (ENUM_BOS_MODE)PanelLoadInt("BosMode", (int)g_BosMode);
    g_BosSignalMode = (ENUM_BOS_SIGNAL_MODE)PanelLoadInt("BosSig", (int)g_BosSignalMode);
-   g_BosFromHTF = PanelLoadBool("BosSrc", g_BosFromHTF);
+   g_BosBreakMode = (ENUM_BOS_BREAK_MODE)PanelLoadInt("BosBrk", (int)g_BosBreakMode);
+   g_BosSource = (ENUM_TF_SOURCE)PanelLoadInt("BosSrc", (int)g_BosSource);
    g_SwingSLMode = (ENUM_BOS_MODE)PanelLoadInt("SwMode", (int)g_SwingSLMode);
    g_TradeBuy = PanelLoadBool("Buy", g_TradeBuy);
    g_TradeSell = PanelLoadBool("Sell", g_TradeSell);
    g_UseGrid = PanelLoadBool("Grid", g_UseGrid);
+   g_MaxLayers = PanelLoadInt("GridN", g_MaxLayers);
    g_StochCrossMode = (ENUM_STOCH_CROSS_MODE)PanelLoadInt("StXMode", (int)g_StochCrossMode);
    g_StochClassicMode = (ENUM_STOCH_CLASSIC_MODE)PanelLoadInt("StCMode", (int)g_StochClassicMode);
+   g_LTF_MaTrendMode = (ENUM_MA_TREND_MODE)PanelLoadInt("T1_MaDir", (int)g_LTF_MaTrendMode);
+   g_LTF_MACheckMode = (ENUM_MA_CHECK)PanelLoadInt("T1_MaChk", (int)g_LTF_MACheckMode);
 
    g_LTF_UseStochCross = PanelLoadBool("T1_stX", g_LTF_UseStochCross);
    g_LTF_UseStochClassic = PanelLoadBool("T1_stC", g_LTF_UseStochClassic);
@@ -651,15 +716,19 @@ void RuntimeLoadFromGV()
    g_LTF_UseRsiBias = PanelLoadBool("T1_rsi", g_LTF_UseRsiBias);
    g_LTF_MA = PanelLoadInt("T1_ma", g_LTF_MA);
    g_LTF_UseBos = PanelLoadBool("T1_bos", g_LTF_UseBos);
-   g_SrLevelsFromHTF = PanelLoadBool("SrLv", g_SrLevelsFromHTF);
+   g_SrSource = (ENUM_TF_SOURCE)PanelLoadInt("SrLv", (int)g_SrSource);
+   g_RequireRejectCandle = PanelLoadBool("SrRej", g_RequireRejectCandle);
 
    g_HTF_UseStoch = PanelLoadBool("T2_stoch", g_HTF_UseStoch);
    g_HTF_StochObOs = PanelLoadBool("T2_stOb", g_HTF_StochObOs);
+   g_HTF_StochObOsMode = (ENUM_STOCH_CLASSIC_MODE)PanelLoadInt("T2_stDir", (int)g_HTF_StochObOsMode);
    g_HTF_UseFibZone = PanelLoadBool("T2_fib", g_HTF_UseFibZone);
    g_HTF_UseMacdBias = PanelLoadBool("T2_macd", g_HTF_UseMacdBias);
    g_HTF_UseRsiBias = PanelLoadBool("T2_rsi", g_HTF_UseRsiBias);
    g_HTF_MA = PanelLoadInt("T2_ma", g_HTF_MA);
    g_HTF_MaFromLTF = PanelLoadBool("T2_maLTF", g_HTF_MaFromLTF);
+   g_HTF_MaTrendMode = (ENUM_MA_TREND_MODE)PanelLoadInt("T2_MaDir", (int)g_HTF_MaTrendMode);
+   g_HTF_MACheckMode = (ENUM_MA_CHECK)PanelLoadInt("T2_MaChk", (int)g_HTF_MACheckMode);
 
    if(g_LTF_MA != MA_OFF && g_LTF_MA != MA_SINGLE && g_LTF_MA != MA_DOUBLE)
       g_LTF_MA = MA_OFF;
@@ -672,6 +741,10 @@ void RuntimeLoadFromGV()
       g_MaSLLine = MASL_SLOW;
    g_UseSwingVirtualSL = PanelLoadBool("SwSL", g_UseSwingVirtualSL);
    g_UseBasketTP = PanelLoadBool("Trail", g_UseBasketTP);
+   g_UseSession = PanelLoadBool("Session", g_UseSession);
+   g_UseWeekendFilter = PanelLoadBool("Weekend", g_UseWeekendFilter);
+   g_UseNewsFilter = PanelLoadBool("News", g_UseNewsFilter);
+   g_UseBrokerSessionGuard = PanelLoadBool("Broker", g_UseBrokerSessionGuard);
    g_panelCollapsed = PanelLoadBool("Collapsed", g_panelCollapsed);
 
    // Corrupt GV memory → fall back to input defaults
@@ -681,6 +754,13 @@ void RuntimeLoadFromGV()
       g_BosMode = BOS_FRACTAL;
    if(g_BosSignalMode != BOS_SIGNAL_EVENT && g_BosSignalMode != BOS_SIGNAL_BIAS)
       g_BosSignalMode = BOS_SIGNAL_EVENT;
+   if(g_BosBreakMode != BOS_BREAK_CLOSE && g_BosBreakMode != BOS_BREAK_WICK)
+      g_BosBreakMode = BOS_BREAK_WICK;
+   if(g_BosSource < TF_SOURCE_OWN || g_BosSource > TF_SOURCE_BOTH)
+      g_BosSource = TF_SOURCE_OWN;
+   if(g_SrSource < TF_SOURCE_OWN || g_SrSource > TF_SOURCE_BOTH)
+      g_SrSource = TF_SOURCE_OWN;
+   g_MaxLayers = MathMax(1, MathMin(3, g_MaxLayers));
    if(g_SwingSLMode != BOS_ZIGZAG && g_SwingSLMode != BOS_FRACTAL && g_SwingSLMode != BOS_BOTH_AND)
       g_SwingSLMode = BOS_FRACTAL;
    if(g_StochCrossMode != STOCH_CROSS_PULLBACK && g_StochCrossMode != STOCH_CROSS_ANY
@@ -688,6 +768,8 @@ void RuntimeLoadFromGV()
       g_StochCrossMode = STOCH_CROSS_OSOB;
    if(g_StochClassicMode != STOCH_CLASSIC_MOM && g_StochClassicMode != STOCH_CLASSIC_REV)
       g_StochClassicMode = STOCH_CLASSIC_REV;
+   if(g_HTF_StochObOsMode != STOCH_CLASSIC_MOM && g_HTF_StochObOsMode != STOCH_CLASSIC_REV)
+      g_HTF_StochObOsMode = STOCH_CLASSIC_REV;
 }
 
 void RuntimeLoadFromInputsThenGV()
@@ -726,11 +808,11 @@ void PanelClearMemory()
 {
    // wipe remembered clicks for this account/symbol/magic
    string ids[] = {
-      "INP_FP","Conf","BosMode","BosSig","BosSrc","SwMode","Buy","Sell","Grid","Collapsed","SrLv",
-      "StXMode","StCMode",
+      "INP_FP","Conf","BosMode","BosSig","BosBrk","BosSrc","SwMode","Buy","Sell","Grid","GridN","Collapsed","SrLv","SrRej",
+      "StXMode","StCMode","T1_MaDir","T1_MaChk",
       "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ma","T1_bos",
-      "T2_stoch","T2_stOb","T2_fib","T2_macd","T2_rsi","T2_ma","T2_maLTF",
-      "MaSL","MaLn","SwSL","Trail"
+      "T2_stoch","T2_stOb","T2_stDir","T2_fib","T2_macd","T2_rsi","T2_ma","T2_maLTF","T2_MaDir","T2_MaChk",
+      "MaSL","MaLn","SwSL","Trail","Session","Weekend","News","Broker"
    };
    for(int i = 0; i < ArraySize(ids); i++)
       GlobalVariableDel(PanelGvKey(ids[i]));
@@ -775,6 +857,26 @@ void PanelStyleChip(const string name, const string text, const string tip,
    ObjectSetInteger(0, name, OBJPROP_COLOR, fg);
    ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, bd);
+   ObjectSetInteger(0, name, OBJPROP_STATE, false);
+}
+
+void PanelStyleDisabled(const string name, const string text, const string tip)
+{
+   ObjectSetString (0, name, OBJPROP_TEXT, text);
+   ObjectSetString (0, name, OBJPROP_TOOLTIP, tip);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, C'90,90,90');
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'32,32,32');
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'28,28,28');
+   ObjectSetInteger(0, name, OBJPROP_STATE, false);
+}
+
+void PanelStyleStatus(const string name, const bool blocked)
+{
+   ObjectSetString (0, name, OBJPROP_TEXT, blocked ? "BLOCK" : "OPEN");
+   ObjectSetString (0, name, OBJPROP_TOOLTIP, "Current combined entry-guard status");
+   ObjectSetInteger(0, name, OBJPROP_COLOR, C'245,245,245');
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, blocked ? C'130,55,55' : C'40,110,92');
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, blocked ? C'175,75,75' : C'80,160,130');
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
 
@@ -856,12 +958,16 @@ string BosTip()
    return "BOS engine: Zigzag (click to cycle)";
 }
 
-string BosSrcChipText() { return g_BosFromHTF ? "HTF" : "own"; }
+string SourceText(const ENUM_TF_SOURCE source)
+{
+   if(source == TF_SOURCE_HTF) return "HTF";
+   if(source == TF_SOURCE_BOTH) return "both";
+   return "own";
+}
+string BosSrcChipText() { return SourceText(g_BosSource); }
 string BosSrcTip()
 {
-   return g_BosFromHTF
-      ? "BOS structure on HTF. Click for own LTF"
-      : "BOS structure on own LTF. Click for HTF";
+   return "BOS structure source: " + SourceText(g_BosSource) + " (own / HTF / both-AND)";
 }
 
 string BosSigChipText()
@@ -909,6 +1015,8 @@ string T2StochModeTip()
       : "HTF stoch: mid (%K vs pullback). Click for OS/OB";
 }
 
+string T2StochDirText() { return g_HTF_StochObOsMode == STOCH_CLASSIC_MOM ? "mom" : "rev"; }
+
 string T2MaSrcChipText() { return g_HTF_MaFromLTF ? "LTF" : "own"; }
 string T2MaSrcTip()
 {
@@ -953,28 +1061,21 @@ string MaSLLineChipText()
    return (g_MaSLLine == MASL_FAST) ? "Fst" : "Slw";
 }
 
-// Empty pad chip — same size as real chips so every row stays 5-col aligned.
-void PanelStyleSpacer(const string name)
-{
-   ObjectSetString (0, name, OBJPROP_TEXT, "");
-   ObjectSetString (0, name, OBJPROP_TOOLTIP, "");
-   ObjectSetInteger(0, name, OBJPROP_COLOR, C'40,40,40');
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'28,28,28');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'28,28,28');
-   ObjectSetInteger(0, name, OBJPROP_STATE, false);
-}
-
 string SrLvChipText()
 {
-   return g_SrLevelsFromHTF ? "HTF" : "own";
+   return SourceText(g_SrSource);
 }
 
 string SrLvTip()
 {
-   return g_SrLevelsFromHTF
-      ? "S/R levels from HTF; bounce/break on LTF candles. Click for own LTF"
-      : "S/R levels from LTF (own); bounce/break on LTF candles. Click for HTF";
+   return "S/R level source: " + SourceText(g_SrSource) + " (own / HTF / both-AND; PA=LTF)";
 }
+
+string MaDirText(const ENUM_MA_TREND_MODE mode) { return mode == MA_TREND_FOLLOW ? "fol" : "rev"; }
+string MaCheckText(const ENUM_MA_CHECK mode) { return mode == MA_CHECK_RUNNING ? "run" : "close"; }
+string BosBreakText() { return g_BosBreakMode == BOS_BREAK_CLOSE ? "close" : "wick"; }
+string RejectText() { return g_RequireRejectCandle ? "reject" : "free"; }
+string GridCountText() { return "G" + IntegerToString(g_MaxLayers); }
 
 string MaSLLineTip()
 {
@@ -1030,6 +1131,20 @@ void PanelCycleBosSignalMode()
    PanelSaveInt("BosSig", (int)g_BosSignalMode);
 }
 
+void PanelCycleSource(ENUM_TF_SOURCE &source, const string gvId)
+{
+   if(source == TF_SOURCE_OWN) source = TF_SOURCE_HTF;
+   else if(source == TF_SOURCE_HTF) source = TF_SOURCE_BOTH;
+   else source = TF_SOURCE_OWN;
+   PanelSaveInt(gvId, (int)source);
+}
+
+void PanelCycleGridCount()
+{
+   g_MaxLayers = (g_MaxLayers >= 3) ? 1 : g_MaxLayers + 1;
+   PanelSaveInt("GridN", g_MaxLayers);
+}
+
 void PanelPaintState()
 {
    if(!ShowPanel) return;
@@ -1041,14 +1156,16 @@ void PanelPaintState()
 
    PanelStyleChip(PanelObj("CONF"), ConfChipText(), ConfTip(), true, true);
    PanelStyleChip(PanelObj("GRID"), "Grid", "Grid ON = MaxLayers; OFF = 1 layer", g_UseGrid, false);
+   PanelStyleChip(PanelObj("GRIDN"), GridCountText(), "Grid maximum layers (1 / 2 / 3)", true, true);
    PanelStyleChip(PanelObj("BUY"),  "Buy",  "Allow BUY signals",  g_TradeBuy,  false);
    PanelStyleChip(PanelObj("SELL"), "Sell", "Allow SELL signals", g_TradeSell, false);
 
    PanelStyleChip(PanelObj("L1"), " LTF entry", "LTF entry modules", true, true);
-   // Order: rsi ma fib macd
    PanelStyleChip(PanelObj("T1_rsi"), "rsi", "LTF entry: RSI bias (mid)", g_LTF_UseRsiBias, false);
    PanelStyleChip(PanelObj("T1_ma"), MaChipText(g_LTF_MA), MaChipTip(g_LTF_MA, "LTF entry"),
                   MaChipLit(g_LTF_MA), false);
+   PanelStyleChip(PanelObj("T1_maDir"), MaDirText(g_LTF_MaTrendMode), "LTF MA follow / reversal", true, true);
+   PanelStyleChip(PanelObj("T1_maChk"), MaCheckText(g_LTF_MACheckMode), "LTF MA running / candle close", true, true);
    PanelStyleChip(PanelObj("T1_fib"), "fib", "LTF entry: Fib golden zone", g_LTF_UseFibZone, false);
    PanelStyleChip(PanelObj("T1_macd"),"macd","LTF entry: MACD bias", g_LTF_UseMacdBias, false);
 
@@ -1057,26 +1174,70 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_stC"), "stC", "LTF entry: Stoch classic OS/OB", g_LTF_UseStochClassic, false);
    PanelStyleChip(PanelObj("T1_stCm"), StCModeChipText(), StCModeTip(), true, true);
 
-   // own first
-   PanelStyleChip(PanelObj("BosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
    PanelStyleChip(PanelObj("T1_bos"), "bos", "LTF entry: BOS on/off", g_LTF_UseBos, false);
+   PanelStyleChip(PanelObj("BosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
    PanelStyleChip(PanelObj("BosEng"), BosChipText(), BosTip(), true, true);
    PanelStyleChip(PanelObj("BosSig"), BosSigChipText(), BosSigTip(), true, true);
+   PanelStyleChip(PanelObj("BosBrk"), BosBreakText(), "Fractal BOS break by wick / close", true, true);
 
+   PanelStyleChip(PanelObj("SRLBL"), "S/R", "S/R entry family", true, true);
    PanelStyleChip(PanelObj("SrLv"), SrLvChipText(), SrLvTip(), true, true);
    PanelStyleChip(PanelObj("T1_srR"), "srBrk", "LTF entry: S/R break-retest", g_LTF_UseSrBreakRetest, false);
    PanelStyleChip(PanelObj("T1_srB"), "srRev", "LTF entry: S/R bounce", g_LTF_UseSrBounce, false);
+   PanelStyleChip(PanelObj("SrRej"), RejectText(), "Require rejection candle / free", true, true);
 
    PanelStyleChip(PanelObj("L2"), " HTF bias", "HTF zone bias (+HTF): rsi / stoch / fib / macd / ma", true, true);
-   PanelStyleChip(PanelObj("T2_rsi"), "rsi", "HTF bias: RSI mid", g_HTF_UseRsiBias, false);
-   PanelStyleChip(PanelObj("T2_stoch"), "stoch", "HTF bias: Stoch on/off", g_HTF_UseStoch, false);
-   PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeTip(), true, true);
-   // own first, then ma fib macd
-   PanelStyleChip(PanelObj("T2_maSrc"), T2MaSrcChipText(), T2MaSrcTip(), true, true);
-   PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_HTF_MA), MaChipTip(g_HTF_MA, "HTF bias"),
-                  MaChipLit(g_HTF_MA), false);
-   PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF bias: Fib golden zone", g_HTF_UseFibZone, false);
-   PanelStyleChip(PanelObj("T2_macd"),"macd","HTF bias: MACD", g_HTF_UseMacdBias, false);
+   const bool htfActive = (g_ConfluenceMode == CONF_LTF_AND_HTF);
+   if(htfActive)
+   {
+      PanelStyleChip(PanelObj("T2_rsi"), "rsi", "HTF bias: RSI mid", g_HTF_UseRsiBias, false);
+      PanelStyleChip(PanelObj("T2_stoch"), "stoch", "HTF bias: Stoch on/off", g_HTF_UseStoch, false);
+      PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeTip(), true, true);
+      if(g_HTF_StochObOs)
+         PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(), "HTF OB/OS momentum / reversal", true, true);
+      else
+         PanelStyleDisabled(PanelObj("T2_stDir"), T2StochDirText(), "Only used in OB/OS mode");
+      PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF bias: Fib golden zone", g_HTF_UseFibZone, false);
+      PanelStyleChip(PanelObj("T2_macd"),"macd","HTF bias: MACD", g_HTF_UseMacdBias, false);
+      PanelStyleChip(PanelObj("T2_maSrc"), T2MaSrcChipText(), T2MaSrcTip(), true, true);
+      PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_HTF_MA), MaChipTip(g_HTF_MA, "HTF bias"), MaChipLit(g_HTF_MA), false);
+      if(g_HTF_MaFromLTF)
+      {
+         PanelStyleDisabled(PanelObj("T2_maDir"), MaDirText(g_LTF_MaTrendMode), "Shared from LTF MA");
+         PanelStyleDisabled(PanelObj("T2_maChk"), MaCheckText(g_LTF_MACheckMode), "Shared from LTF MA");
+      }
+      else
+      {
+         PanelStyleChip(PanelObj("T2_maDir"), MaDirText(g_HTF_MaTrendMode), "HTF-own MA follow / reversal", true, true);
+         PanelStyleChip(PanelObj("T2_maChk"), MaCheckText(g_HTF_MACheckMode), "HTF-own MA running / candle close", true, true);
+      }
+   }
+   else
+   {
+      string hIds[] = {"T2_rsi","T2_stoch","T2_stMd","T2_stDir","T2_fib","T2_macd","T2_maSrc","T2_ma","T2_maDir","T2_maChk"};
+      string hTxt[10];
+      hTxt[0]="rsi"; hTxt[1]="stoch"; hTxt[2]=T2StochModeChipText(); hTxt[3]=T2StochDirText();
+      hTxt[4]="fib"; hTxt[5]="macd"; hTxt[6]=T2MaSrcChipText(); hTxt[7]=MaChipText(g_HTF_MA);
+      hTxt[8]=MaDirText(g_HTF_MaFromLTF ? g_LTF_MaTrendMode : g_HTF_MaTrendMode);
+      hTxt[9]=MaCheckText(g_HTF_MaFromLTF ? g_LTF_MACheckMode : g_HTF_MACheckMode);
+      for(int i=0; i<ArraySize(hIds); i++) PanelStyleDisabled(PanelObj(hIds[i]), hTxt[i], "HTF bias locked while mode=LTF");
+   }
+
+   PanelStyleChip(PanelObj("LG"), " guards", "Entry/schedule guards", true, true);
+   PanelStyleChip(PanelObj("Session"), "Session", "Session guard ON/OFF", g_UseSession, false);
+   PanelStyleChip(PanelObj("Weekend"), "Weekend", "Weekend guard ON/OFF", g_UseWeekendFilter, false);
+   PanelStyleChip(PanelObj("News"), "News", "News guard ON/OFF", g_UseNewsFilter, false);
+   PanelStyleChip(PanelObj("Broker"), "Broker", "Broker session guard ON/OFF", g_UseBrokerSessionGuard, false);
+   long tradeMode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   bool cooldown = OrderRetryCooldownSec > 0 && (TimeCurrent() - g_lastEntryFailTime) < OrderRetryCooldownSec;
+   bool spreadBlocked = MaxSpreadPips > 0 && g_pip > 0 && (ask - bid) / g_pip > MaxSpreadPips;
+   bool blocked = InWeekendBlock() || !InDailySession() || InNewsBlackout() ||
+                  !IsBrokerTradeSessionOpen() || !IsExpertTradingEnabled() ||
+                  tradeMode != SYMBOL_TRADE_MODE_FULL || !IsTickFresh() ||
+                  cooldown || spreadBlocked;
+   PanelStyleStatus(PanelObj("GuardSt"), blocked);
 
    PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
    PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop ON/OFF", g_UseVirtualMaSL, false);
@@ -1085,29 +1246,18 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("SwMd"), SwMdChipText(), SwMdTip(), true, true);
    PanelStyleChip(PanelObj("Trail"),"Trail","Basket pip trail TP", g_UseBasketTP, false);
 
-   // Pad spacers (same size, non-interactive)
-   string sps[] = {
-      "SpM0",
-      "SpL0","SpL1","SpL2","SpL3a","SpL3b",
-      "SpH0","SpH1","SpH2"
-   };
-   for(int i = 0; i < ArraySize(sps); i++)
-   {
-      string sn = PanelObj(sps[i]);
-      if(ObjectFind(0, sn) >= 0)
-         PanelStyleSpacer(sn);
-   }
 }
 
 void PanelHideExtras()
 {
    string extras[] = {
-      "CONF","GRID","BUY","SELL","L1","L2","LR",
-      "T1_rsi","T1_ma","T1_fib","T1_macd",
+      "CONF","GRID","GRIDN","BUY","SELL","L1","L2","LG","LR",
+      "T1_rsi","T1_ma","T1_maDir","T1_maChk","T1_fib","T1_macd",
       "T1_stX","T1_stXm","T1_stC","T1_stCm",
-      "BosSrc","T1_bos","BosEng","BosSig",
-      "SrLv","T1_srR","T1_srB",
-      "T2_rsi","T2_stoch","T2_stMd","T2_maSrc","T2_ma","T2_fib","T2_macd",
+      "BosSrc","T1_bos","BosEng","BosSig","BosBrk",
+      "SRLBL","SrLv","T1_srR","T1_srB","SrRej",
+      "T2_rsi","T2_stoch","T2_stMd","T2_stDir","T2_maSrc","T2_ma","T2_maDir","T2_maChk","T2_fib","T2_macd",
+      "Session","Weekend","News","Broker","GuardSt",
       "MaSL","MaLn","SwSL","SwMd","Trail",
       "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"
    };
@@ -1126,7 +1276,7 @@ void PanelBuild()
    if(StringLen(g_panelPrefix) == 0)
       PanelInitPrefix();
 
-   // Every chip row is exactly 5 equal slots (pad with Sp*). Same width top-to-bottom.
+   // Every row is exactly five meaningful equal-width chips: no blank spacers.
    const int chipW = 44;
    const int chipH = 18;
    const int gap   = 3;
@@ -1143,31 +1293,40 @@ void PanelBuild()
       return;
    }
 
+   // Remove obsolete v5.11 spacer objects retained across chart reinitialization.
+   string oldSpacers[] = {"SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"};
+   for(int sp=0; sp<ArraySize(oldSpacers); sp++) ObjectDelete(0, PanelObj(oldSpacers[sp]));
+
    y += chipH + gap;
-   string modeIds[] = { "CONF", "GRID", "BUY", "SELL", "SpM0" };
+   string modeIds[] = { "CONF", "GRID", "GRIDN", "BUY", "SELL" };
    PanelPlaceEvenRow(modeIds, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
-   string t1a[] = { "T1_rsi", "T1_ma", "T1_fib", "T1_macd", "SpL0" };
+   string t1a[] = { "T1_rsi", "T1_ma", "T1_maDir", "T1_maChk", "T1_fib" };
    PanelPlaceEvenRow(t1a, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1b[] = { "T1_stX", "T1_stXm", "T1_stC", "T1_stCm", "SpL1" };
+   string t1b[] = { "T1_macd", "T1_stX", "T1_stXm", "T1_stC", "T1_stCm" };
    PanelPlaceEvenRow(t1b, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1c[] = { "BosSrc", "T1_bos", "BosEng", "BosSig", "SpL2" };
+   string t1c[] = { "T1_bos", "BosSrc", "BosEng", "BosSig", "BosBrk" };
    PanelPlaceEvenRow(t1c, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1d[] = { "SrLv", "T1_srR", "T1_srB", "SpL3a", "SpL3b" };
+   string t1d[] = { "SRLBL", "SrLv", "T1_srR", "T1_srB", "SrRej" };
    PanelPlaceEvenRow(t1d, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
-   string t2a[] = { "T2_rsi", "T2_stoch", "T2_stMd", "SpH0", "SpH1" };
+   string t2a[] = { "T2_rsi", "T2_stoch", "T2_stMd", "T2_stDir", "T2_fib" };
    PanelPlaceEvenRow(t2a, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t2b[] = { "T2_maSrc", "T2_ma", "T2_fib", "T2_macd", "SpH2" };
+   string t2b[] = { "T2_macd", "T2_maSrc", "T2_ma", "T2_maDir", "T2_maChk" };
    PanelPlaceEvenRow(t2b, 5, x0, y, rowW, gap, chipH);
+   y += chipH + gap + 2;
+
+   PanelEnsureLabel("LG", x0, y, rowW, chipH); y += chipH + gap;
+   string guards[] = { "Session", "Weekend", "News", "Broker", "GuardSt" };
+   PanelPlaceEvenRow(guards, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
@@ -1202,8 +1361,13 @@ bool PanelHandleClick(const string sparam)
    string id = StringSubstr(sparam, StringLen(g_panelPrefix));
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
 
-   // Section headers + pad spacers — ignore
-   if(id == "L1" || id == "L2" || id == "LR" || StringFind(id, "Sp") == 0)
+   // Section/status labels — ignore
+   if(id == "L1" || id == "L2" || id == "LG" || id == "LR" ||
+      id == "SRLBL" || id == "GuardSt" || StringFind(id, "Sp") == 0)
+      return true;
+
+   // HTF controls are deliberately locked while confluence is LTF-only.
+   if(g_ConfluenceMode == CONF_LTF_ONLY && StringFind(id, "T2_") == 0)
       return true;
 
    if(!PanelClickAllowed())
@@ -1224,9 +1388,15 @@ bool PanelHandleClick(const string sparam)
       PanelSaveInt("Conf", (int)g_ConfluenceMode);
    }
    else if(id == "GRID") PanelToggleBool(g_UseGrid, "Grid");
+   else if(id == "GRIDN") PanelCycleGridCount();
    else if(id == "BosEng") PanelCycleBosMode();
-   else if(id == "BosSrc") PanelToggleBool(g_BosFromHTF, "BosSrc");
+   else if(id == "BosSrc") PanelCycleSource(g_BosSource, "BosSrc");
    else if(id == "BosSig") PanelCycleBosSignalMode();
+   else if(id == "BosBrk")
+   {
+      g_BosBreakMode = (g_BosBreakMode == BOS_BREAK_WICK) ? BOS_BREAK_CLOSE : BOS_BREAK_WICK;
+      PanelSaveInt("BosBrk", (int)g_BosBreakMode);
+   }
    else if(id == "SwMd")
    {
       if(g_SwingSLMode == BOS_ZIGZAG) g_SwingSLMode = BOS_FRACTAL;
@@ -1248,15 +1418,53 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T1_macd") PanelToggleBool(g_LTF_UseMacdBias, "T1_macd");
    else if(id == "T1_rsi") PanelToggleBool(g_LTF_UseRsiBias, "T1_rsi");
    else if(id == "T1_ma") PanelCycleMA(g_LTF_MA, "T1_ma");
+   else if(id == "T1_maDir")
+   {
+      g_LTF_MaTrendMode = (g_LTF_MaTrendMode == MA_TREND_FOLLOW) ? MA_TREND_REVERSAL : MA_TREND_FOLLOW;
+      PanelSaveInt("T1_MaDir", (int)g_LTF_MaTrendMode);
+   }
+   else if(id == "T1_maChk")
+   {
+      g_LTF_MACheckMode = (g_LTF_MACheckMode == MA_CHECK_RUNNING) ? MA_CHECK_CANDLE_CLOSE : MA_CHECK_RUNNING;
+      PanelSaveInt("T1_MaChk", (int)g_LTF_MACheckMode);
+   }
    else if(id == "T1_bos") PanelToggleBool(g_LTF_UseBos, "T1_bos");
-   else if(id == "SrLv") PanelToggleBool(g_SrLevelsFromHTF, "SrLv");
+   else if(id == "SrLv") PanelCycleSource(g_SrSource, "SrLv");
+   else if(id == "SrRej") PanelToggleBool(g_RequireRejectCandle, "SrRej");
    else if(id == "T2_stoch") PanelToggleBool(g_HTF_UseStoch, "T2_stoch");
    else if(id == "T2_stMd") PanelToggleBool(g_HTF_StochObOs, "T2_stOb");
+   else if(id == "T2_stDir")
+   {
+      if(!g_HTF_StochObOs) return true;
+      g_HTF_StochObOsMode = (g_HTF_StochObOsMode == STOCH_CLASSIC_MOM) ? STOCH_CLASSIC_REV : STOCH_CLASSIC_MOM;
+      PanelSaveInt("T2_stDir", (int)g_HTF_StochObOsMode);
+   }
    else if(id == "T2_fib") PanelToggleBool(g_HTF_UseFibZone, "T2_fib");
    else if(id == "T2_macd") PanelToggleBool(g_HTF_UseMacdBias, "T2_macd");
    else if(id == "T2_rsi") PanelToggleBool(g_HTF_UseRsiBias, "T2_rsi");
    else if(id == "T2_ma") PanelCycleMA(g_HTF_MA, "T2_ma");
    else if(id == "T2_maSrc") PanelToggleBool(g_HTF_MaFromLTF, "T2_maLTF");
+   else if(id == "T2_maDir")
+   {
+      if(g_HTF_MaFromLTF) return true;
+      g_HTF_MaTrendMode = (g_HTF_MaTrendMode == MA_TREND_FOLLOW) ? MA_TREND_REVERSAL : MA_TREND_FOLLOW;
+      PanelSaveInt("T2_MaDir", (int)g_HTF_MaTrendMode);
+   }
+   else if(id == "T2_maChk")
+   {
+      if(g_HTF_MaFromLTF) return true;
+      g_HTF_MACheckMode = (g_HTF_MACheckMode == MA_CHECK_RUNNING) ? MA_CHECK_CANDLE_CLOSE : MA_CHECK_RUNNING;
+      PanelSaveInt("T2_MaChk", (int)g_HTF_MACheckMode);
+   }
+   else if(id == "Session") PanelToggleBool(g_UseSession, "Session");
+   else if(id == "Weekend") PanelToggleBool(g_UseWeekendFilter, "Weekend");
+   else if(id == "News")
+   {
+      PanelToggleBool(g_UseNewsFilter, "News");
+      g_newsLastCheckMs = 0;
+      g_newsBlackoutCached = false;
+   }
+   else if(id == "Broker") PanelToggleBool(g_UseBrokerSessionGuard, "Broker");
    else if(id == "MaSL") PanelToggleBool(g_UseVirtualMaSL, "MaSL");
    else if(id == "MaLn") PanelCycleMaSLLine();
    else if(id == "SwSL") PanelToggleBool(g_UseSwingVirtualSL, "SwSL");
@@ -1283,8 +1491,7 @@ void PanelPollClicks()
    if(StringLen(g_panelPrefix) == 0) PanelInitPrefix();
 
    string headers[] = {
-      "L1","L2","LR",
-      "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"
+      "L1","L2","LG","LR","SRLBL","GuardSt"
    };
    for(int h = 0; h < ArraySize(headers); h++)
    {
@@ -1295,12 +1502,13 @@ void PanelPollClicks()
    }
 
    string ids[] = {
-      "TTL","CONF","GRID","BUY","SELL",
-      "T1_rsi","T1_ma","T1_fib","T1_macd",
+      "TTL","CONF","GRID","GRIDN","BUY","SELL",
+      "T1_rsi","T1_ma","T1_maDir","T1_maChk","T1_fib","T1_macd",
       "T1_stX","T1_stXm","T1_stC","T1_stCm",
-      "BosSrc","T1_bos","BosEng","BosSig",
-      "SrLv","T1_srR","T1_srB",
-      "T2_rsi","T2_stoch","T2_stMd","T2_maSrc","T2_ma","T2_fib","T2_macd",
+      "BosSrc","T1_bos","BosEng","BosSig","BosBrk",
+      "SrLv","T1_srR","T1_srB","SrRej",
+      "T2_rsi","T2_stoch","T2_stMd","T2_stDir","T2_maSrc","T2_ma","T2_maDir","T2_maChk","T2_fib","T2_macd",
+      "Session","Weekend","News","Broker",
       "MaSL","MaLn","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(ids); i++)
@@ -1358,13 +1566,15 @@ int OnInit()
                        prepAll || g_LTF_UseMacdBias, prepAll || g_LTF_UseRsiBias,
                        needLtfMa,
                        prepAll || g_LTF_UseFibZone || (g_UseSwingVirtualSL && g_SwingSLMode != BOS_FRACTAL),
-                       prepAll || g_LTF_UseBos || g_UseSwingVirtualSL,
+                       prepAll || (g_LTF_UseBos && g_BosSource != TF_SOURCE_HTF) || g_UseSwingVirtualSL,
+                       StochKPeriod, StochDPeriod, StochSlowing, StochMAMethod, StochPriceField,
                        MaPeriod, MaFastPeriod, MaSlowPeriod,
+                       MaShift, MaMethod, MaAppliedPrice,
                        g_stochL, g_rsiL, g_macdL, g_maL, g_maFL, g_maSL, g_atrL, "LTF"))
       return(INIT_FAILED);
 
    // HTF handles: HTF bias, and/or BOS-from-HTF ATR (fib OR zigzag/both).
-   const bool needHtf = prepAll || g_ConfluenceMode == CONF_LTF_AND_HTF || g_BosFromHTF;
+   const bool needHtf = prepAll || g_ConfluenceMode == CONF_LTF_AND_HTF || g_BosSource != TF_SOURCE_OWN;
    if(needHtf)
    {
       if(!CreateTfHandles(g_htf,
@@ -1372,19 +1582,20 @@ int OnInit()
                           prepAll || g_HTF_UseMacdBias, prepAll || g_HTF_UseRsiBias,
                           prepAll || MaEnabled(g_HTF_MA),
                           prepAll || g_HTF_UseFibZone,
-                          prepAll || g_BosFromHTF, // ATR when BosFromHTF + zig/both
-                          HTF_MA_UseOverride ? HTF_MaPeriod     : MaPeriod,
-                          HTF_MA_UseOverride ? HTF_MaFastPeriod : MaFastPeriod,
-                          HTF_MA_UseOverride ? HTF_MaSlowPeriod : MaSlowPeriod,
+                          prepAll || (g_LTF_UseBos && g_BosSource != TF_SOURCE_OWN),
+                          HTF_StochKPeriod, HTF_StochDPeriod, HTF_StochSlowing,
+                          HTF_StochMAMethod, HTF_StochPriceField,
+                          HTF_MaPeriod, HTF_MaFastPeriod, HTF_MaSlowPeriod,
+                          HTF_MaShift, HTF_MaMethod, HTF_MaAppliedPrice,
                           g_stochH, g_rsiH, g_macdH, g_maH, g_maFH, g_maSH, g_atrH, "HTF"))
          return(INIT_FAILED);
       if(PeriodSeconds(g_htf) == PeriodSeconds(g_ltf) && !g_quietInit)
          LogInfo("NOTE LTF and HTF are the same period — HTF bias / SrLv HTF add no extra TF.");
    }
 
-   if(!g_quietInit && g_SrLevelsFromHTF && PeriodSeconds(g_htf) <= PeriodSeconds(g_ltf))
+   if(!g_quietInit && g_SrSource != TF_SOURCE_OWN && PeriodSeconds(g_htf) <= PeriodSeconds(g_ltf))
       LogInfo("NOTE SrLv=HTF but HTF is not higher than LTF — levels TF is not HTF.");
-   if(!g_quietInit && g_BosFromHTF && PeriodSeconds(g_htf) <= PeriodSeconds(g_ltf))
+   if(!g_quietInit && g_BosSource != TF_SOURCE_OWN && PeriodSeconds(g_htf) <= PeriodSeconds(g_ltf))
       LogInfo("NOTE BosSrc=HTF but HTF is not higher than LTF — BOS TF is not HTF.");
 
    g_pip = PipSize();
@@ -1399,7 +1610,7 @@ int OnInit()
               + " HTF=" + EnumToString(g_htf)
               + " BosMode=" + EnumToString(g_BosMode)
               + " BosSig=" + EnumToString(g_BosSignalMode)
-              + " BosSrc=" + (g_BosFromHTF ? "HTF" : "own")
+              + " BosSrc=" + (g_BosSource == TF_SOURCE_OWN ? "own" : (g_BosSource == TF_SOURCE_HTF ? "HTF" : "both"))
               + " SwMode=" + EnumToString(g_SwingSLMode)
               + " | Buy=" + (g_TradeBuy ? "ON" : "OFF")
               + " Sell=" + (g_TradeSell ? "ON" : "OFF")
@@ -1408,12 +1619,10 @@ int OnInit()
               + (g_UseVirtualMaSL ? ("/" + ((g_MaSLLine == MASL_FAST) ? "Fast" : "Slow")) : "")
               + " SwSL=" + (g_UseSwingVirtualSL ? "ON" : "OFF")
               + " Trail=" + (g_UseBasketTP ? "ON" : "OFF")
-              + " | HTFMA=" + (HTF_MA_UseOverride
-                                ? ("override " + IntegerToString(HTF_MaPeriod)
-                                   + "/" + IntegerToString(HTF_MaFastPeriod)
-                                   + "/" + IntegerToString(HTF_MaSlowPeriod))
-                                : "shared")
-              + (g_HTF_MaFromLTF ? " src=LTF" : " src=own")
+              + " | HTFMA=" + IntegerToString(HTF_MaPeriod)
+              + "/" + IntegerToString(HTF_MaFastPeriod)
+              + "/" + IntegerToString(HTF_MaSlowPeriod)
+              + (g_HTF_MaFromLTF ? " src=LTF(shared)" : " src=own")
               + " | panel=" + (ShowPanel ? ("ON inset " + IntegerToString(PanelInsetX) + "," + IntegerToString(PanelInsetY)) : "off"));
       if(_Period != g_ltf)
          LogInfo("NOTE chart TF differs from LTF (" + EnumToString(g_ltf)
@@ -1457,6 +1666,11 @@ void OnTimer()
    if(ObjectFind(0, PanelObj("TTL")) < 0)
    {
       PanelBuild();
+      ChartRedraw(0);
+   }
+   else if(!g_panelCollapsed)
+   {
+      PanelPaintState(); // refresh OPEN/BLOCK without requiring a click
       ChartRedraw(0);
    }
 }
@@ -1506,7 +1720,7 @@ void GetWIBTime(MqlDateTime &dt)
 
 bool InWeekendBlock()
 {
-   if(!UseWeekendFilter) return false;
+   if(!g_UseWeekendFilter) return false;
 
    MqlDateTime dt;
    GetWIBTime(dt);
@@ -1551,7 +1765,7 @@ bool ComputeNewsBlackout()
 
 bool InNewsBlackout()
 {
-   if(!UseNewsFilter) return false;
+   if(!g_UseNewsFilter) return false;
 
    ulong nowMs = GetTickCount64();
    if(nowMs - g_newsLastCheckMs >= 60000)
@@ -1564,7 +1778,7 @@ bool InNewsBlackout()
 
 bool InDailySession()
 {
-   if(!UseSession) return true;
+   if(!g_UseSession) return true;
 
    int s = MathMax(0, MathMin(23, SessionStartHour));
    int e = MathMax(1, MathMin(24, SessionEndHour));
@@ -1587,9 +1801,9 @@ bool InSession()
 
 bool ShouldCloseForSchedule()
 {
-   if(UseWeekendFilter && CloseAtWeekend && InWeekendBlock()) return true;
-   if(UseSession && CloseAtSessionEnd && !InDailySession()) return true;
-   if(UseNewsFilter && CloseAtNews && InNewsBlackout()) return true;
+   if(g_UseWeekendFilter && CloseAtWeekend && InWeekendBlock()) return true;
+   if(g_UseSession && CloseAtSessionEnd && !InDailySession()) return true;
+   if(g_UseNewsFilter && CloseAtNews && InNewsBlackout()) return true;
    return false;
 }
 
@@ -1735,6 +1949,9 @@ bool EvalStoch(const int hStoch, const bool useCross, const bool useClassic,
 
 // HTF stoch zone: mid (%K vs StochPullbackLevel) or OS/OB (buy OS / sell OB).
 bool EvalStochZone(const int hStoch, const bool useIt, const bool obOs,
+                   const ENUM_STOCH_CLASSIC_MODE obOsMode,
+                   const double midLevel, const double oversoldLevel,
+                   const double overboughtLevel,
                    bool &buyOK, bool &sellOK)
 {
    buyOK = true; sellOK = true;
@@ -1749,13 +1966,21 @@ bool EvalStochZone(const int hStoch, const bool useIt, const bool obOs,
 
    if(obOs)
    {
-      buyOK  = (k[1] < StochOversoldLevel);
-      sellOK = (k[1] > StochOverboughtLevel);
+      if(obOsMode == STOCH_CLASSIC_MOM)
+      {
+         buyOK  = (k[1] > overboughtLevel);
+         sellOK = (k[1] < oversoldLevel);
+      }
+      else
+      {
+         buyOK  = (k[1] < oversoldLevel);
+         sellOK = (k[1] > overboughtLevel);
+      }
    }
    else
    {
-      buyOK  = (k[1] > StochPullbackLevel);
-      sellOK = (k[1] < StochPullbackLevel);
+      buyOK  = (k[1] > midLevel);
+      sellOK = (k[1] < midLevel);
    }
    return true;
 }
@@ -1793,7 +2018,8 @@ bool EvalRsi(const int hRsi, const bool useIt, bool &buyOK, bool &sellOK)
 }
 
 // Live single-MA side check (m1). Used by EvalMA and TryEnter re-gate.
-bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBuy)
+bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBuy,
+                  const ENUM_MA_CHECK checkMode, const double bufferPips)
 {
    if(hSingle == INVALID_HANDLE)
    { LogDebugGuard("dbg_malive", "PassesMALive: invalid handle"); return false; }
@@ -1803,14 +2029,14 @@ bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBu
    if(CopyBuffer(hSingle, 0, 0, 2, m) != 2)
    { LogDebugGuard("dbg_malive", "PassesMALive: buffer not ready"); return false; } // [0]=now, [1]=last closed bar MA
 
-   double buffer = MathMax(0.0, MABufferPips) * g_pip;
+   double buffer = MathMax(0.0, bufferPips) * g_pip;
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
    bool liveOK = wantBuy ? (ask > m[0] + buffer) : (bid < m[0] - buffer);
    if(!liveOK) return false;
 
-   if(MACheckMode == MA_CHECK_RUNNING) return true;
+   if(checkMode == MA_CHECK_RUNNING) return true;
 
    double c[];
    ArraySetAsSeries(c, true);
@@ -1821,10 +2047,12 @@ bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBu
 }
 
 // One MA module: m1 (single line) / m2 (fast vs slow).
-// MACheckMode (Running / CandleClose) applies to both.
+// Per-TF MA check mode (Running / CandleClose) applies to m1 and m2.
 bool EvalMA(const ENUM_TIMEFRAMES tf,
             const int hSingle, const int hFast, const int hSlow,
-            const int state, bool &buyOK, bool &sellOK)
+            const int state, const ENUM_MA_TREND_MODE trendMode,
+            const ENUM_MA_CHECK checkMode, const double bufferPips,
+            const double minDiffPips, bool &buyOK, bool &sellOK)
 {
    buyOK = true; sellOK = true;
    if(!MaEnabled(state)) return true;
@@ -1834,9 +2062,9 @@ bool EvalMA(const ENUM_TIMEFRAMES tf,
    {
       if(hSingle == INVALID_HANDLE)
       { LogDebugGuard("dbg_ma", "EvalMA m1: invalid handle"); return false; }
-      bool followBuy  = PassesMALive(tf, hSingle, true);
-      bool followSell = PassesMALive(tf, hSingle, false);
-      if(MaTrendMode == MA_TREND_FOLLOW)
+      bool followBuy  = PassesMALive(tf, hSingle, true, checkMode, bufferPips);
+      bool followSell = PassesMALive(tf, hSingle, false, checkMode, bufferPips);
+      if(trendMode == MA_TREND_FOLLOW)
       {
          buyOK  = followBuy;
          sellOK = followSell;
@@ -1860,7 +2088,7 @@ bool EvalMA(const ENUM_TIMEFRAMES tf,
    if(CopyBuffer(hSlow, 0, 0, 2, s) != 2)
    { LogDebugGuard("dbg_ma", "EvalMA m2: slow buffer not ready"); return false; }
 
-   double thr = MathMax(0.0, MaMinDiffPips) * g_pip;
+   double thr = MathMax(0.0, minDiffPips) * g_pip;
    int dirLive = 0, dirClosed = 0;
    double diffLive = f[0] - s[0];
    double diffClosed = f[1] - s[1];
@@ -1870,14 +2098,14 @@ bool EvalMA(const ENUM_TIMEFRAMES tf,
    if(diffClosed < -thr) dirClosed = -1;
 
    int dir = dirLive;
-   if(MACheckMode == MA_CHECK_CANDLE_CLOSE)
+   if(checkMode == MA_CHECK_CANDLE_CLOSE)
    {
       if(dirLive == 0 || dirClosed == 0 || dirLive != dirClosed)
          dir = 0;
    }
    if(dir == 0) { buyOK = false; sellOK = false; return true; }
 
-   if(MaTrendMode == MA_TREND_FOLLOW)
+   if(trendMode == MA_TREND_FOLLOW)
    {
       buyOK  = (dir > 0);
       sellOK = (dir < 0);
@@ -1920,16 +2148,16 @@ bool EvalSr(const ENUM_TIMEFRAMES paTf, const bool useBounce, const bool useRete
    bool bearReject = (c1 < o1);
 
    bool bounceBuy  = (l1 <= support + touch) && (c1 > support) &&
-                     (!RequireRejectCandle || bullReject);
+                     (!g_RequireRejectCandle || bullReject);
    bool bounceSell = (h1 >= resistance - touch) && (c1 < resistance) &&
-                     (!RequireRejectCandle || bearReject);
+                     (!g_RequireRejectCandle || bearReject);
 
    bool retestBuy  = HadRecentBreakUp(c, need, resistance, BreakLookbackBars) &&
                      (l1 <= resistance + touch) && (c1 > resistance) &&
-                     (!RequireRejectCandle || bullReject);
+                     (!g_RequireRejectCandle || bullReject);
    bool retestSell = HadRecentBreakDown(c, need, support, BreakLookbackBars) &&
                      (h1 >= support - touch) && (c1 < support) &&
-                     (!RequireRejectCandle || bearReject);
+                     (!g_RequireRejectCandle || bearReject);
 
    if(useBounce)
    {
@@ -2171,8 +2399,8 @@ bool ScanFractalStructure(const ENUM_TIMEFRAMES tf,
    int lastClosed = copied - 2;
    for(int i = period; i <= lastClosed; i++)
    {
-      double breakHighPrice = (BosBreakMode == BOS_BREAK_CLOSE) ? rates[i].close : rates[i].high;
-      double breakLowPrice  = (BosBreakMode == BOS_BREAK_CLOSE) ? rates[i].close : rates[i].low;
+      double breakHighPrice = (g_BosBreakMode == BOS_BREAK_CLOSE) ? rates[i].close : rates[i].high;
+      double breakLowPrice  = (g_BosBreakMode == BOS_BREAK_CLOSE) ? rates[i].close : rates[i].low;
 
       if(highValid && !highBroken && breakHighPrice > highPrice)
       {
@@ -2232,7 +2460,8 @@ bool ScanFractalStructure(const ENUM_TIMEFRAMES tf,
       if(lastBreakBar == lastClosed && lastBreakDir != 0)
       {
          datetime breakBarTime = rates[lastClosed].time;
-         if(breakBarTime != 0 && breakBarTime != g_bosEventSeenStructBar)
+         datetime seen = (tf == g_htf) ? g_bosEventSeenHtfBar : g_bosEventSeenLtfBar;
+         if(breakBarTime != 0 && breakBarTime != seen)
          {
             if(lastBreakDir > 0) buyOK = true;
             if(lastBreakDir < 0) sellOK = true;
@@ -2270,7 +2499,8 @@ bool EvalZigzagBos(const ENUM_TIMEFRAMES tf, const int hAtr,
       // Same once-per-structure-bar gate as fractal EVENT.
       if(!bosEvt) return true;
       datetime breakBarTime = iTime(_Symbol, tf, 1);
-      if(breakBarTime == 0 || breakBarTime == g_bosEventSeenStructBar) return true;
+      datetime seen = (tf == g_htf) ? g_bosEventSeenHtfBar : g_bosEventSeenLtfBar;
+      if(breakBarTime == 0 || breakBarTime == seen) return true;
       buyOK  = bullish;
       sellOK = !bullish;
       return true;
@@ -2303,24 +2533,55 @@ bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
    return true;
 }
 
+bool EvalSrBySource(const bool useBounce, const bool useRetest,
+                    bool &buyOK, bool &sellOK)
+{
+   bool lb = false, ls = false, hb = false, hs = false;
+   if(g_SrSource == TF_SOURCE_OWN)
+      return EvalSr(g_ltf, useBounce, useRetest, buyOK, sellOK, g_ltf);
+   if(g_SrSource == TF_SOURCE_HTF)
+      return EvalSr(g_ltf, useBounce, useRetest, buyOK, sellOK, g_htf);
+   if(!EvalSr(g_ltf, useBounce, useRetest, lb, ls, g_ltf)) return false;
+   if(!EvalSr(g_ltf, useBounce, useRetest, hb, hs, g_htf)) return false;
+   buyOK = lb && hb;
+   sellOK = ls && hs;
+   return true;
+}
+
+bool EvalBosBySource(bool &buyOK, bool &sellOK)
+{
+   bool lb = false, ls = false, hb = false, hs = false;
+   if(g_BosSource == TF_SOURCE_OWN)
+      return EvalBos(g_ltf, g_atrL, true, buyOK, sellOK);
+   if(g_BosSource == TF_SOURCE_HTF)
+      return EvalBos(g_htf, g_atrH, true, buyOK, sellOK);
+   if(!EvalBos(g_ltf, g_atrL, true, lb, ls)) return false;
+   if(!EvalBos(g_htf, g_atrH, true, hb, hs)) return false;
+   buyOK = lb && hb;
+   sellOK = ls && hs;
+   return true;
+}
+
 // Evaluate one TF: every enabled module family must pass (all AND).
 // LTF Stoch: cross OR classic. HTF Stoch: zone (mid/obos) via useStochZone.
-// Within S/R: bounce OR retest. BOS may scan bosTf (own or HTF) with hBosAtr.
+// Within S/R: bounce OR retest. S/R and BOS sources may be own/HTF/both-AND.
 // If nothing enabled: outBuy/outSell stay false (caller may treat empty HTF as pass).
 // fibLegOnly: FibZone arms from leg direction only (price checked later per tick).
-// srLevelsTf: S/R pivot source (own LTF or HTF). PA candles always on tf.
 // maTf + MA handles: HTF bias may evaluate MA on LTF when g_HTF_MaFromLTF.
 bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useCross, const bool useClassic,
             const bool useStochZone, const bool stochObOs,
+            const ENUM_STOCH_CLASSIC_MODE stochZoneMode,
+            const double stochMid, const double stochOS, const double stochOB,
             const bool useBounce, const bool useRetest, const bool useFib,
             const bool useMacd, const bool useRsi, const int maState, const bool useBos,
             const int hStoch, const int hRsi, const int hMacd,
             const ENUM_TIMEFRAMES maTf,
             const int hMaSingle, const int hMaFast, const int hMaSlow,
+            const ENUM_MA_TREND_MODE maTrendMode, const ENUM_MA_CHECK maCheckMode,
+            const double maBufferPips, const double maMinDiffPips,
             const int hAtr,
-            const ENUM_TIMEFRAMES bosTf, const int hBosAtr,
-            const bool fibLegOnly, const ENUM_TIMEFRAMES srLevelsTf,
+            const bool fibLegOnly,
             bool &outBuy, bool &outSell)
 {
    outBuy = false; outSell = false;
@@ -2338,7 +2599,8 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
       bool stB = false, stS = false;
       if(useStochZone)
       {
-         if(!EvalStochZone(hStoch, true, stochObOs, stB, stS)) return false;
+         if(!EvalStochZone(hStoch, true, stochObOs, stochZoneMode,
+                           stochMid, stochOS, stochOB, stB, stS)) return false;
       }
       else
       {
@@ -2349,7 +2611,7 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
    if(useSr)
    {
       bool srB = false, srS = false;
-      if(!EvalSr(tf, useBounce, useRetest, srB, srS, srLevelsTf)) return false;
+      if(!EvalSrBySource(useBounce, useRetest, srB, srS)) return false;
       buy &= srB; sell &= srS;
    }
    if(useFib)
@@ -2373,13 +2635,15 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
    if(useMA)
    {
       bool maBuy = false, maSell = false;
-      if(!EvalMA(maTf, hMaSingle, hMaFast, hMaSlow, maState, maBuy, maSell)) return false;
+      if(!EvalMA(maTf, hMaSingle, hMaFast, hMaSlow, maState,
+                 maTrendMode, maCheckMode, maBufferPips, maMinDiffPips,
+                 maBuy, maSell)) return false;
       buy &= maBuy; sell &= maSell;
    }
    if(useBos)
    {
       bool bosBuy = false, bosSell = false;
-      if(!EvalBos(bosTf, hBosAtr, true, bosBuy, bosSell)) return false;
+      if(!EvalBosBySource(bosBuy, bosSell)) return false;
       buy &= bosBuy; sell &= bosSell;
    }
 
@@ -2401,21 +2665,6 @@ bool HtfBiasModulesOn()
 {
    return (g_HTF_UseStoch ||
            g_HTF_UseFibZone || g_HTF_UseMacdBias || g_HTF_UseRsiBias || MaEnabled(g_HTF_MA));
-}
-
-ENUM_TIMEFRAMES SrLevelsTf()
-{
-   return g_SrLevelsFromHTF ? g_htf : g_ltf;
-}
-
-ENUM_TIMEFRAMES BosStructureTf()
-{
-   return g_BosFromHTF ? g_htf : g_ltf;
-}
-
-int BosStructureAtrHandle()
-{
-   return g_BosFromHTF ? g_atrH : g_atrL;
 }
 
 string MaStateTag(const int state)
@@ -2441,7 +2690,7 @@ string EnabledModulesContext()
    if(MaEnabled(g_LTF_MA))    AddModuleTag(ltf, MaStateTag(g_LTF_MA));
    if(g_LTF_UseStochCross)    AddModuleTag(ltf, "stX");
    if(g_LTF_UseStochClassic)  AddModuleTag(ltf, "stC");
-   if(g_LTF_UseBos)           AddModuleTag(ltf, g_BosFromHTF ? "bos:htf" : "bos:own");
+   if(g_LTF_UseBos)           AddModuleTag(ltf, "bos:" + (g_BosSource == TF_SOURCE_OWN ? "own" : (g_BosSource == TF_SOURCE_HTF ? "htf" : "both")));
    if(g_LTF_UseSrBreakRetest) AddModuleTag(ltf, "srBrk");
    if(g_LTF_UseSrBounce)      AddModuleTag(ltf, "srRev");
 
@@ -2465,8 +2714,16 @@ string EnabledModulesContext()
 // after both Fib passes, so Pass1/Pass2 can still see the same event).
 void MarkBosEventStructBarSeen()
 {
-   datetime t = iTime(_Symbol, BosStructureTf(), 1);
-   if(t > 0) g_bosEventSeenStructBar = t;
+   if(g_BosSource == TF_SOURCE_OWN || g_BosSource == TF_SOURCE_BOTH)
+   {
+      datetime t = iTime(_Symbol, g_ltf, 1);
+      if(t > 0) g_bosEventSeenLtfBar = t;
+   }
+   if(g_BosSource == TF_SOURCE_HTF || g_BosSource == TF_SOURCE_BOTH)
+   {
+      datetime t = iTime(_Symbol, g_htf, 1);
+      if(t > 0) g_bosEventSeenHtfBar = t;
+   }
 }
 
 void UpdateSignal()
@@ -2475,20 +2732,17 @@ void UpdateSignal()
    g_signalIsBuy     = false;
    g_fibZoneTickGate = false;
 
-   const ENUM_TIMEFRAMES srLev  = SrLevelsTf();
-   const ENUM_TIMEFRAMES bosTf  = BosStructureTf();
-   const int             bosAtr = BosStructureAtrHandle();
-
    // Pass 1: normal eval (FibZone requires price in zone now)
    bool b1 = false, s1 = false;
    if(!EvalTf(g_ltf,
               g_LTF_UseStochCross, g_LTF_UseStochClassic, false, false,
+              g_StochClassicMode, StochPullbackLevel, StochOversoldLevel, StochOverboughtLevel,
               g_LTF_UseSrBounce, g_LTF_UseSrBreakRetest, g_LTF_UseFibZone,
               g_LTF_UseMacdBias, g_LTF_UseRsiBias, g_LTF_MA, g_LTF_UseBos,
               g_stochL, g_rsiL, g_macdL,
-              g_ltf, g_maL, g_maFL, g_maSL, g_atrL,
-              bosTf, bosAtr,
-              false, srLev, b1, s1))
+              g_ltf, g_maL, g_maFL, g_maSL,
+              g_LTF_MaTrendMode, g_LTF_MACheckMode, MABufferPips, MaMinDiffPips,
+              g_atrL, false, b1, s1))
       return; // data not ready — do not consume BOS EVENT bar
 
    bool b2 = true, s2 = true; // ENTRY_ONLY, or empty HTF bias = pass-through
@@ -2499,15 +2753,20 @@ void UpdateSignal()
       const int hMaS = g_HTF_MaFromLTF ? g_maL  : g_maH;
       const int hMaF = g_HTF_MaFromLTF ? g_maFL : g_maFH;
       const int hMaL = g_HTF_MaFromLTF ? g_maSL : g_maSH;
+      const ENUM_MA_TREND_MODE maDir = g_HTF_MaFromLTF ? g_LTF_MaTrendMode : g_HTF_MaTrendMode;
+      const ENUM_MA_CHECK maChk = g_HTF_MaFromLTF ? g_LTF_MACheckMode : g_HTF_MACheckMode;
+      const double maBuf = g_HTF_MaFromLTF ? MABufferPips : HTF_MABufferPips;
+      const double maDiff = g_HTF_MaFromLTF ? MaMinDiffPips : HTF_MaMinDiffPips;
       b2 = false; s2 = false;
       if(!EvalTf(g_htf,
                  false, false, g_HTF_UseStoch, g_HTF_StochObOs,
+                 g_HTF_StochObOsMode, HTF_StochMidLevel, HTF_StochOversoldLevel, HTF_StochOverboughtLevel,
                  false, false, g_HTF_UseFibZone,
                  g_HTF_UseMacdBias, g_HTF_UseRsiBias, g_HTF_MA, false,
                  g_stochH, g_rsiH, g_macdH,
-                 maTf, hMaS, hMaF, hMaL, g_atrH,
-                 g_htf, INVALID_HANDLE,
-                 false, g_htf, b2, s2))
+                 maTf, hMaS, hMaF, hMaL,
+                 maDir, maChk, maBuf, maDiff,
+                 g_atrH, false, b2, s2))
          return; // data not ready — do not consume BOS EVENT bar
    }
 
@@ -2532,12 +2791,13 @@ void UpdateSignal()
    b1 = false; s1 = false;
    if(!EvalTf(g_ltf,
               g_LTF_UseStochCross, g_LTF_UseStochClassic, false, false,
+              g_StochClassicMode, StochPullbackLevel, StochOversoldLevel, StochOverboughtLevel,
               g_LTF_UseSrBounce, g_LTF_UseSrBreakRetest, g_LTF_UseFibZone,
               g_LTF_UseMacdBias, g_LTF_UseRsiBias, g_LTF_MA, g_LTF_UseBos,
               g_stochL, g_rsiL, g_macdL,
-              g_ltf, g_maL, g_maFL, g_maSL, g_atrL,
-              bosTf, bosAtr,
-              true, srLev, b1, s1))
+              g_ltf, g_maL, g_maFL, g_maSL,
+              g_LTF_MaTrendMode, g_LTF_MACheckMode, MABufferPips, MaMinDiffPips,
+              g_atrL, true, b1, s1))
       return; // data not ready — do not consume BOS EVENT bar
 
    b2 = true; s2 = true;
@@ -2547,15 +2807,20 @@ void UpdateSignal()
       const int hMaS = g_HTF_MaFromLTF ? g_maL  : g_maH;
       const int hMaF = g_HTF_MaFromLTF ? g_maFL : g_maFH;
       const int hMaL = g_HTF_MaFromLTF ? g_maSL : g_maSH;
+      const ENUM_MA_TREND_MODE maDir = g_HTF_MaFromLTF ? g_LTF_MaTrendMode : g_HTF_MaTrendMode;
+      const ENUM_MA_CHECK maChk = g_HTF_MaFromLTF ? g_LTF_MACheckMode : g_HTF_MACheckMode;
+      const double maBuf = g_HTF_MaFromLTF ? MABufferPips : HTF_MABufferPips;
+      const double maDiff = g_HTF_MaFromLTF ? MaMinDiffPips : HTF_MaMinDiffPips;
       b2 = false; s2 = false;
       if(!EvalTf(g_htf,
                  false, false, g_HTF_UseStoch, g_HTF_StochObOs,
+                 g_HTF_StochObOsMode, HTF_StochMidLevel, HTF_StochOversoldLevel, HTF_StochOverboughtLevel,
                  false, false, g_HTF_UseFibZone,
                  g_HTF_UseMacdBias, g_HTF_UseRsiBias, g_HTF_MA, false,
                  g_stochH, g_rsiH, g_macdH,
-                 maTf, hMaS, hMaF, hMaL, g_atrH,
-                 g_htf, INVALID_HANDLE,
-                 true, g_htf, b2, s2))
+                 maTf, hMaS, hMaF, hMaL,
+                 maDir, maChk, maBuf, maDiff,
+                 g_atrH, true, b2, s2))
          return; // data not ready — do not consume BOS EVENT bar
    }
 
@@ -2610,7 +2875,9 @@ void TryEnter()
    if(MaEnabled(g_LTF_MA))
    {
       bool maB = false, maS = false;
-      if(!EvalMA(g_ltf, g_maL, g_maFL, g_maSL, g_LTF_MA, maB, maS) ||
+      if(!EvalMA(g_ltf, g_maL, g_maFL, g_maSL, g_LTF_MA,
+                 g_LTF_MaTrendMode, g_LTF_MACheckMode, MABufferPips, MaMinDiffPips,
+                 maB, maS) ||
          (g_signalIsBuy ? !maB : !maS))
       { DiagBlock("MA filter"); return; }
    }
@@ -2621,7 +2888,12 @@ void TryEnter()
       const int hMaS = g_HTF_MaFromLTF ? g_maL  : g_maH;
       const int hMaF = g_HTF_MaFromLTF ? g_maFL : g_maFH;
       const int hMaL = g_HTF_MaFromLTF ? g_maSL : g_maSH;
-      if(!EvalMA(maTf, hMaS, hMaF, hMaL, g_HTF_MA, maB, maS) ||
+      const ENUM_MA_TREND_MODE maDir = g_HTF_MaFromLTF ? g_LTF_MaTrendMode : g_HTF_MaTrendMode;
+      const ENUM_MA_CHECK maChk = g_HTF_MaFromLTF ? g_LTF_MACheckMode : g_HTF_MACheckMode;
+      const double maBuf = g_HTF_MaFromLTF ? MABufferPips : HTF_MABufferPips;
+      const double maDiff = g_HTF_MaFromLTF ? MaMinDiffPips : HTF_MaMinDiffPips;
+      if(!EvalMA(maTf, hMaS, hMaF, hMaL, g_HTF_MA,
+                 maDir, maChk, maBuf, maDiff, maB, maS) ||
          (g_signalIsBuy ? !maB : !maS))
       { DiagBlock("HTF MA filter"); return; }
    }
@@ -2707,7 +2979,7 @@ bool IsTickFresh()
 
 bool IsBrokerTradeSessionOpen()
 {
-   if(!UseBrokerSessionGuard) return true;
+   if(!g_UseBrokerSessionGuard) return true;
 
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
