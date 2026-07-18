@@ -1015,8 +1015,6 @@ void CheckVirtualMASL()
 //====================== BASKET PROFIT (pips, trailing) ======================
 void ManageBasket()
 {
-   if(!UseBasketTP) return;
-
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
@@ -1037,7 +1035,9 @@ void ManageBasket()
       count++;
    }
 
+   // Always clear trail/line state when flat (even if basket TP is off).
    if(count == 0) { ResetBasket(); ResetBasketLines(); return; }
+   if(!UseBasketTP) return;
 
    if(!g_basketArmed)
    {
