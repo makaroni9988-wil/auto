@@ -97,7 +97,7 @@ input ENUM_APPLIED_PRICE  MACDAppliedPrice = PRICE_CLOSE;
 input group "===== MA (one system: ma / m1 / m2 + MaSL lines) ====="
 // One module per TF. Panel chip cycles OFF → ma → m1 → m2.
 //   ma  = live price vs single MA.
-//   m1  = single MA (same live filter as 2nd/gun/bomb/3rd).
+//   m1  = single MA live filter (Follow / Reversal).
 //   m2  = fast vs slow.
 // MACheckMode applies to ma / m1 / m2 (not dead on m1/m2):
 //   RUNNING     = live side check only.
@@ -1561,7 +1561,7 @@ bool PassesMALive(const ENUM_TIMEFRAMES tf, const int hSingle, const bool wantBu
 }
 
 // One MA module: ma (live) / m1 (single) / m2 (fast vs slow).
-// MACheckMode is live for all three — same idea as 2nd/gun/bomb/3rd.
+// MACheckMode (Running / CandleClose) applies to all three.
 bool EvalMA(const ENUM_TIMEFRAMES tf,
             const int hSingle, const int hFast, const int hSlow,
             const int state, bool &buyOK, bool &sellOK)
