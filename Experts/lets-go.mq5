@@ -27,7 +27,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.10"
+#property version   "5.11"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -951,7 +951,18 @@ string MaChipTip(const int state, const string tfTag)
 
 string MaSLLineChipText()
 {
-   return (g_MaSLLine == MASL_FAST) ? "Fast" : "Slow";
+   return (g_MaSLLine == MASL_FAST) ? "Fst" : "Slw";
+}
+
+// Empty pad chip — same size as real chips so every row stays 5-col aligned.
+void PanelStyleSpacer(const string name)
+{
+   ObjectSetString (0, name, OBJPROP_TEXT, "");
+   ObjectSetString (0, name, OBJPROP_TOOLTIP, "");
+   ObjectSetInteger(0, name, OBJPROP_COLOR, C'40,40,40');
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'28,28,28');
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'28,28,28');
+   ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
 
 string SrLvChipText()
@@ -1035,17 +1046,19 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("SELL"), "Sell", "Allow SELL signals", g_TradeSell, false);
 
    PanelStyleChip(PanelObj("L1"), " LTF entry", "LTF (TF1) entry modules", true, true);
+   // Order: rsi ma fib macd
    PanelStyleChip(PanelObj("T1_rsi"), "rsi", "LTF entry: RSI bias (mid)", g_TF1_UseRsiBias, false);
-   PanelStyleChip(PanelObj("T1_fib"), "fib", "LTF entry: Fib golden zone", g_TF1_UseFibZone, false);
-   PanelStyleChip(PanelObj("T1_macd"),"macd","LTF entry: MACD bias", g_TF1_UseMacdBias, false);
    PanelStyleChip(PanelObj("T1_ma"), MaChipText(g_TF1_MA), MaChipTip(g_TF1_MA, "LTF entry"),
                   MaChipLit(g_TF1_MA), false);
+   PanelStyleChip(PanelObj("T1_fib"), "fib", "LTF entry: Fib golden zone", g_TF1_UseFibZone, false);
+   PanelStyleChip(PanelObj("T1_macd"),"macd","LTF entry: MACD bias", g_TF1_UseMacdBias, false);
 
    PanelStyleChip(PanelObj("T1_stX"), "stX", "LTF entry: Stoch cross", g_TF1_UseStochCross, false);
    PanelStyleChip(PanelObj("T1_stXm"), StXModeChipText(), StXModeTip(), true, true);
    PanelStyleChip(PanelObj("T1_stC"), "stC", "LTF entry: Stoch classic OS/OB", g_TF1_UseStochClassic, false);
    PanelStyleChip(PanelObj("T1_stCm"), StCModeChipText(), StCModeTip(), true, true);
 
+   // own first
    PanelStyleChip(PanelObj("BosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
    PanelStyleChip(PanelObj("T1_bos"), "bos", "LTF entry: BOS on/off", g_TF1_UseBos, false);
    PanelStyleChip(PanelObj("BosEng"), BosChipText(), BosTip(), true, true);
@@ -1059,11 +1072,12 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T2_rsi"), "rsi", "HTF bias: RSI mid", g_TF2_UseRsiBias, false);
    PanelStyleChip(PanelObj("T2_stoch"), "stoch", "HTF bias: Stoch on/off", g_TF2_UseStoch, false);
    PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeTip(), true, true);
-   PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF bias: Fib golden zone", g_TF2_UseFibZone, false);
-   PanelStyleChip(PanelObj("T2_macd"),"macd","HTF bias: MACD", g_TF2_UseMacdBias, false);
+   // own first, then ma fib macd
+   PanelStyleChip(PanelObj("T2_maSrc"), T2MaSrcChipText(), T2MaSrcTip(), true, true);
    PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_TF2_MA), MaChipTip(g_TF2_MA, "HTF bias"),
                   MaChipLit(g_TF2_MA), false);
-   PanelStyleChip(PanelObj("T2_maSrc"), T2MaSrcChipText(), T2MaSrcTip(), true, true);
+   PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF bias: Fib golden zone", g_TF2_UseFibZone, false);
+   PanelStyleChip(PanelObj("T2_macd"),"macd","HTF bias: MACD", g_TF2_UseMacdBias, false);
 
    PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
    PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop ON/OFF", g_UseVirtualMaSL, false);
@@ -1071,18 +1085,32 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop ON/OFF", g_UseSwingVirtualSL, false);
    PanelStyleChip(PanelObj("SwMd"), SwMdChipText(), SwMdTip(), true, true);
    PanelStyleChip(PanelObj("Trail"),"Trail","Basket pip trail TP", g_UseBasketTP, false);
+
+   // Pad spacers (same size, non-interactive)
+   string sps[] = {
+      "SpM0",
+      "SpL0","SpL1","SpL2","SpL3a","SpL3b",
+      "SpH0","SpH1","SpH2"
+   };
+   for(int i = 0; i < ArraySize(sps); i++)
+   {
+      string sn = PanelObj(sps[i]);
+      if(ObjectFind(0, sn) >= 0)
+         PanelStyleSpacer(sn);
+   }
 }
 
 void PanelHideExtras()
 {
    string extras[] = {
       "CONF","GRID","BUY","SELL","L1","L2","LR",
-      "T1_rsi","T1_fib","T1_macd","T1_ma",
+      "T1_rsi","T1_ma","T1_fib","T1_macd",
       "T1_stX","T1_stXm","T1_stC","T1_stCm",
       "BosSrc","T1_bos","BosEng","BosSig",
       "SrLv","T1_srR","T1_srB",
-      "T2_rsi","T2_stoch","T2_stMd","T2_fib","T2_macd","T2_ma","T2_maSrc",
-      "MaSL","MaLn","SwSL","SwMd","Trail"
+      "T2_rsi","T2_stoch","T2_stMd","T2_maSrc","T2_ma","T2_fib","T2_macd",
+      "MaSL","MaLn","SwSL","SwMd","Trail",
+      "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"
    };
    for(int i = 0; i < ArraySize(extras); i++)
    {
@@ -1102,7 +1130,7 @@ void PanelBuild()
    if(ObjectFind(0, PanelObj("MIN")) >= 0)
       ObjectDelete(0, PanelObj("MIN"));
 
-   // Base unit = 5-chip row (fits Fast / Slow / Trail). Every row spans this width.
+   // Every chip row is exactly 5 equal slots (pad with Sp*). Same width top-to-bottom.
    const int chipW = 44;
    const int chipH = 18;
    const int gap   = 3;
@@ -1120,30 +1148,30 @@ void PanelBuild()
    }
 
    y += chipH + gap;
-   string modeIds[] = { "CONF", "GRID", "BUY", "SELL" };
-   PanelPlaceEvenRow(modeIds, 4, x0, y, rowW, gap, chipH);
+   string modeIds[] = { "CONF", "GRID", "BUY", "SELL", "SpM0" };
+   PanelPlaceEvenRow(modeIds, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
-   string t1a[] = { "T1_rsi", "T1_fib", "T1_macd", "T1_ma" };
-   PanelPlaceEvenRow(t1a, 4, x0, y, rowW, gap, chipH);
+   string t1a[] = { "T1_rsi", "T1_ma", "T1_fib", "T1_macd", "SpL0" };
+   PanelPlaceEvenRow(t1a, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1b[] = { "T1_stX", "T1_stXm", "T1_stC", "T1_stCm" };
-   PanelPlaceEvenRow(t1b, 4, x0, y, rowW, gap, chipH);
+   string t1b[] = { "T1_stX", "T1_stXm", "T1_stC", "T1_stCm", "SpL1" };
+   PanelPlaceEvenRow(t1b, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1c[] = { "BosSrc", "T1_bos", "BosEng", "BosSig" };
-   PanelPlaceEvenRow(t1c, 4, x0, y, rowW, gap, chipH);
+   string t1c[] = { "BosSrc", "T1_bos", "BosEng", "BosSig", "SpL2" };
+   PanelPlaceEvenRow(t1c, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1d[] = { "SrLv", "T1_srR", "T1_srB" };
-   PanelPlaceEvenRow(t1d, 3, x0, y, rowW, gap, chipH);
+   string t1d[] = { "SrLv", "T1_srR", "T1_srB", "SpL3a", "SpL3b" };
+   PanelPlaceEvenRow(t1d, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
-   string t2a[] = { "T2_rsi", "T2_stoch", "T2_stMd" };
-   PanelPlaceEvenRow(t2a, 3, x0, y, rowW, gap, chipH);
+   string t2a[] = { "T2_rsi", "T2_stoch", "T2_stMd", "SpH0", "SpH1" };
+   PanelPlaceEvenRow(t2a, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t2b[] = { "T2_fib", "T2_macd", "T2_ma", "T2_maSrc" };
-   PanelPlaceEvenRow(t2b, 4, x0, y, rowW, gap, chipH);
+   string t2b[] = { "T2_maSrc", "T2_ma", "T2_fib", "T2_macd", "SpH2" };
+   PanelPlaceEvenRow(t2b, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
@@ -1190,7 +1218,8 @@ bool PanelHandleClick(const string sparam)
    string id = StringSubstr(sparam, StringLen(g_panelPrefix));
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
 
-   if(id == "L1" || id == "L2" || id == "LR")
+   // Section headers + pad spacers — ignore
+   if(id == "L1" || id == "L2" || id == "LR" || StringFind(id, "Sp") == 0)
       return true;
 
    if(!PanelClickAllowed())
@@ -1269,7 +1298,10 @@ void PanelPollClicks()
    if(!MQLInfoInteger(MQL_TESTER)) return;
    if(StringLen(g_panelPrefix) == 0) PanelInitPrefix();
 
-   string headers[] = { "L1", "L2", "LR" };
+   string headers[] = {
+      "L1","L2","LR",
+      "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"
+   };
    for(int h = 0; h < ArraySize(headers); h++)
    {
       string hn = PanelObj(headers[h]);
@@ -1280,11 +1312,11 @@ void PanelPollClicks()
 
    string ids[] = {
       "TTL","CONF","GRID","BUY","SELL",
-      "T1_rsi","T1_fib","T1_macd","T1_ma",
+      "T1_rsi","T1_ma","T1_fib","T1_macd",
       "T1_stX","T1_stXm","T1_stC","T1_stCm",
       "BosSrc","T1_bos","BosEng","BosSig",
       "SrLv","T1_srR","T1_srB",
-      "T2_rsi","T2_stoch","T2_stMd","T2_fib","T2_macd","T2_ma","T2_maSrc",
+      "T2_rsi","T2_stoch","T2_stMd","T2_maSrc","T2_ma","T2_fib","T2_macd",
       "MaSL","MaLn","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(ids); i++)
