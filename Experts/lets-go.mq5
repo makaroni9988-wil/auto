@@ -28,7 +28,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.21"
+#property version   "5.22"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -822,7 +822,6 @@ void PanelClearMemory()
 // Always top-left. Position = PanelInsetX / PanelInsetY.
 string PanelObj(const string id) { return g_panelPrefix + id; }
 
-// Section headers, family tags, fillers — never toggle runtime state.
 bool PanelIsNonInteractiveId(const string id)
 {
    if(id == "L1" || id == "L2" || id == "LG" || id == "LR" ||
@@ -882,9 +881,6 @@ void PanelStyleDisabled(const string name, const string text, const string tip)
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
 
-// Non-clickable family label (first column of a family row).
-// isOr=false -> teal (this family ANDs with the rest).
-// isOr=true  -> amber (the two toggles in this row are OR'd together).
 void PanelStyleFamily(const string name, const string text, const string tip, const bool isOr)
 {
    ObjectSetString (0, name, OBJPROP_TEXT, text);
@@ -904,7 +900,6 @@ void PanelStyleFamily(const string name, const string text, const string tip, co
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
 
-// Non-clickable soft filler that keeps every row exactly 5 columns wide.
 void PanelStyleTag(const string name, const string text, const string tip)
 {
    ObjectSetString (0, name, OBJPROP_TEXT, text);
@@ -951,8 +946,6 @@ void PanelEnsureLabel(const string id, const int x, const int y, const int w, co
    ObjectSetInteger(0, PanelObj(id), OBJPROP_ZORDER, 900);
 }
 
-// Place n chips evenly across exactly rowW (last chip absorbs remainder).
-// Used for every equal chip row so LTF / HTF / risk stay pixel-aligned.
 void PanelPlaceEvenRow(const string &ids[], const int n,
                        const int x0, const int y,
                        const int rowW, const int gap, const int chipH)
@@ -961,12 +954,8 @@ void PanelPlaceEvenRow(const string &ids[], const int n,
    const int body  = rowW - gap * (n - 1);
    const int chipW = body / n;
    const int step  = chipW + gap;
-   const int lastW = rowW - step * (n - 1);
    for(int i = 0; i < n; i++)
-   {
-      const int w = (i == n - 1) ? lastW : chipW;
-      PanelEnsureButton(ids[i], x0 + step * i, y, w, chipH);
-   }
+      PanelEnsureButton(ids[i], x0 + step * i, y, chipW, chipH);
 }
 
 string ConfChipText()
@@ -1207,21 +1196,18 @@ void PanelPaintState()
 
    PanelStyleChip(PanelObj("L1"), " LTF entry . AND", "LTF entry: every ON family must pass (AND)", true, true);
 
-   // Row: oscillator bias (rsi / macd / fib) — each ANDs with the rest.
    PanelStyleFamily(PanelObj("FamOsc"), "osc", "LTF oscillator bias: each ON module ANDs with the rest", false);
    PanelStyleChip(PanelObj("T1_rsi"), "rsi", "LTF entry: RSI bias (mid)", g_LTF_UseRsiBias, false);
    PanelStyleChip(PanelObj("T1_macd"),"macd","LTF entry: MACD bias", g_LTF_UseMacdBias, false);
    PanelStyleChip(PanelObj("T1_fib"), "fib", "LTF entry: Fib golden zone", g_LTF_UseFibZone, false);
    PanelStyleTag(PanelObj("TagOsc"), "·", "LTF oscillator bias family");
 
-   // Row: stochastic — stX OR stC (either arms the family), then ANDs.
    PanelStyleFamily(PanelObj("FamSt"), "st or", "LTF Stoch family: stX OR stC (either arms it), then ANDs with others", true);
    PanelStyleChip(PanelObj("T1_stX"), "stX", "LTF entry: Stoch cross", g_LTF_UseStochCross, false);
    PanelStyleChip(PanelObj("T1_stXm"), StXModeChipText(), StXModeTip(), true, true);
    PanelStyleChip(PanelObj("T1_stC"), "stC", "LTF entry: Stoch classic OS/OB", g_LTF_UseStochClassic, false);
    PanelStyleChip(PanelObj("T1_stCm"), StCModeChipText(), StCModeTip(), true, true);
 
-   // Row: moving average module + its direction / check.
    PanelStyleFamily(PanelObj("FamMa"), "ma", "LTF MA family (ANDs when ON)", false);
    PanelStyleChip(PanelObj("T1_ma"), MaChipText(g_LTF_MA), MaChipTip(g_LTF_MA, "LTF entry"),
                   MaChipLit(g_LTF_MA), false);
@@ -1229,14 +1215,12 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_maChk"), MaCheckText(g_LTF_MACheckMode), "LTF MA running / candle close", true, true);
    PanelStyleTag(PanelObj("TagMa"), "·", "LTF MA settings");
 
-   // Row: BOS toggle + source / engine / signal / break (bos chip self-labels).
    PanelStyleChip(PanelObj("T1_bos"), "bos", "LTF entry: BOS on/off (ANDs when ON)", g_LTF_UseBos, false);
    PanelStyleChip(PanelObj("BosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
    PanelStyleChip(PanelObj("BosEng"), BosChipText(), BosTip(), true, true);
    PanelStyleChip(PanelObj("BosSig"), BosSigChipText(), BosSigTip(), true, true);
    PanelStyleChip(PanelObj("BosBrk"), BosBreakText(), "Fractal BOS break by wick / close", true, true);
 
-   // Row: S/R — bounce OR break-retest (either arms the family), then ANDs.
    PanelStyleFamily(PanelObj("SRLBL"), "S/R or", "S/R family: bounce OR break-retest (either arms it), then ANDs; PA=LTF", true);
    PanelStyleChip(PanelObj("SrLv"), SrLvChipText(), SrLvTip(), true, true);
    PanelStyleChip(PanelObj("T1_srR"), "srBrk", "LTF entry: S/R break-retest", g_LTF_UseSrBreakRetest, false);
@@ -1247,26 +1231,21 @@ void PanelPaintState()
    const bool htfActive = (g_ConfluenceMode == CONF_LTF_AND_HTF);
    if(htfActive)
    {
-      // Family tags only look active when HTF bias is unlocked.
       PanelStyleFamily(PanelObj("FamOsc2"), "osc", "HTF oscillator bias: each ON module ANDs", false);
-      // "st" (not "stoch") so it cannot be mistaken for the stoch ON/OFF toggle.
       PanelStyleFamily(PanelObj("FamSt2"), "st", "HTF Stoch family: toggle + mid/obos + mom/rev", false);
       PanelStyleFamily(PanelObj("FamMa2"), "ma", "HTF MA family (ANDs when ON)", false);
       PanelStyleTag(PanelObj("TagOsc2"), "·", "HTF oscillator bias family");
-      // Filler sits BETWEEN family tag and controls — never next to mom/rev.
-      PanelStyleTag(PanelObj("TagSt2"), "·", "spacer (rev/mom is the last chip in this row)");
+      PanelStyleTag(PanelObj("TagSt2"), "·", "HTF stoch row spacer");
 
       PanelStyleChip(PanelObj("T2_rsi"), "rsi", "HTF bias: RSI mid", g_HTF_UseRsiBias, false);
       PanelStyleChip(PanelObj("T2_macd"),"macd","HTF bias: MACD", g_HTF_UseMacdBias, false);
       PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF bias: Fib golden zone", g_HTF_UseFibZone, false);
       PanelStyleChip(PanelObj("T2_stoch"), "stoch", "HTF bias: Stoch on/off", g_HTF_UseStoch, false);
       PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeTip(), true, true);
-      // Always clickable while HTF is unlocked: mid → arms obos; obos → cycles mom/rev.
-      PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(),
-                     g_HTF_StochObOs
-                        ? "HTF OB/OS momentum / reversal (click to cycle)"
-                        : "Click to arm OB/OS mode, then cycle mom/rev",
-                     true, true);
+      if(g_HTF_StochObOs)
+         PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(), "HTF OB/OS momentum / reversal", true, true);
+      else
+         PanelStyleDisabled(PanelObj("T2_stDir"), T2StochDirText(), "Only used in OB/OS mode");
       PanelStyleChip(PanelObj("T2_maSrc"), T2MaSrcChipText(), T2MaSrcTip(), true, true);
       PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_HTF_MA), MaChipTip(g_HTF_MA, "HTF bias"), MaChipLit(g_HTF_MA), false);
       if(g_HTF_MaFromLTF)
@@ -1282,7 +1261,6 @@ void PanelPaintState()
    }
    else
    {
-      // Whole HTF block locked while confluence = LTF — including family tags.
       PanelStyleDisabled(PanelObj("FamOsc2"), "osc", "HTF bias locked while mode=LTF");
       PanelStyleDisabled(PanelObj("FamSt2"), "st", "HTF bias locked while mode=LTF");
       PanelStyleDisabled(PanelObj("FamMa2"), "ma", "HTF bias locked while mode=LTF");
@@ -1353,7 +1331,6 @@ void PanelBuild()
    if(StringLen(g_panelPrefix) == 0)
       PanelInitPrefix();
 
-   // Every row is exactly five meaningful equal-width chips: no blank spacers.
    const int chipW = 56;
    const int chipH = 19;
    const int gap   = 3;
@@ -1370,8 +1347,6 @@ void PanelBuild()
       return;
    }
 
-   // Remove obsolete objects retained across chart reinitialization:
-   // v5.11 spacers and the rejected v5.18/v5.19 family/tag chip ids.
    string oldObjs[] = {
       "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2",
       "FamAND","FamMA","FamStOR","FamBOS","FamSrOR","FamAND2","FamSTO","FamMA2",
@@ -1384,7 +1359,6 @@ void PanelBuild()
    PanelPlaceEvenRow(modeIds, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
-   // LTF entry — one family per row: col1 = family tag, cols 2-5 = controls.
    PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
    string t1osc[] = { "FamOsc", "T1_rsi", "T1_macd", "T1_fib", "TagOsc" };
    PanelPlaceEvenRow(t1osc, 5, x0, y, rowW, gap, chipH);
@@ -1402,13 +1376,10 @@ void PanelBuild()
    PanelPlaceEvenRow(t1sr, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap + 2;
 
-   // HTF bias — one family per row.
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
    string t2osc[] = { "FamOsc2", "T2_rsi", "T2_macd", "T2_fib", "TagOsc2" };
    PanelPlaceEvenRow(t2osc, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   // mom/rev (T2_stDir) is LAST so it gets the remainder width and cannot
-   // be covered by an empty filler chip on its right edge.
    string t2st[] = { "FamSt2", "TagSt2", "T2_stoch", "T2_stMd", "T2_stDir" };
    PanelPlaceEvenRow(t2st, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
@@ -1453,7 +1424,6 @@ bool PanelHandleClick(const string sparam)
    string id = StringSubstr(sparam, StringLen(g_panelPrefix));
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
 
-   // Section / family / filler / status labels — ignore (non-interactive).
    if(PanelIsNonInteractiveId(id))
       return true;
 
@@ -1526,20 +1496,9 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T2_stMd") PanelToggleBool(g_HTF_StochObOs, "T2_stOb");
    else if(id == "T2_stDir")
    {
-      // In mid mode this used to be a silent dead click (looked like a broken
-      // button). Arm OB/OS first so mom/rev becomes meaningful; once in OB/OS,
-      // cycle mom ↔ rev. Trading rule unchanged: mid vs obos still driven by
-      // g_HTF_StochObOs inside EvalStochZone.
-      if(!g_HTF_StochObOs)
-      {
-         g_HTF_StochObOs = true;
-         PanelSaveBool("T2_stOb", true);
-      }
-      else
-      {
-         g_HTF_StochObOsMode = (g_HTF_StochObOsMode == STOCH_CLASSIC_MOM) ? STOCH_CLASSIC_REV : STOCH_CLASSIC_MOM;
-         PanelSaveInt("T2_stDir", (int)g_HTF_StochObOsMode);
-      }
+      if(!g_HTF_StochObOs) return true;
+      g_HTF_StochObOsMode = (g_HTF_StochObOsMode == STOCH_CLASSIC_MOM) ? STOCH_CLASSIC_REV : STOCH_CLASSIC_MOM;
+      PanelSaveInt("T2_stDir", (int)g_HTF_StochObOsMode);
    }
    else if(id == "T2_fib") PanelToggleBool(g_HTF_UseFibZone, "T2_fib");
    else if(id == "T2_macd") PanelToggleBool(g_HTF_UseMacdBias, "T2_macd");
@@ -1592,10 +1551,6 @@ void PanelPollClicks()
    if(!MQLInfoInteger(MQL_TESTER)) return;
    if(StringLen(g_panelPrefix) == 0) PanelInitPrefix();
 
-   // Layout-independent tester polling: scan EVERY panel button on the chart.
-   // Clear every latched press so nothing sticks. Dispatch only the first
-   // INTERACTIVE chip — never Fam/Tag/section labels (those used to "eat"
-   // a neighbouring control's click when object order put the label first).
    string hit = "";
    int total = ObjectsTotal(0, -1, OBJ_BUTTON);
    for(int i = total - 1; i >= 0; i--)
@@ -1603,10 +1558,10 @@ void PanelPollClicks()
       string name = ObjectName(0, i, -1, OBJ_BUTTON);
       if(StringFind(name, g_panelPrefix) != 0) continue;
       if(!ObjectGetInteger(0, name, OBJPROP_STATE)) continue;
-      ObjectSetInteger(0, name, OBJPROP_STATE, false); // release latch
+      ObjectSetInteger(0, name, OBJPROP_STATE, false);
       string id = StringSubstr(name, StringLen(g_panelPrefix));
-      if(PanelIsNonInteractiveId(id)) continue;       // labels never win the click
-      if(StringLen(hit) == 0) hit = name;              // first interactive pressed
+      if(PanelIsNonInteractiveId(id)) continue;
+      if(StringLen(hit) == 0) hit = name;
    }
    if(StringLen(hit) > 0)
       PanelHandleClick(hit);
