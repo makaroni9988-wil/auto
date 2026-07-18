@@ -28,7 +28,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.23"
+#property version   "5.24"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
