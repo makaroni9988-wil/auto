@@ -28,7 +28,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.19"
+#property version   "5.17"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -557,7 +557,7 @@ int PanelLoadInt(const string id, const int fallback)
 // Compact fingerprint of every panel-backed INPUT default.
 string PanelInputFingerprint()
 {
-   return "v519|" + IntegerToString((int)ConfluenceMode) + "|"
+   return "v517|" + IntegerToString((int)ConfluenceMode) + "|"
         + IntegerToString((int)BosMode) + "|"
         + IntegerToString((int)BosSignalMode) + "|"
         + IntegerToString((int)BosBreakMode) + "|"
@@ -870,28 +870,6 @@ void PanelStyleDisabled(const string name, const string text, const string tip)
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
 
-// Non-clickable family tag: deliberately flat (must not look like a dead button).
-void PanelStyleFamily(const string name, const string text, const string tip)
-{
-   ObjectSetString (0, name, OBJPROP_TEXT, text);
-   ObjectSetString (0, name, OBJPROP_TOOLTIP, tip);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, C'180,180,180');
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'26,26,26');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'26,26,26');
-   ObjectSetInteger(0, name, OBJPROP_STATE, false);
-}
-
-// Soft non-clickable text tag (same flat treatment).
-void PanelStyleTag(const string name, const string text, const string tip)
-{
-   ObjectSetString (0, name, OBJPROP_TEXT, text);
-   ObjectSetString (0, name, OBJPROP_TOOLTIP, tip);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, C'140,140,140');
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'26,26,26');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'26,26,26');
-   ObjectSetInteger(0, name, OBJPROP_STATE, false);
-}
-
 void PanelStyleStatus(const string name, const bool blocked)
 {
    ObjectSetString (0, name, OBJPROP_TEXT, blocked ? "BLOCK" : "OPEN");
@@ -1182,61 +1160,45 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("BUY"),  "Buy",  "Allow BUY signals",  g_TradeBuy,  false);
    PanelStyleChip(PanelObj("SELL"), "Sell", "Allow SELL signals", g_TradeSell, false);
 
-   //----- LTF: one family per row; first chip = AND / OR / MA / BOS tag -----
-   PanelStyleChip(PanelObj("L1"), " LTF · AND", "LTF entry: families AND together", true, true);
-
-   PanelStyleFamily(PanelObj("FamAND"), "filters", "Simple LTF filters; all enabled families AND");
-   PanelStyleChip(PanelObj("T1_rsi"), "rsi", "LTF RSI mid", g_LTF_UseRsiBias, false);
-   PanelStyleChip(PanelObj("T1_fib"), "fib", "LTF Fib golden zone", g_LTF_UseFibZone, false);
-   PanelStyleChip(PanelObj("T1_macd"),"macd","LTF MACD bias", g_LTF_UseMacdBias, false);
-   PanelStyleTag(PanelObj("TagAND"), "AND", "Enabled LTF families AND together");
-
-   PanelStyleFamily(PanelObj("FamMA"), "MA", "LTF MA family (AND when ON)");
+   PanelStyleChip(PanelObj("L1"), " LTF entry", "LTF entry modules", true, true);
+   PanelStyleChip(PanelObj("T1_rsi"), "rsi", "LTF entry: RSI bias (mid)", g_LTF_UseRsiBias, false);
    PanelStyleChip(PanelObj("T1_ma"), MaChipText(g_LTF_MA), MaChipTip(g_LTF_MA, "LTF entry"),
                   MaChipLit(g_LTF_MA), false);
    PanelStyleChip(PanelObj("T1_maDir"), MaDirText(g_LTF_MaTrendMode), "LTF MA follow / reversal", true, true);
    PanelStyleChip(PanelObj("T1_maChk"), MaCheckText(g_LTF_MACheckMode), "LTF MA running / candle close", true, true);
-   PanelStyleTag(PanelObj("TagLTF"), "LTF", "LTF MA settings");
+   PanelStyleChip(PanelObj("T1_fib"), "fib", "LTF entry: Fib golden zone", g_LTF_UseFibZone, false);
+   PanelStyleChip(PanelObj("T1_macd"),"macd","LTF entry: MACD bias", g_LTF_UseMacdBias, false);
 
-   PanelStyleFamily(PanelObj("FamStOR"), "stOR", "Stoch family: stX OR stC (then AND with others)");
-   PanelStyleChip(PanelObj("T1_stX"), "stX", "LTF Stoch cross", g_LTF_UseStochCross, false);
+   PanelStyleChip(PanelObj("T1_stX"), "stX", "LTF entry: Stoch cross", g_LTF_UseStochCross, false);
    PanelStyleChip(PanelObj("T1_stXm"), StXModeChipText(), StXModeTip(), true, true);
-   PanelStyleChip(PanelObj("T1_stC"), "stC", "LTF Stoch classic OS/OB", g_LTF_UseStochClassic, false);
+   PanelStyleChip(PanelObj("T1_stC"), "stC", "LTF entry: Stoch classic OS/OB", g_LTF_UseStochClassic, false);
    PanelStyleChip(PanelObj("T1_stCm"), StCModeChipText(), StCModeTip(), true, true);
 
-   PanelStyleChip(PanelObj("T1_bos"), "bos", "LTF BOS on/off", g_LTF_UseBos, false);
+   PanelStyleChip(PanelObj("T1_bos"), "bos", "LTF entry: BOS on/off", g_LTF_UseBos, false);
    PanelStyleChip(PanelObj("BosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
    PanelStyleChip(PanelObj("BosEng"), BosChipText(), BosTip(), true, true);
    PanelStyleChip(PanelObj("BosSig"), BosSigChipText(), BosSigTip(), true, true);
    PanelStyleChip(PanelObj("BosBrk"), BosBreakText(), "Fractal BOS break by wick / close", true, true);
 
-   PanelStyleFamily(PanelObj("FamSrOR"), "srOR", "S/R family: bounce OR break-retest (then AND)");
+   PanelStyleChip(PanelObj("SRLBL"), "S/R", "S/R entry family", true, true);
    PanelStyleChip(PanelObj("SrLv"), SrLvChipText(), SrLvTip(), true, true);
-   PanelStyleChip(PanelObj("T1_srR"), "srBrk", "LTF S/R break-retest", g_LTF_UseSrBreakRetest, false);
-   PanelStyleChip(PanelObj("T1_srB"), "srRev", "LTF S/R bounce", g_LTF_UseSrBounce, false);
+   PanelStyleChip(PanelObj("T1_srR"), "srBrk", "LTF entry: S/R break-retest", g_LTF_UseSrBreakRetest, false);
+   PanelStyleChip(PanelObj("T1_srB"), "srRev", "LTF entry: S/R bounce", g_LTF_UseSrBounce, false);
    PanelStyleChip(PanelObj("SrRej"), RejectText(), "Require rejection candle / free", true, true);
 
-   //----- HTF: AND modules, then Stoch modes, then MA family -----
-   PanelStyleChip(PanelObj("L2"), " HTF · AND", "HTF bias: every ON module must pass", true, true);
+   PanelStyleChip(PanelObj("L2"), " HTF bias", "HTF zone bias (+HTF): rsi / stoch / fib / macd / ma", true, true);
    const bool htfActive = (g_ConfluenceMode == CONF_LTF_AND_HTF);
    if(htfActive)
    {
-      PanelStyleFamily(PanelObj("FamAND2"), "filters", "Simple HTF filters; all enabled modules AND");
-      PanelStyleChip(PanelObj("T2_rsi"), "rsi", "HTF RSI mid", g_HTF_UseRsiBias, false);
-      PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF Fib golden zone", g_HTF_UseFibZone, false);
-      PanelStyleChip(PanelObj("T2_macd"),"macd","HTF MACD", g_HTF_UseMacdBias, false);
-      PanelStyleTag(PanelObj("TagAND2"), "AND", "Enabled HTF modules AND together");
-
-      PanelStyleChip(PanelObj("T2_stoch"), "stoch", "HTF Stoch on/off", g_HTF_UseStoch, false);
+      PanelStyleChip(PanelObj("T2_rsi"), "rsi", "HTF bias: RSI mid", g_HTF_UseRsiBias, false);
+      PanelStyleChip(PanelObj("T2_stoch"), "stoch", "HTF bias: Stoch on/off", g_HTF_UseStoch, false);
       PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeTip(), true, true);
       if(g_HTF_StochObOs)
          PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(), "HTF OB/OS momentum / reversal", true, true);
       else
          PanelStyleDisabled(PanelObj("T2_stDir"), T2StochDirText(), "Only used in OB/OS mode");
-      PanelStyleTag(PanelObj("TagHTF"), "HTF", "HTF Stoch settings");
-      PanelStyleTag(PanelObj("TagZone"), "zone", "Zone bias (not LTF cross/classic)");
-
-      PanelStyleFamily(PanelObj("FamMA2"), "MA", "HTF MA family (AND when ON)");
+      PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF bias: Fib golden zone", g_HTF_UseFibZone, false);
+      PanelStyleChip(PanelObj("T2_macd"),"macd","HTF bias: MACD", g_HTF_UseMacdBias, false);
       PanelStyleChip(PanelObj("T2_maSrc"), T2MaSrcChipText(), T2MaSrcTip(), true, true);
       PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_HTF_MA), MaChipTip(g_HTF_MA, "HTF bias"), MaChipLit(g_HTF_MA), false);
       if(g_HTF_MaFromLTF)
@@ -1252,26 +1214,20 @@ void PanelPaintState()
    }
    else
    {
-      PanelStyleFamily(PanelObj("FamAND2"), "AND", "HTF locked while mode=LTF");
-      PanelStyleFamily(PanelObj("FamMA2"), "MA", "HTF locked while mode=LTF");
-      PanelStyleTag(PanelObj("TagHTF"), "HTF", "HTF locked while mode=LTF");
-      PanelStyleTag(PanelObj("TagZone"), "zone", "HTF locked while mode=LTF");
-      PanelStyleTag(PanelObj("TagAND2"), "AND", "HTF locked while mode=LTF");
-      string hIds[] = {"T2_rsi","T2_fib","T2_macd","T2_stoch","T2_stMd","T2_stDir","T2_maSrc","T2_ma","T2_maDir","T2_maChk"};
+      string hIds[] = {"T2_rsi","T2_stoch","T2_stMd","T2_stDir","T2_fib","T2_macd","T2_maSrc","T2_ma","T2_maDir","T2_maChk"};
       string hTxt[10];
-      hTxt[0]="rsi"; hTxt[1]="fib"; hTxt[2]="macd"; hTxt[3]="stoch";
-      hTxt[4]=T2StochModeChipText(); hTxt[5]=T2StochDirText();
-      hTxt[6]=T2MaSrcChipText(); hTxt[7]=MaChipText(g_HTF_MA);
+      hTxt[0]="rsi"; hTxt[1]="stoch"; hTxt[2]=T2StochModeChipText(); hTxt[3]=T2StochDirText();
+      hTxt[4]="fib"; hTxt[5]="macd"; hTxt[6]=T2MaSrcChipText(); hTxt[7]=MaChipText(g_HTF_MA);
       hTxt[8]=MaDirText(g_HTF_MaFromLTF ? g_LTF_MaTrendMode : g_HTF_MaTrendMode);
       hTxt[9]=MaCheckText(g_HTF_MaFromLTF ? g_LTF_MACheckMode : g_HTF_MACheckMode);
       for(int i=0; i<ArraySize(hIds); i++) PanelStyleDisabled(PanelObj(hIds[i]), hTxt[i], "HTF bias locked while mode=LTF");
    }
 
    PanelStyleChip(PanelObj("LG"), " guards", "Entry/schedule guards", true, true);
-   PanelStyleChip(PanelObj("Session"), "Sess", "Session guard ON/OFF", g_UseSession, false);
-   PanelStyleChip(PanelObj("Weekend"), "Wknd", "Weekend guard ON/OFF", g_UseWeekendFilter, false);
+   PanelStyleChip(PanelObj("Session"), "Session", "Session guard ON/OFF", g_UseSession, false);
+   PanelStyleChip(PanelObj("Weekend"), "Weekend", "Weekend guard ON/OFF", g_UseWeekendFilter, false);
    PanelStyleChip(PanelObj("News"), "News", "News guard ON/OFF", g_UseNewsFilter, false);
-   PanelStyleChip(PanelObj("Broker"), "Brkr", "Broker session guard ON/OFF", g_UseBrokerSessionGuard, false);
+   PanelStyleChip(PanelObj("Broker"), "Broker", "Broker session guard ON/OFF", g_UseBrokerSessionGuard, false);
    long tradeMode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -1283,28 +1239,27 @@ void PanelPaintState()
                   cooldown || spreadBlocked;
    PanelStyleStatus(PanelObj("GuardSt"), blocked);
 
-   PanelStyleChip(PanelObj("LR"), " risk", "Risk / exit toggles", true, true);
+   PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
    PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop ON/OFF", g_UseVirtualMaSL, false);
    PanelStyleChip(PanelObj("MaLn"), MaSLLineChipText(), MaSLLineTip(), true, true);
    PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop ON/OFF", g_UseSwingVirtualSL, false);
    PanelStyleChip(PanelObj("SwMd"), SwMdChipText(), SwMdTip(), true, true);
    PanelStyleChip(PanelObj("Trail"),"Trail","Basket pip trail TP", g_UseBasketTP, false);
+
 }
 
 void PanelHideExtras()
 {
    string extras[] = {
       "CONF","GRID","GRIDN","BUY","SELL","L1","L2","LG","LR",
-      "FamAND","FamMA","FamStOR","FamBOS","FamSrOR","FamAND2","FamSTO","FamMA2",
-      "TagLTF","TagHTF","TagZone","TagAND","TagAND2",
       "T1_rsi","T1_ma","T1_maDir","T1_maChk","T1_fib","T1_macd",
       "T1_stX","T1_stXm","T1_stC","T1_stCm",
       "BosSrc","T1_bos","BosEng","BosSig","BosBrk",
-      "SrLv","T1_srR","T1_srB","SrRej",
+      "SRLBL","SrLv","T1_srR","T1_srB","SrRej",
       "T2_rsi","T2_stoch","T2_stMd","T2_stDir","T2_maSrc","T2_ma","T2_maDir","T2_maChk","T2_fib","T2_macd",
       "Session","Weekend","News","Broker","GuardSt",
       "MaSL","MaLn","SwSL","SwMd","Trail",
-      "SRLBL","SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"
+      "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"
    };
    for(int i = 0; i < ArraySize(extras); i++)
    {
@@ -1321,10 +1276,10 @@ void PanelBuild()
    if(StringLen(g_panelPrefix) == 0)
       PanelInitPrefix();
 
-   // Fixed 5-col family rows: col1 = AND/OR/MA/BOS tag, cols 2-5 = controls.
-   const int chipW = 58;
+   // Every row is exactly five meaningful equal-width chips: no blank spacers.
+   const int chipW = 56;
    const int chipH = 19;
-   const int gap   = 4;
+   const int gap   = 3;
    const int rowW  = chipW * 5 + gap * 4;
    const int x0    = MathMax(0, PanelInsetX);
    int y = MathMax(0, PanelInsetY);
@@ -1338,50 +1293,41 @@ void PanelBuild()
       return;
    }
 
-   // Remove obsolete spacer / old label objects retained across reinit.
-   string oldObjs[] = {
-      "SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2",
-      "SRLBL","FamBOS","FamSTO"
-   };
-   for(int sp=0; sp<ArraySize(oldObjs); sp++) ObjectDelete(0, PanelObj(oldObjs[sp]));
+   // Remove obsolete v5.11 spacer objects retained across chart reinitialization.
+   string oldSpacers[] = {"SpM0","SpL0","SpL1","SpL2","SpL3a","SpL3b","SpH0","SpH1","SpH2"};
+   for(int sp=0; sp<ArraySize(oldSpacers); sp++) ObjectDelete(0, PanelObj(oldSpacers[sp]));
 
    y += chipH + gap;
    string modeIds[] = { "CONF", "GRID", "GRIDN", "BUY", "SELL" };
    PanelPlaceEvenRow(modeIds, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap + 3;
+   y += chipH + gap + 2;
 
    PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
-   string t1and[] = { "FamAND", "T1_rsi", "T1_fib", "T1_macd", "TagAND" };
-   PanelPlaceEvenRow(t1and, 5, x0, y, rowW, gap, chipH);
+   string t1a[] = { "T1_rsi", "T1_ma", "T1_maDir", "T1_maChk", "T1_fib" };
+   PanelPlaceEvenRow(t1a, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1ma[] = { "FamMA", "T1_ma", "T1_maDir", "T1_maChk", "TagLTF" };
-   PanelPlaceEvenRow(t1ma, 5, x0, y, rowW, gap, chipH);
+   string t1b[] = { "T1_macd", "T1_stX", "T1_stXm", "T1_stC", "T1_stCm" };
+   PanelPlaceEvenRow(t1b, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1st[] = { "FamStOR", "T1_stX", "T1_stXm", "T1_stC", "T1_stCm" };
-   PanelPlaceEvenRow(t1st, 5, x0, y, rowW, gap, chipH);
+   string t1c[] = { "T1_bos", "BosSrc", "BosEng", "BosSig", "BosBrk" };
+   PanelPlaceEvenRow(t1c, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1bos[] = { "T1_bos", "BosSrc", "BosEng", "BosSig", "BosBrk" };
-   PanelPlaceEvenRow(t1bos, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap;
-   string t1sr[] = { "FamSrOR", "SrLv", "T1_srR", "T1_srB", "SrRej" };
-   PanelPlaceEvenRow(t1sr, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap + 3;
+   string t1d[] = { "SRLBL", "SrLv", "T1_srR", "T1_srB", "SrRej" };
+   PanelPlaceEvenRow(t1d, 5, x0, y, rowW, gap, chipH);
+   y += chipH + gap + 2;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
-   string t2and[] = { "FamAND2", "T2_rsi", "T2_fib", "T2_macd", "TagAND2" };
-   PanelPlaceEvenRow(t2and, 5, x0, y, rowW, gap, chipH);
+   string t2a[] = { "T2_rsi", "T2_stoch", "T2_stMd", "T2_stDir", "T2_fib" };
+   PanelPlaceEvenRow(t2a, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t2st[] = { "T2_stoch", "T2_stMd", "T2_stDir", "TagHTF", "TagZone" };
-   PanelPlaceEvenRow(t2st, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap;
-   string t2ma[] = { "FamMA2", "T2_maSrc", "T2_ma", "T2_maDir", "T2_maChk" };
-   PanelPlaceEvenRow(t2ma, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap + 3;
+   string t2b[] = { "T2_macd", "T2_maSrc", "T2_ma", "T2_maDir", "T2_maChk" };
+   PanelPlaceEvenRow(t2b, 5, x0, y, rowW, gap, chipH);
+   y += chipH + gap + 2;
 
    PanelEnsureLabel("LG", x0, y, rowW, chipH); y += chipH + gap;
    string guards[] = { "Session", "Weekend", "News", "Broker", "GuardSt" };
    PanelPlaceEvenRow(guards, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap + 3;
+   y += chipH + gap + 2;
 
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
    string risk[] = { "MaSL", "MaLn", "SwSL", "SwMd", "Trail" };
@@ -1415,10 +1361,9 @@ bool PanelHandleClick(const string sparam)
    string id = StringSubstr(sparam, StringLen(g_panelPrefix));
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
 
-   // Section / family / status tags — ignore
+   // Section/status labels — ignore
    if(id == "L1" || id == "L2" || id == "LG" || id == "LR" ||
-      id == "GuardSt" || id == "SRLBL" || StringFind(id, "Sp") == 0 ||
-      StringFind(id, "Fam") == 0 || StringFind(id, "Tag") == 0)
+      id == "SRLBL" || id == "GuardSt" || StringFind(id, "Sp") == 0)
       return true;
 
    // HTF controls are deliberately locked while confluence is LTF-only.
@@ -1546,9 +1491,7 @@ void PanelPollClicks()
    if(StringLen(g_panelPrefix) == 0) PanelInitPrefix();
 
    string headers[] = {
-      "L1","L2","LG","LR","GuardSt",
-      "FamAND","FamMA","FamStOR","FamBOS","FamSrOR","FamAND2","FamSTO","FamMA2",
-      "TagLTF","TagHTF","TagZone","TagAND","TagAND2","SRLBL"
+      "L1","L2","LG","LR","SRLBL","GuardSt"
    };
    for(int h = 0; h < ArraySize(headers); h++)
    {
