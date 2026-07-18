@@ -1277,8 +1277,8 @@ void PanelBuild()
       PanelInitPrefix();
 
    // Every row is exactly five meaningful equal-width chips: no blank spacers.
-   const int chipW = 44;
-   const int chipH = 18;
+   const int chipW = 56;
+   const int chipH = 19;
    const int gap   = 3;
    const int rowW  = chipW * 5 + gap * 4;
    const int x0    = MathMax(0, PanelInsetX);
