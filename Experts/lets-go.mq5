@@ -11,8 +11,8 @@
 //|           Signal clock = TF1 new bar.                            |
 //|           Within Stoch: cross OR classic. Within S/R: bounce OR  |
 //|           break-retest. Families AND with each other.            |
-//|           MA: panel ma(off gray) / m1 / m2 (green). Inputs also  |
-//|             offer live style (gun-style) when UseMA is ON.       |
+//|           MA: one module per TF — panel ma (off) / m1 / m2.      |
+//|             m1 = single MA trend. m2 = fast vs slow.             |
 //|           MaSL: ON/OFF + Fast/Slow exit line (TF1 MA lines).     |
 //|           BosMode / SwingSLMode independent. FibZone may arm on  |
 //|           bar and re-check zone every tick (gun/bomb style).     |
@@ -23,7 +23,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.98"
+#property version   "4.97"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -55,7 +55,7 @@ input bool TF1_UseSrBreakRetest  = false; // S/R break-retest
 input bool TF1_UseFibZone        = false; // Fib golden zone
 input bool TF1_UseMacdBias       = false; // MACD bias
 input bool TF1_UseRsiBias        = false; // RSI bias
-input bool TF1_UseMA             = false; // MA module (panel m1/m2; or MaStyle when ON)
+input bool TF1_UseMA             = false; // MA module (panel: ma / m1 / m2)
 input bool TF1_UseBos            = true;  // BOS (see BosMode)
 
 input group "===== TF2 Bias (every ON module must pass — all AND) ====="
@@ -67,7 +67,7 @@ input bool TF2_UseSrBreakRetest  = false; // S/R break-retest
 input bool TF2_UseFibZone        = false; // Fib golden zone
 input bool TF2_UseMacdBias       = false; // MACD bias
 input bool TF2_UseRsiBias        = false; // RSI bias
-input bool TF2_UseMA             = false; // MA module (panel m1/m2; or MaStyle when ON)
+input bool TF2_UseMA             = false; // MA module (panel: ma / m1 / m2)
 input bool TF2_UseBos            = false; // BOS (see BosMode)
 
 input group "===== Stochastic (shared params, per-TF handles) ====="
@@ -96,17 +96,17 @@ input int                 MACDSlowEMA      = 26;
 input int                 MACDSignalPeriod = 9;
 input ENUM_APPLIED_PRICE  MACDAppliedPrice = PRICE_CLOSE;
 
-input group "===== MA (one system: live / m1 / m2 + MaSL lines) ====="
-// Panel chip: ma (off, gray) → m1 (green) → m2 (green).
+input group "===== MA (one system: ma / m1 / m2 + MaSL lines) ====="
+// One module per TF. Panel chip cycles OFF → ma → m1 → m2.
+//   ma = live price vs single MA (Running / CandleClose).
 //   m1 = single MA trend (Follow / Reversal).
 //   m2 = fast vs slow trend (Follow / Reversal).
-// Inputs MaStyle=live = gun-style live price vs single (not the panel "ma" off label).
-// Shared identity for every MA handle. Risk row: MaSL + Fast/Slow.
+// Shared identity for every MA handle. Risk row only toggles MaSL + Fast/Slow.
 enum ENUM_MA_STYLE
 {
-   MA_STYLE_LIVE,   // live — price vs single MA (Running / CandleClose)
-   MA_STYLE_SINGLE, // m1   — single MA trend
-   MA_STYLE_DOUBLE  // m2   — fast vs slow
+   MA_STYLE_LIVE,   // ma  — live price vs single MA
+   MA_STYLE_SINGLE, // m1  — single MA trend
+   MA_STYLE_DOUBLE  // m2  — fast vs slow
 };
 enum ENUM_TREND_MODE
 {
@@ -123,10 +123,10 @@ input ENUM_APPLIED_PRICE  MaAppliedPrice = PRICE_CLOSE;
 input int                 MaShift        = 0;
 
 input ENUM_MA_STYLE       MaStyle        = MA_STYLE_DOUBLE; // Default when TF UseMA is ON
-input ENUM_MA_CHECK       MACheckMode    = MA_CHECK_RUNNING; // live style only
-input double              MABufferPips   = 100;             // live style buffer (pips)
+input ENUM_MA_CHECK       MACheckMode    = MA_CHECK_RUNNING; // ma mode only
+input double              MABufferPips   = 100;             // ma mode buffer (pips)
 
-input int                 MaPeriod       = 34;  // Single line (live + m1)
+input int                 MaPeriod       = 34;  // Single line (ma + m1)
 input int                 MaFastPeriod   = 13;  // m2 fast
 input int                 MaSlowPeriod   = 34;  // m2 slow
 input ENUM_TREND_MODE     MaTrendMode    = TREND_FOLLOW; // m1 / m2
@@ -244,7 +244,7 @@ input bool PanelStartCollapsed   = false; // Start minimized
 input uint PanelClickGuardMs     = 200;   // Double-click guard (ms)
 
 input group "===== Logging ====="
-input bool InpDebugLog = false; // Panel clicks + BLOCKED entry reasons (trade lines always on)
+input bool InpDebugLog = false; // Extra panel chatter (trade lines always on)
 
 
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
@@ -349,15 +349,15 @@ double g_pendingSL         = 0;
 double g_pendingTP         = 0;
 ulong  g_lastModifyBurstMs = 0;
 
-//====================== LOGGING / PUSH ======================
-// Journal: lets-go #magic SYMBOL | …
-// Push: INIT FAILED + BASKET CLOSED only.
+//====================== LOGGING / PUSH (same style as 2nd / 3rd / fibo-gun) ======================
+// Journal example:  lets-go #777 EURUSD | OPEN BUY 0.01 @ ...
 string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
 void LogInfo(const string msg)  { Print(Tag(), " | ", msg); }
 void LogDebug(const string msg) { if(InpDebugLog) Print(Tag(), " | ", msg); }
 
 void NotifyPush(const string msg)
 {
+   // Important only: callers already limit to INIT FAILED + BASKET CLOSED.
    if(!SendNotification(msg))
       LogInfo("PUSH FAILED - " + msg);
 }
@@ -584,7 +584,10 @@ void RuntimeLoadFromGV()
    g_TF1_UseFibZone = PanelLoadBool("T1_fib", g_TF1_UseFibZone);
    g_TF1_UseMacdBias = PanelLoadBool("T1_macd", g_TF1_UseMacdBias);
    g_TF1_UseRsiBias = PanelLoadBool("T1_rsi", g_TF1_UseRsiBias);
-   g_TF1_MA = PanelLoadInt("T1_ma", g_TF1_MA);
+   if(GlobalVariableCheck(PanelGvKey("T1_ma")))
+      g_TF1_MA = PanelLoadInt("T1_ma", g_TF1_MA);
+   else if(GlobalVariableCheck(PanelGvKey("T1_maT")))
+      g_TF1_MA = PanelLoadInt("T1_maT", g_TF1_MA); // migrate old key
    g_TF1_UseBos = PanelLoadBool("T1_bos", g_TF1_UseBos);
 
    g_TF2_UseStochCross = PanelLoadBool("T2_stX", g_TF2_UseStochCross);
@@ -594,7 +597,10 @@ void RuntimeLoadFromGV()
    g_TF2_UseFibZone = PanelLoadBool("T2_fib", g_TF2_UseFibZone);
    g_TF2_UseMacdBias = PanelLoadBool("T2_macd", g_TF2_UseMacdBias);
    g_TF2_UseRsiBias = PanelLoadBool("T2_rsi", g_TF2_UseRsiBias);
-   g_TF2_MA = PanelLoadInt("T2_ma", g_TF2_MA);
+   if(GlobalVariableCheck(PanelGvKey("T2_ma")))
+      g_TF2_MA = PanelLoadInt("T2_ma", g_TF2_MA);
+   else if(GlobalVariableCheck(PanelGvKey("T2_maT")))
+      g_TF2_MA = PanelLoadInt("T2_maT", g_TF2_MA);
    g_TF2_UseBos = PanelLoadBool("T2_bos", g_TF2_UseBos);
 
    if(g_TF1_MA != MA_OFF && g_TF1_MA != MA_LIVE && g_TF1_MA != MA_SINGLE && g_TF1_MA != MA_DOUBLE)
@@ -657,11 +663,9 @@ void PanelClearMemory()
    // wipe remembered clicks for this account/symbol/magic
    string ids[] = {
       "INP_FP","Conf","BosMode","SwMode","Buy","Sell","Collapsed",
-      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ma","T1_bos",
-      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ma","T2_bos",
-      "MaSL","MaLn","SwSL","Trail",
-      // retired keys from older panel builds
-      "T1_maT","T2_maT","T1_ema","T2_ema","MA","SwMd"
+      "T1_stX","T1_stC","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_ma","T1_maT","T1_ema","T1_bos",
+      "T2_stX","T2_stC","T2_srB","T2_srR","T2_fib","T2_macd","T2_rsi","T2_ma","T2_maT","T2_ema","T2_bos",
+      "MA","MaSL","MaLn","SwSL","SwMd","Trail"
    };
    for(int i = 0; i < ArraySize(ids); i++)
       GlobalVariableDel(PanelGvKey(ids[i]));
@@ -2139,7 +2143,7 @@ void DiagBlock(const string reason)
 {
    if(g_lastDiagBar == g_lastBarTime) return;
    g_lastDiagBar = g_lastBarTime;
-   LogDebug("BLOCKED " + reason + " | signal=" + (g_signalIsBuy ? "BUY" : "SELL"));
+   LogInfo("BLOCKED " + reason + " | signal=" + (g_signalIsBuy ? "BUY" : "SELL"));
 }
 
 void TryEnter()
@@ -2147,7 +2151,7 @@ void TryEnter()
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   // FibZone per-tick re-gate: leg armed on bar, enter when price is in zone.
+   // FibZone per-tick re-gate (fibo-gun / fibo-bomb): leg armed on bar, enter when price is in zone.
    if(g_fibZoneTickGate)
    {
       if(g_TF1_UseFibZone && !LiveInFibZone(g_tf1, g_atr1, g_signalIsBuy))
@@ -2565,7 +2569,7 @@ bool GetMASLAnchor(const bool isBuy, double &anchor)
 {
    anchor = 0;
 
-   // live/m1: Fast/Slow both = single MaPeriod line. m2: Fast vs Slow.
+   // ma/m1: Fst/Slw both = single MaPeriod line. m2: Fst=fast, Slw=slow.
    int h = INVALID_HANDLE;
    if(MaExitUsesSingleLine())
       h = g_ma1;
@@ -2603,7 +2607,7 @@ void CheckVirtualMASL()
    const int exitSt = MaExitState();
    if(exitSt == MA_LIVE)        lineTag = "ma";
    else if(exitSt == MA_SINGLE) lineTag = "m1";
-   else                         lineTag = (g_MaSLLine == MASL_FAST) ? "m2-Fast" : "m2-Slow";
+   else                         lineTag = (g_MaSLLine == MASL_FAST) ? "m2-Fst" : "m2-Slw";
    LogGuardOnce("EXIT virtual MA SL hit " + (isBuy ? "bid " + DoubleToString(bid, _Digits) + " <= " : "ask " + DoubleToString(ask, _Digits) + " >= ") +
                 DoubleToString(maSL, _Digits) + " (TF1 " + lineTag + " " + (isBuy ? "-" : "+") + " " +
                 DoubleToString(SLMABufferPips, 1) + " pips) — closing basket");
