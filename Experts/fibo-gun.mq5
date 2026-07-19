@@ -32,7 +32,7 @@
 //|   profit guarantee. Grids carry tail risk — mind MaxLayers.       |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "3.51"
+#property version   "3.52"
 // v3.50: MA filter rebuilt around the CURRENT moment, not bar-1 history.
 //        Both modes require live price on the correct side of the MA NOW
 //        (+/- MABufferPips) -> entries can never print on the wrong side of
@@ -59,7 +59,7 @@ input double ZoneLevelMin   = 0.382;  // Shallow edge of zone
 input double ZoneLevelMax   = 0.618;  // Deep edge of zone
 
 input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="
-input double LotSize         = 0.05;  // Lots per layer
+input double LotSize         = 0.01;  // Lots per layer
 input int    MaxStopLossPips = 500;   // SL cap in pips from AVG entry (vs fibo anchor, closer wins)
 input int    TakeProfitPips  = 3000;  // Basket TP: avg entry +/- this many pips (0 = no TP line)
 input int    MaxSpreadPips   = 0;     // Skip new entries above this spread (0 = ignore)
@@ -118,7 +118,7 @@ enum ENUM_MA_CHECK
 input bool               UseMAFilter     = true;             // Enable MA direction filter
 input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_CANDLE_CLOSE; // Running or candle-close (tighter)
 input ENUM_MA_METHOD     MA_Method       = MODE_EMA;         // MA type: SMA / EMA / SMMA / LWMA
-input int                MA_Period       = 20;               // MA period
+input int                MA_Period       = 34;               // MA period
 input int                MA_Shift        = 0;                // MA horizontal shift
 input ENUM_APPLIED_PRICE MA_AppliedPrice = PRICE_CLOSE;      // Applied price
 input double             MABufferPips    = 100;              // Price must clear the MA by this many pips (0 = plain cross)

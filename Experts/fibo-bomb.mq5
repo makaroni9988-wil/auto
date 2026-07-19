@@ -46,7 +46,7 @@
 //|   profit guarantee. Grids carry tail risk — mind MaxLayers.       |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "4.01"
+#property version   "4.02"
 // v4.00: Cross and classic stoch are now two INDEPENDENT true/false switches —
 //        no more mixing (StochClassicMode AND UseStochFilter inputs removed).
 //        UseStochCross (default true) = the %K/%D cross filter, still
@@ -167,7 +167,7 @@ enum ENUM_MA_CHECK
 input bool               UseMAFilter     = true;             // Enable MA direction filter
 input ENUM_MA_CHECK      MACheckMode     = MA_CHECK_CANDLE_CLOSE; // Running or candle-close (tighter)
 input ENUM_MA_METHOD     MA_Method       = MODE_EMA;         // MA type: SMA / EMA / SMMA / LWMA
-input int                MA_Period       = 55;               // MA period
+input int                MA_Period       = 34;               // MA period
 input int                MA_Shift        = 0;                // MA horizontal shift
 input ENUM_APPLIED_PRICE MA_AppliedPrice = PRICE_CLOSE;      // Applied price
 input double             MABufferPips    = 100;              // Price must clear the MA by this many pips (0 = plain cross)
