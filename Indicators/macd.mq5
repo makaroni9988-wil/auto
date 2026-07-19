@@ -65,7 +65,11 @@ input int    SignalPeriod_L4        = 9;
 input group "--- GLOBAL MACD ---"
 input ENUM_APPLIED_PRICE MACDPrice  = PRICE_CLOSE;   // Applied price
 
-// Histogram colors: positive side / negative side / market-asleep
+// Histogram colors: positive side / negative side / market-asleep.
+// UseHistogramColors=false ignores all three and paints the whole
+// histogram in HistFlatColor -- the "normal" built-in-MACD look.
+input bool  UseHistogramColors = true;     // false = flat single color (built-in look)
+input color HistFlatColor      = clrSilver; // Histogram color when colors are OFF
 input color HistUpColor    = clrLime;   // Histogram above zero (awake)
 input color HistDownColor  = clrRed;    // Histogram below zero (awake)
 input color HistSleepColor = clrSilver; // Histogram while market is asleep
@@ -295,9 +299,20 @@ else
 // (awake), 2 = market asleep (ATR guard). Colored PER BAR, so dead
 // sessions show as gray blocks even in history.
 PlotIndexSetInteger(0, PLOT_COLOR_INDEXES, 3);
-PlotIndexSetInteger(0, PLOT_LINE_COLOR, 0, HistUpColor);
-PlotIndexSetInteger(0, PLOT_LINE_COLOR, 1, HistDownColor);
-PlotIndexSetInteger(0, PLOT_LINE_COLOR, 2, HistSleepColor);
+if(UseHistogramColors)
+{
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, 0, HistUpColor);
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, 1, HistDownColor);
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, 2, HistSleepColor);
+}
+else
+{
+   // Flat mode: all three slots collapse to one color, so the per-bar
+   // color buffer keeps working unchanged but every bar LOOKS the same.
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, 0, HistFlatColor);
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, 1, HistFlatColor);
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, 2, HistFlatColor);
+}
 PlotIndexSetInteger(0, PLOT_LINE_WIDTH, HistThickness);
 
 PlotIndexSetInteger(1, PLOT_LINE_COLOR, SignalColor);

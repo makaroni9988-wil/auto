@@ -1,6 +1,6 @@
 #property copyright "Custom"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 #property indicator_chart_window
 #property indicator_plots 0
 #property indicator_buffers 0
@@ -11,6 +11,13 @@
 // (continuation) using fractal swing points, per bar-close or
 // wick break confirmation. Designed as a visual entry-timing aid,
 // not a signal generator - you decide the entry.
+//
+// Calculation is a stateless ROLLING-WINDOW replay, deliberately
+// identical to lets-go's ScanFractalStructure(): every scan rebuilds
+// structure from scratch over the last InpLookbackBars bars, so the
+// arrows here and the EA's live BOS/CHoCH state can never disagree
+// from a stale remembered swing. Existing labels are never re-plotted
+// or repainted -- only breaks on newly closed bars get drawn.
 //===================================================================
 
 enum ENUM_BREAK_MODE
@@ -30,7 +37,7 @@ input group "=== Structure Detection ==="
 input ENUM_TIMEFRAMES  InpTimeframe     = PERIOD_CURRENT;    // Timeframe to detect structure on
 input int              InpFractalPeriod = 2;                 // Bars each side to confirm swing point (min 1)
 input ENUM_BREAK_MODE  InpBreakMode     = BREAK_CLOSE;       // Break confirmation mode
-input int              InpLookbackBars  = 200;               // Bars scanned on indicator load
+input int              InpLookbackBars  = 200;               // Rolling window: bars replayed every scan (match EA BosFractalLookback)
 
 input group "=== CHoCH (Change of Character) ==="
 input bool    InpShowCHoCH       = true;          // Show CHoCH labels
@@ -67,12 +74,15 @@ struct SwingPoint
    datetime time;
   };
 
+// Replay state -- reset at the top of EVERY scan (rolling window,
+// EA-identical). Nothing structural survives from one scan to the next.
 SwingPoint       g_lastHigh;
 SwingPoint       g_lastLow;
 ENUM_TREND_STATE g_trend;
 datetime         g_lastScanBarTime;   // forming-bar time at the last successful scan (new-bar gate)
-datetime         g_lastProcessedTime; // time of the newest CLOSED bar already run through ProcessClosedBar
+datetime         g_lastLabelTime;     // newest closed bar whose breaks are already labeled (replay never re-labels at/before this)
 datetime         g_lastForceRefresh;  // time of last force refresh
+int              g_fractalPeriod;     // MathMax(1, InpFractalPeriod), clamped once like the EA
 
 // Everything needed to REBUILD a label if it gets deleted from the
 // chart (manually, by another tool, by a template, ...). The old
@@ -141,14 +151,16 @@ int OnInit()
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    g_pip = SymbolInfoDouble(_Symbol, SYMBOL_POINT) * ((digits == 3 || digits == 5) ? 10.0 : 1.0);
 
+   g_fractalPeriod = MathMax(1, InpFractalPeriod);
+
    g_lastHigh.valid  = false;
    g_lastHigh.broken = false;
    g_lastLow.valid   = false;
    g_lastLow.broken  = false;
    g_trend = TREND_NEUTRAL;
-   g_lastScanBarTime   = 0;
-   g_lastProcessedTime = 0;
-   g_lastForceRefresh  = 0;
+   g_lastScanBarTime  = 0;
+   g_lastLabelTime    = 0;
+   g_lastForceRefresh = 0;
 
    ArrayResize(g_labelQueue, 0);
 
@@ -251,16 +263,23 @@ void ProcessTick()
       ScanAndProcess();
   }
 
-// Pulls the chosen timeframe's series and processes any newly closed bars.
+// Pulls the chosen timeframe's series and replays structure over the
+// whole rolling window FROM SCRATCH -- the same stateless approach as
+// lets-go's ScanFractalStructure(), so indicator and EA always agree.
+// A swing older than the window is simply forgotten, exactly like the
+// EA. Existing labels are left alone: only breaks on bars newer than
+// g_lastLabelTime get drawn, so the full replay never duplicates or
+// churns what's already plotted (pruned labels stay pruned).
 void ScanAndProcess(void)
   {
-   int bars = MathMax(InpLookbackBars, InpFractalPeriod * 4 + 10);
+   int bars = MathMax(InpLookbackBars, g_fractalPeriod * 4 + 10);
+   bars = (int)MathMin((long)bars, (long)Bars(_Symbol, g_tf));
 
    MqlRates rates[];
    ArraySetAsSeries(rates, false);
    ResetLastError();
    int copied = CopyRates(_Symbol, g_tf, 0, bars, rates);
-   if(copied <= (InpFractalPeriod * 2 + 2))
+   if(copied <= (g_fractalPeriod * 2 + 2))
      {
       if(!StillWarmingUp() && !g_loggedCopyRatesFail)
         {
@@ -285,50 +304,35 @@ void ScanAndProcess(void)
       t[k] = rates[k].time;
      }
 
-   // Resume right AFTER the newest bar that was already processed.
-   //
-   // BUGFIX: the old version anchored this resume point to the still-
-   // FORMING bar's time (t[copied-1]). On every later scan, startIdx then
-   // landed on the new forming bar -- which is beyond the processable
-   // range -- so the processing loop below ran ZERO times. Net effect:
-   // after the initial load, live bars were never processed at all and
-   // new CHoCH/BOS labels only appeared again after a reinit (timeframe
-   // switch / input change). Tracking the last PROCESSED closed bar
-   // instead means every newly closed bar gets picked up exactly once.
-   int startIdx = InpFractalPeriod;
-   if(g_lastProcessedTime > 0)
-     {
-      startIdx = copied; // nothing new in this window unless proven otherwise
-      for(int k = 0; k < copied; k++)
-        {
-         if(t[k] > g_lastProcessedTime)
-           {
-            startIdx = MathMax(InpFractalPeriod, k);
-            break;
-           }
-        }
-     }
+   // Fresh replay: reset ALL structure state. This is what makes the
+   // window truly rolling -- no remembered swing from a previous scan
+   // can leak in, matching the EA's locals-only replay.
+   g_lastHigh.valid  = false;
+   g_lastHigh.broken = false;
+   g_lastLow.valid   = false;
+   g_lastLow.broken  = false;
+   g_trend = TREND_NEUTRAL;
 
-   // Process every CLOSED bar. Index copied-1 is the still-forming bar and
-   // is never touched, so nothing here can repaint.
-   //
-   // Note this now runs all the way up to the LAST closed bar: a structure
-   // break is confirmed by that bar's own close/wick alone, and the fractal
-   // checked alongside it sits InpFractalPeriod bars further back, so its
-   // right side is fully closed too. (The old bound of
-   // copied-InpFractalPeriod-1 delayed every BOS/CHoCH label by
-   // InpFractalPeriod extra bars for no reason.)
+   // Replay every CLOSED bar. Index copied-1 is the still-forming bar and
+   // is never touched, so nothing here can repaint. This runs all the way
+   // up to the LAST closed bar: a structure break is confirmed by that
+   // bar's own close/wick alone, and the fractal checked alongside it
+   // sits g_fractalPeriod bars further back, so its right side is fully
+   // closed too.
    int lastClosed = copied - 2;
-   for(int i = startIdx; i <= lastClosed; i++)
+   for(int i = g_fractalPeriod; i <= lastClosed; i++)
       ProcessClosedBar(h, l, c, t, i, copied);
 
-   if(lastClosed >= 0 && t[lastClosed] > g_lastProcessedTime)
-      g_lastProcessedTime = t[lastClosed];
+   if(lastClosed >= 0 && t[lastClosed] > g_lastLabelTime)
+      g_lastLabelTime = t[lastClosed];
 
    g_lastScanBarTime = t[copied - 1];
   }
 
-// Processes a single confirmed bar: checks structure break, then fractal formation.
+// Replays a single closed bar: checks structure break, then fractal
+// formation. Mirrors the loop body of lets-go's ScanFractalStructure().
+// Labels are gated on g_lastLabelTime: replayed old breaks are already
+// on the chart (or were pruned) -- only genuinely new bars may plot.
 void ProcessClosedBar(const double &h[], const double &l[], const double &c[], const datetime &t[], int i, int total)
   {
    double breakHighPrice = (InpBreakMode == BREAK_CLOSE) ? c[i] : h[i];
@@ -339,7 +343,8 @@ void ProcessClosedBar(const double &h[], const double &l[], const double &c[], c
       bool isChoch = (g_trend != TREND_BULL);
       g_lastHigh.broken = true;
       g_trend = TREND_BULL;
-      PlotLabel(t[i], h[i], true, isChoch);
+      if(t[i] > g_lastLabelTime)
+         PlotLabel(t[i], h[i], true, isChoch);
       g_lastLow.valid = false; // re-anchor low reference from a fresh fractal after this break
      }
    else if(g_lastLow.valid && !g_lastLow.broken && breakLowPrice < g_lastLow.price)
@@ -347,15 +352,16 @@ void ProcessClosedBar(const double &h[], const double &l[], const double &c[], c
       bool isChoch = (g_trend != TREND_BEAR);
       g_lastLow.broken = true;
       g_trend = TREND_BEAR;
-      PlotLabel(t[i], l[i], false, isChoch);
+      if(t[i] > g_lastLabelTime)
+         PlotLabel(t[i], l[i], false, isChoch);
       g_lastHigh.valid = false;
      }
 
-   int pivot = i - InpFractalPeriod;
-   if(pivot < InpFractalPeriod)
+   int pivot = i - g_fractalPeriod;
+   if(pivot < g_fractalPeriod)
       return;
 
-   if(IsFractalHigh(h, pivot, total, InpFractalPeriod))
+   if(IsFractalHigh(h, pivot, total, g_fractalPeriod))
      {
       if(!g_lastHigh.valid || h[pivot] > g_lastHigh.price || g_lastHigh.broken)
         {
@@ -365,7 +371,7 @@ void ProcessClosedBar(const double &h[], const double &l[], const double &c[], c
          g_lastHigh.time   = t[pivot];
         }
      }
-   if(IsFractalLow(l, pivot, total, InpFractalPeriod))
+   if(IsFractalLow(l, pivot, total, g_fractalPeriod))
      {
       if(!g_lastLow.valid || l[pivot] < g_lastLow.price || g_lastLow.broken)
         {
