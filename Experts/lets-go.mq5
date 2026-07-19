@@ -29,7 +29,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.29"
+#property version   "5.30"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -838,7 +838,7 @@ string PanelObj(const string id) { return g_panelPrefix + id; }
 bool PanelIsNonInteractiveId(const string id)
 {
    if(id == "L1" || id == "L2" || id == "LG" || id == "LR" ||
-      id == "SRLBL" || id == "GuardSt")
+      id == "GuardSt")
       return true;
    if(StringFind(id, "Sp") == 0) return true;
    if(StringFind(id, "Fam") == 0) return true;
@@ -853,27 +853,50 @@ void PanelDeleteAll()
    ObjectsDeleteAll(0, g_panelPrefix);
 }
 
+// Panel palette — single source for every chip color.
+const color PNL_MODE_BG   = C'36,52,68';    // mode chip (always clickable, blue)
+const color PNL_MODE_FG   = C'220,235,250';
+const color PNL_MODE_BD   = C'70,110,140';
+const color PNL_ON_BG     = C'40,110,92';   // toggle ON (green); also status OPEN
+const color PNL_ON_FG     = C'235,255,248';
+const color PNL_ON_BD     = C'80,160,130';
+const color PNL_OFF_BG    = C'48,48,48';    // toggle OFF (gray)
+const color PNL_OFF_FG    = C'160,160,160';
+const color PNL_OFF_BD    = C'36,36,36';
+const color PNL_DIS_BG    = C'32,32,32';    // locked / disabled
+const color PNL_DIS_FG    = C'90,90,90';
+const color PNL_DIS_BD    = C'28,28,28';
+const color PNL_OR_BG     = C'54,44,26';    // family label, OR logic (amber)
+const color PNL_OR_FG     = C'240,205,140';
+const color PNL_OR_BD     = C'120,92,44';
+const color PNL_AND_BG    = C'24,46,46';    // family label, AND logic (teal)
+const color PNL_AND_FG    = C'150,220,220';
+const color PNL_AND_BD    = C'54,96,96';
+const color PNL_BLOCK_BG  = C'130,55,55';   // status chip BLOCK (red)
+const color PNL_BLOCK_BD  = C'175,75,75';
+const color PNL_STATUS_FG = C'245,245,245';
+
 void PanelStyleChip(const string name, const string text, const string tip,
                     const bool on, const bool isModeChip)
 {
    color bg, fg, bd;
    if(isModeChip)
    {
-      bg = C'36,52,68';
-      fg = C'220,235,250';
-      bd = C'70,110,140';
+      bg = PNL_MODE_BG;
+      fg = PNL_MODE_FG;
+      bd = PNL_MODE_BD;
    }
    else if(on)
    {
-      bg = C'40,110,92';
-      fg = C'235,255,248';
-      bd = C'80,160,130';
+      bg = PNL_ON_BG;
+      fg = PNL_ON_FG;
+      bd = PNL_ON_BD;
    }
    else
    {
-      bg = C'48,48,48';
-      fg = C'160,160,160';
-      bd = C'36,36,36';
+      bg = PNL_OFF_BG;
+      fg = PNL_OFF_FG;
+      bd = PNL_OFF_BD;
    }
 
    ObjectSetString (0, name, OBJPROP_TEXT, text);
@@ -888,9 +911,9 @@ void PanelStyleDisabled(const string name, const string text, const string tip)
 {
    ObjectSetString (0, name, OBJPROP_TEXT, text);
    ObjectSetString (0, name, OBJPROP_TOOLTIP, tip);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, C'90,90,90');
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'32,32,32');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'28,28,28');
+   ObjectSetInteger(0, name, OBJPROP_COLOR, PNL_DIS_FG);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, PNL_DIS_BG);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, PNL_DIS_BD);
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
 
@@ -900,15 +923,15 @@ void PanelStyleFamily(const string name, const string text, const string tip, co
    ObjectSetString (0, name, OBJPROP_TOOLTIP, tip);
    if(isOr)
    {
-      ObjectSetInteger(0, name, OBJPROP_COLOR, C'240,205,140');
-      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'54,44,26');
-      ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'120,92,44');
+      ObjectSetInteger(0, name, OBJPROP_COLOR, PNL_OR_FG);
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, PNL_OR_BG);
+      ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, PNL_OR_BD);
    }
    else
    {
-      ObjectSetInteger(0, name, OBJPROP_COLOR, C'150,220,220');
-      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'24,46,46');
-      ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'54,96,96');
+      ObjectSetInteger(0, name, OBJPROP_COLOR, PNL_AND_FG);
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, PNL_AND_BG);
+      ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, PNL_AND_BD);
    }
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
@@ -917,9 +940,9 @@ void PanelStyleStatus(const string name, const bool blocked)
 {
    ObjectSetString (0, name, OBJPROP_TEXT, blocked ? "BLOCK" : "OPEN");
    ObjectSetString (0, name, OBJPROP_TOOLTIP, "Current combined entry-guard status");
-   ObjectSetInteger(0, name, OBJPROP_COLOR, C'245,245,245');
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, blocked ? C'130,55,55' : C'40,110,92');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, blocked ? C'175,75,75' : C'80,160,130');
+   ObjectSetInteger(0, name, OBJPROP_COLOR, PNL_STATUS_FG);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, blocked ? PNL_BLOCK_BG : PNL_ON_BG);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, blocked ? PNL_BLOCK_BD : PNL_ON_BD);
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 }
 
@@ -954,11 +977,17 @@ void PanelPlaceEvenRow(const string &ids[], const int n,
                        const int rowW, const int gap, const int chipH)
 {
    if(n <= 0) return;
-   const int body  = rowW - gap * (n - 1);
-   const int chipW = body / n;
-   const int step  = chipW + gap;
+   // Fixed 5-column grid: every row shares the same column edges, so chips
+   // align vertically panel-wide. A row with fewer chips lets its LAST chip
+   // span the remaining columns (no dead filler chips).
+   const int cols  = 5;
+   const int slotW = (rowW - gap * (cols - 1)) / cols;
+   const int step  = slotW + gap;
    for(int i = 0; i < n; i++)
-      PanelEnsureButton(ids[i], x0 + step * i, y, chipW, chipH);
+   {
+      const int w = (i == n - 1) ? (rowW - step * i) : slotW;
+      PanelEnsureButton(ids[i], x0 + step * i, y, w, chipH);
+   }
 }
 
 string ConfChipText()
@@ -968,17 +997,17 @@ string ConfChipText()
 
 string BosChipText()
 {
-   if(g_BosMode == BOS_FRACTAL) return "Frac";
+   if(g_BosMode == BOS_FRACTAL) return "Fractal";
    if(g_BosMode == BOS_BOTH_AND) return "Both";
-   return "Zig";
+   return "ZigZag";
 }
 
 // Swing SL method chip (independent of entry BOS engine)
 string SwMdChipText()
 {
-   if(g_SwingSLMode == BOS_FRACTAL) return "Frac";
+   if(g_SwingSLMode == BOS_FRACTAL) return "Fractal";
    if(g_SwingSLMode == BOS_BOTH_AND) return "Both";
-   return "Zig";
+   return "ZigZag";
 }
 
 string ConfTip()
@@ -1009,7 +1038,7 @@ string BosSrcTip()
 
 string BosSigChipText()
 {
-   return (g_BosSignalMode == BOS_SIGNAL_BIAS) ? "bias" : "evt";
+   return (g_BosSignalMode == BOS_SIGNAL_BIAS) ? "bias" : "event";
 }
 string BosSigTip()
 {
@@ -1021,8 +1050,8 @@ string BosSigTip()
 string StXModeChipText()
 {
    if(g_StochCrossMode == STOCH_CROSS_ANY) return "any";
-   if(g_StochCrossMode == STOCH_CROSS_OSOB) return "obos";
-   return "pb"; // PULLBACK until user clicks into any/obos cycle
+   if(g_StochCrossMode == STOCH_CROSS_OSOB) return "OS/OB";
+   return "pullback"; // PULLBACK until user clicks into any/OS-OB cycle
 }
 string StXModeTip()
 {
@@ -1035,7 +1064,7 @@ string StXModeTip()
 
 string StCModeChipText()
 {
-   return (g_StochClassicMode == STOCH_CLASSIC_MOM) ? "mom" : "rev";
+   return (g_StochClassicMode == STOCH_CLASSIC_MOM) ? "momentum" : "reversal";
 }
 string StCModeTip()
 {
@@ -1044,7 +1073,7 @@ string StCModeTip()
       : "Stoch classic rev: buy OS / sell OB. Click for mom";
 }
 
-string T2StochModeChipText() { return g_HTF_StochObOs ? "obos" : "mid"; }
+string T2StochModeChipText() { return g_HTF_StochObOs ? "OS/OB" : "mid"; }
 string T2StochModeTip()
 {
    return g_HTF_StochObOs
@@ -1052,7 +1081,7 @@ string T2StochModeTip()
       : "HTF stoch: mid (%K vs pullback). Click for OS/OB";
 }
 
-string T2StochDirText() { return g_HTF_StochObOsMode == STOCH_CLASSIC_MOM ? "mom" : "rev"; }
+string T2StochDirText() { return g_HTF_StochObOsMode == STOCH_CLASSIC_MOM ? "momentum" : "reversal"; }
 
 string T2MaSrcChipText() { return g_HTF_MaFromLTF ? "LTF" : "own"; }
 string T2MaSrcTip()
@@ -1071,12 +1100,12 @@ string SwMdTip()
    return "Swing SL method: Zigzag (click to cycle; independent of entry BOS)";
 }
 
-// Panel MA chip: off = "ma" (gray); "m1" / "m2" = lit (green).
+// Panel MA chip: off = "off" (gray); "m1" / "m2" = lit (green).
 string MaChipText(const int state)
 {
    if(state == MA_SINGLE) return "m1";
    if(state == MA_DOUBLE) return "m2";
-   return "ma"; // off
+   return "off";
 }
 
 bool MaChipLit(const int state)
@@ -1095,7 +1124,7 @@ string MaChipTip(const int state, const string tfTag)
 
 string MaSLLineChipText()
 {
-   return (g_MaSLLine == MASL_FAST) ? "Fst" : "Slw";
+   return (g_MaSLLine == MASL_FAST) ? "Fast" : "Slow";
 }
 
 string SrLvChipText()
@@ -1108,16 +1137,16 @@ string SrLvTip()
    return "S/R level source: " + SourceText(g_SrSource) + " (own / HTF / both-AND; PA=LTF)";
 }
 
-string MaDirText(const ENUM_MA_TREND_MODE mode) { return mode == MA_TREND_FOLLOW ? "fol" : "rev"; }
+string MaDirText(const ENUM_MA_TREND_MODE mode) { return mode == MA_TREND_FOLLOW ? "follow" : "reversal"; }
 string MaCheckText(const ENUM_MA_CHECK mode)
 {
-   if(mode == MA_CHECK_RUNNING)      return "run";
+   if(mode == MA_CHECK_RUNNING)      return "running";
    if(mode == MA_CHECK_CANDLE_CLOSE) return "close";
    return "closed"; // MA_CHECK_CLOSED_ONLY
 }
 string BosBreakText() { return g_BosBreakMode == BOS_BREAK_CLOSE ? "close" : "wick"; }
 string RejectText() { return g_RequireRejectCandle ? "reject" : "free"; }
-string GridCountText() { return "G" + IntegerToString(g_MaxLayers); }
+string GridCountText() { return "max " + IntegerToString(g_MaxLayers); }
 
 string MaSLLineTip()
 {
@@ -1213,49 +1242,49 @@ void PanelPaintState()
 
    PanelStyleChip(PanelObj("L1"), " LTF entry . AND", "LTF entry: every ON family must pass (AND)", true, true);
 
-   PanelStyleFamily(PanelObj("FamOsc"), "osc", "LTF oscillator bias: each ON module ANDs with the rest", false);
+   PanelStyleFamily(PanelObj("FamOsc"), "osc AND", "LTF oscillator bias: each ON module ANDs with the rest", false);
    PanelStyleChip(PanelObj("T1_rsi"), "rsi", "LTF entry: RSI bias (mid)", g_LTF_UseRsiBias, false);
    PanelStyleChip(PanelObj("T1_macd"),"macd","LTF entry: MACD bias", g_LTF_UseMacdBias, false);
    PanelStyleChip(PanelObj("T1_fib"), "fib", "LTF entry: Fib golden zone", g_LTF_UseFibZone, false);
 
-   PanelStyleFamily(PanelObj("FamSt"), "st or", "LTF Stoch family: stX OR stC (either arms it), then ANDs with others", true);
-   PanelStyleChip(PanelObj("T1_stX"), "stX", "LTF entry: Stoch cross", g_LTF_UseStochCross, false);
+   PanelStyleFamily(PanelObj("FamSt"), "st OR", "LTF Stoch family: cross OR classic (either arms it), then ANDs with others", true);
+   PanelStyleChip(PanelObj("T1_stX"), "cross", "LTF entry: Stoch cross", g_LTF_UseStochCross, false);
    PanelStyleChip(PanelObj("T1_stXm"), StXModeChipText(), StXModeTip(), true, true);
-   PanelStyleChip(PanelObj("T1_stC"), "stC", "LTF entry: Stoch classic OS/OB", g_LTF_UseStochClassic, false);
+   PanelStyleChip(PanelObj("T1_stC"), "classic", "LTF entry: Stoch classic OS/OB", g_LTF_UseStochClassic, false);
    PanelStyleChip(PanelObj("T1_stCm"), StCModeChipText(), StCModeTip(), true, true);
 
-   PanelStyleFamily(PanelObj("FamMa"), "ma", "LTF MA family (ANDs when ON)", false);
+   PanelStyleFamily(PanelObj("FamMa"), "ma AND", "LTF MA family (ANDs when ON)", false);
    PanelStyleChip(PanelObj("T1_ma"), MaChipText(g_LTF_MA), MaChipTip(g_LTF_MA, "LTF entry"),
                   MaChipLit(g_LTF_MA), false);
    PanelStyleChip(PanelObj("T1_maDir"), MaDirText(g_LTF_MaTrendMode), "LTF MA follow / reversal", true, true);
    PanelStyleChip(PanelObj("T1_maChk"), MaCheckText(g_LTF_MACheckMode), "LTF MA running / candle close / closed only", true, true);
 
-   PanelStyleChip(PanelObj("T1_bos"), "bos", "LTF entry: BOS on/off (ANDs when ON)", g_LTF_UseBos, false);
-   PanelStyleChip(PanelObj("BosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
-   PanelStyleChip(PanelObj("BosEng"), BosChipText(), BosTip(), true, true);
-   PanelStyleChip(PanelObj("BosSig"), BosSigChipText(), BosSigTip(), true, true);
-   PanelStyleChip(PanelObj("BosBrk"), BosBreakText(), "Fractal BOS break by wick / close", true, true);
+   PanelStyleChip(PanelObj("T1_bos"), "BOS", "LTF entry: BOS on/off (ANDs when ON)", g_LTF_UseBos, false);
+   PanelStyleChip(PanelObj("T1_bosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
+   PanelStyleChip(PanelObj("T1_bosEng"), BosChipText(), BosTip(), true, true);
+   PanelStyleChip(PanelObj("T1_bosSig"), BosSigChipText(), BosSigTip(), true, true);
+   PanelStyleChip(PanelObj("T1_bosBrk"), BosBreakText(), "Fractal BOS break by wick / close", true, true);
 
-   PanelStyleFamily(PanelObj("SRLBL"), "S/R or", "S/R family: bounce OR break-retest (either arms it), then ANDs; PA=LTF", true);
-   PanelStyleChip(PanelObj("SrLv"), SrLvChipText(), SrLvTip(), true, true);
-   PanelStyleChip(PanelObj("T1_srR"), "srBrk", "LTF entry: S/R break-retest", g_LTF_UseSrBreakRetest, false);
-   PanelStyleChip(PanelObj("T1_srB"), "srRev", "LTF entry: S/R bounce", g_LTF_UseSrBounce, false);
-   PanelStyleChip(PanelObj("SrRej"), RejectText(), "Require rejection candle / free", true, true);
+   PanelStyleFamily(PanelObj("FamSr"), "S/R OR", "S/R family: bounce OR break-retest (either arms it), then ANDs; PA=LTF", true);
+   PanelStyleChip(PanelObj("T1_srLv"), SrLvChipText(), SrLvTip(), true, true);
+   PanelStyleChip(PanelObj("T1_srR"), "retest", "LTF entry: S/R break-retest", g_LTF_UseSrBreakRetest, false);
+   PanelStyleChip(PanelObj("T1_srB"), "bounce", "LTF entry: S/R bounce", g_LTF_UseSrBounce, false);
+   PanelStyleChip(PanelObj("T1_srRej"), RejectText(), "Require rejection candle / free", true, true);
 
    PanelStyleChip(PanelObj("L2"), " HTF bias . AND", "HTF bias (+HTF): every ON module must pass (AND)", true, true);
    const bool htfActive = (g_ConfluenceMode == CONF_LTF_AND_HTF);
    if(htfActive)
    {
-      PanelStyleFamily(PanelObj("FamOsc2"), "osc", "HTF oscillator bias: each ON module ANDs", false);
-      PanelStyleFamily(PanelObj("FamSt2"), "st", "HTF Stoch family: toggle + mid/obos + mom/rev", false);
-      PanelStyleFamily(PanelObj("FamMa2"), "ma", "HTF MA family (ANDs when ON)", false);
+      PanelStyleFamily(PanelObj("FamOsc2"), "osc AND", "HTF oscillator bias: each ON module ANDs", false);
+      PanelStyleFamily(PanelObj("FamSt2"), "stoch", "HTF Stoch family: toggle + mid/OS-OB + momentum/reversal", false);
+      PanelStyleFamily(PanelObj("FamMa2"), "ma AND", "HTF MA family (ANDs when ON)", false);
 
       PanelStyleChip(PanelObj("T2_rsi"), "rsi", "HTF bias: RSI mid", g_HTF_UseRsiBias, false);
       PanelStyleChip(PanelObj("T2_macd"),"macd","HTF bias: MACD", g_HTF_UseMacdBias, false);
       PanelStyleChip(PanelObj("T2_fib"), "fib", "HTF bias: Fib golden zone", g_HTF_UseFibZone, false);
       PanelStyleChip(PanelObj("T2_stoch"), "stoch", "HTF bias: Stoch on/off", g_HTF_UseStoch, false);
       PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeTip(), true, true);
-      PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(), "HTF OB/OS mom/rev (used when mode=obos)", true, true);
+      PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(), "HTF OB/OS momentum / reversal (used when mode=OS/OB)", true, true);
       PanelStyleChip(PanelObj("T2_maSrc"), T2MaSrcChipText(), T2MaSrcTip(), true, true);
       PanelStyleChip(PanelObj("T2_ma"), MaChipText(g_HTF_MA), MaChipTip(g_HTF_MA, "HTF bias"), MaChipLit(g_HTF_MA), false);
       if(g_HTF_MaFromLTF)
@@ -1271,9 +1300,9 @@ void PanelPaintState()
    }
    else
    {
-      PanelStyleDisabled(PanelObj("FamOsc2"), "osc", "HTF bias locked while mode=LTF");
-      PanelStyleDisabled(PanelObj("FamSt2"), "st", "HTF bias locked while mode=LTF");
-      PanelStyleDisabled(PanelObj("FamMa2"), "ma", "HTF bias locked while mode=LTF");
+      PanelStyleDisabled(PanelObj("FamOsc2"), "osc AND", "HTF bias locked while mode=LTF");
+      PanelStyleDisabled(PanelObj("FamSt2"), "stoch", "HTF bias locked while mode=LTF");
+      PanelStyleDisabled(PanelObj("FamMa2"), "ma AND", "HTF bias locked while mode=LTF");
       string hIds[] = {"T2_rsi","T2_macd","T2_fib","T2_stoch","T2_stMd","T2_stDir","T2_maSrc","T2_ma","T2_maDir","T2_maChk"};
       string hTxt[10];
       hTxt[0]="rsi"; hTxt[1]="macd"; hTxt[2]="fib"; hTxt[3]="stoch";
@@ -1334,9 +1363,10 @@ void PanelBuild()
    if(StringLen(g_panelPrefix) == 0)
       PanelInitPrefix();
 
-   const int chipW = 56;
-   const int chipH = 19;
-   const int gap   = 3;
+   const int chipW      = 60; // fits 8 chars of Consolas 8 — full words, no clipping
+   const int chipH      = 19;
+   const int gap        = 3;
+   const int sectionGap = 2;  // extra air between panel sections
    const int rowW  = chipW * 5 + gap * 4;
    const int x0    = MathMax(0, PanelInsetX);
    int y = MathMax(0, PanelInsetY);
@@ -1354,7 +1384,7 @@ void PanelBuild()
    y += chipH + gap;
    string modeIds[] = { "CONF", "GRID", "GRIDN", "BUY", "SELL" };
    PanelPlaceEvenRow(modeIds, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap + 2;
+   y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("L1", x0, y, rowW, chipH); y += chipH + gap;
    string t1osc[] = { "FamOsc", "T1_rsi", "T1_macd", "T1_fib" };
@@ -1366,12 +1396,12 @@ void PanelBuild()
    string t1ma[] = { "FamMa", "T1_ma", "T1_maDir", "T1_maChk" };
    PanelPlaceEvenRow(t1ma, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1bos[] = { "T1_bos", "BosSrc", "BosEng", "BosSig", "BosBrk" };
+   string t1bos[] = { "T1_bos", "T1_bosSrc", "T1_bosEng", "T1_bosSig", "T1_bosBrk" };
    PanelPlaceEvenRow(t1bos, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1sr[] = { "SRLBL", "SrLv", "T1_srR", "T1_srB", "SrRej" };
+   string t1sr[] = { "FamSr", "T1_srLv", "T1_srR", "T1_srB", "T1_srRej" };
    PanelPlaceEvenRow(t1sr, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap + 2;
+   y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
    string t2osc[] = { "FamOsc2", "T2_rsi", "T2_macd", "T2_fib" };
@@ -1382,12 +1412,12 @@ void PanelBuild()
    y += chipH + gap;
    string t2ma[] = { "FamMa2", "T2_maSrc", "T2_ma", "T2_maDir", "T2_maChk" };
    PanelPlaceEvenRow(t2ma, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap + 2;
+   y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("LG", x0, y, rowW, chipH); y += chipH + gap;
    string guards[] = { "Session", "Weekend", "News", "Broker", "GuardSt" };
    PanelPlaceEvenRow(guards, 5, x0, y, rowW, gap, chipH);
-   y += chipH + gap + 2;
+   y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("LR", x0, y, rowW, chipH); y += chipH + gap;
    string risk[] = { "MaSL", "MaLn", "SwSL", "SwMd", "Trail" };
@@ -1398,8 +1428,8 @@ void PanelBuild()
       "FamOsc","T1_rsi","T1_macd","T1_fib",
       "FamSt","T1_stX","T1_stXm","T1_stC","T1_stCm",
       "FamMa","T1_ma","T1_maDir","T1_maChk",
-      "T1_bos","BosSrc","BosEng","BosSig","BosBrk",
-      "SRLBL","SrLv","T1_srR","T1_srB","SrRej","L2",
+      "T1_bos","T1_bosSrc","T1_bosEng","T1_bosSig","T1_bosBrk",
+      "FamSr","T1_srLv","T1_srR","T1_srB","T1_srRej","L2",
       "FamOsc2","T2_rsi","T2_macd","T2_fib",
       "FamSt2","T2_stoch","T2_stMd","T2_stDir",
       "FamMa2","T2_maSrc","T2_ma","T2_maDir","T2_maChk","LG",
@@ -1462,10 +1492,10 @@ bool PanelHandleClick(const string sparam)
    }
    else if(id == "GRID") PanelToggleBool(g_UseGrid, "Grid");
    else if(id == "GRIDN") PanelCycleGridCount();
-   else if(id == "BosEng") PanelCycleBosMode();
-   else if(id == "BosSrc") PanelCycleSource(g_BosSource, "BosSrc");
-   else if(id == "BosSig") PanelCycleBosSignalMode();
-   else if(id == "BosBrk")
+   else if(id == "T1_bosEng") PanelCycleBosMode();
+   else if(id == "T1_bosSrc") PanelCycleSource(g_BosSource, "BosSrc");
+   else if(id == "T1_bosSig") PanelCycleBosSignalMode();
+   else if(id == "T1_bosBrk")
    {
       g_BosBreakMode = (g_BosBreakMode == BOS_BREAK_WICK) ? BOS_BREAK_CLOSE : BOS_BREAK_WICK;
       PanelSaveInt("BosBrk", (int)g_BosBreakMode);
@@ -1498,8 +1528,8 @@ bool PanelHandleClick(const string sparam)
    }
    else if(id == "T1_maChk") PanelCycleMaCheck(g_LTF_MACheckMode, "T1_MaChk");
    else if(id == "T1_bos") PanelToggleBool(g_LTF_UseBos, "T1_bos");
-   else if(id == "SrLv") PanelCycleSource(g_SrSource, "SrLv");
-   else if(id == "SrRej") PanelToggleBool(g_RequireRejectCandle, "SrRej");
+   else if(id == "T1_srLv") PanelCycleSource(g_SrSource, "SrLv");
+   else if(id == "T1_srRej") PanelToggleBool(g_RequireRejectCandle, "SrRej");
    else if(id == "T2_stoch") PanelToggleBool(g_HTF_UseStoch, "T2_stoch");
    else if(id == "T2_stMd") PanelToggleBool(g_HTF_StochObOs, "T2_stOb");
    else if(id == "T2_stDir")
