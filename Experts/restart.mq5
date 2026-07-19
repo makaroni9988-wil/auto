@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                                      lets-go.mq5 |
 //|           Modular dual-TF confluence grid EA                     |
 //|                                                                  |
@@ -9,11 +9,12 @@
 //|           T2 = zone bias (rsi / stoch / fib / macd / ma).        |
 //|           Open when T1 ready, and T2 ready if AND mode.          |
 //|           Signal clock = T1 new bar.                             |
-//|           T1 Stoch: cross OR classic. S/R: bounce OR retest.     |
+//|           T1 Stoch: cross OR classic. S/R: break OR reject,      |
+//|           live pending-order trigger at the pivot level.         |
 //|           Enabled families AND with each other.                  |
 //|           BOS: scan own/T2/both; engine Zig/Frac/Both;           |
 //|           signal evt/bias (evt = once per structure-TF bar).     |
-//|           S/R levels: own or T2 (PA = T1).                       |
+//|           S/R levels: own or T2.                                 |
 //|           T2 stoch: independent mid or OS/OB mom/rev zone.       |
 //|           T2 MA: independent own setup or shared T1 handles.     |
 //|           MA: one module per TF — panel m1 / m2.                 |
@@ -22,6 +23,9 @@
 //|           Grid chip OFF → 1 layer; ON → MaxLayers.               |
 //|           BosMode / SwingSLMode independent. FibZone may arm on  |
 //|           bar and re-check zone every tick while module is ON.   |
+//|           Post-arm LIVE gate: rsi/macd/stoch re-checked on the   |
+//|           current tick at entry (like fib+MA). BOS + S/R stay    |
+//|           closed-bar (break event / touch-close structure).      |
 //|           FibScanMode per TF: zigzag scan closed / live forming  |
 //|           bar (fibo-gun parity) — chip next to fib on both rows. |
 //|  Exits  : broker pip-cap; optional virtual MaSL and/or SwSL.     |
@@ -31,7 +35,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.32"
+#property version   "5.33"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -101,7 +105,7 @@ enum ENUM_TF_SOURCE
 {
    TF_SOURCE_OWN,
    TF_SOURCE_T2,
-   TF_SOURCE_BOTH
+   TF_SOURCE_BOTH // legacy — coerced to OWN on load (kept so old .set/GV values parse)
 };
 
 //====================== INPUTS ======================
@@ -115,12 +119,12 @@ input bool TradeBuy  = true; // Allow BUY
 input bool TradeSell = true; // Allow SELL
 
 input group "===== T1 Entry (every ON module must pass — all AND) ====="
-// Stoch: cross OR classic if both on. S/R: bounce OR retest if both on.
+// Stoch: cross OR classic if both on. S/R: break OR reject if both on (live).
 // Those families then AND with Fib / MACD / RSI / MA / BOS.
 input bool T1_UseStochCross    = false; // Stoch cross
 input bool T1_UseStochClassic  = false; // Stoch classic OS/OB
-input bool T1_UseSrBounce      = false; // S/R bounce
-input bool T1_UseSrBreakRetest = false; // S/R break-retest
+input bool T1_UseSrBounce      = false; // S/R reject (reversal, live at level)
+input bool T1_UseSrBreak       = false; // S/R break (live at level)
 input bool T1_UseFibZone       = false; // Fib golden zone
 input bool T1_UseMacdBias      = false; // MACD bias
 input bool T1_UseRsiBias       = false; // RSI bias
@@ -213,15 +217,13 @@ input group "===== S/R Pivot Entry (T1 entry; levels own or T2) ====="
 input int    PivotLeftBars       = 15;    // Pivot left bars (levels TF; match sr-breaks)
 input int    PivotRightBars      = 15;    // Pivot right bars (levels TF; match sr-breaks)
 input int    LevelsLookback      = 200;   // Bars to scan for pivots on levels TF
-input double TouchPips           = 50;    // How close price must get to the level (pips)
-input bool   RequireRejectCandle = true;  // Bounce/retest candle must be bullish(buy)/bearish(sell)
-input int    BreakLookbackBars   = 12;    // Break-retest: bars to search for the break (T1)
-input ENUM_TF_SOURCE SrLevelsSource = TF_SOURCE_OWN; // S/R levels: own / T2 / both (same-side AND)
+input double SrBufferPips        = 0;     // Break: beyond level by this. Reject: within this of level. 0 = exact line
+input ENUM_TF_SOURCE SrLevelsSource = TF_SOURCE_OWN; // S/R levels: own / T2
 
 input group "===== Fib / BOS entry (shared params, per-TF scan) ====="
 input ENUM_BOS_MODE        BosMode             = BOS_FRACTAL;      // Entry BOS engine
 input ENUM_BOS_SIGNAL_MODE BosSignalMode       = BOS_SIGNAL_EVENT; // BOS entry mode (evt/bias)
-input ENUM_TF_SOURCE       BosStructureSource = TF_SOURCE_OWN;     // BOS structure: own / T2 / both (same-side AND)
+input ENUM_TF_SOURCE       BosStructureSource = TF_SOURCE_OWN;     // BOS structure: own / T2
 
 input double FibDeviationMult = 3.0;   // Zigzag: ATR deviation multiplier
 input int    FibDepth         = 6;     // Zigzag: depth (confirm = Depth/2)
@@ -329,7 +331,7 @@ ENUM_TF_SOURCE g_BosSource, g_SrSource;
 bool g_TradeBuy, g_TradeSell;
 bool g_UseGrid;
 int  g_MaxLayers;
-bool g_T1_UseStochCross, g_T1_UseStochClassic, g_T1_UseSrBounce, g_T1_UseSrBreakRetest;
+bool g_T1_UseStochCross, g_T1_UseStochClassic, g_T1_UseSrBounce, g_T1_UseSrBreak;
 bool g_T1_UseFibZone, g_T1_UseMacdBias, g_T1_UseRsiBias, g_T1_UseBos;
 bool g_T2_UseStoch, g_T2_StochObOs;
 bool g_T2_UseFibZone, g_T2_UseMacdBias, g_T2_UseRsiBias;
@@ -337,7 +339,6 @@ bool g_T2_MaFromT1 = false;   // T2 MA eval on T1 handles
 int  g_T1_MA = MA_OFF;
 int  g_T2_MA = MA_OFF;
 bool g_UseVirtualMaSL, g_UseSwingVirtualSL, g_UseBasketTP;
-bool g_RequireRejectCandle;
 bool g_UseSession, g_UseWeekendFilter, g_UseNewsFilter, g_UseBrokerSessionGuard;
 ENUM_MASL_LINE g_MaSLLine = MASL_SLOW;
 
@@ -409,6 +410,9 @@ bool   g_signalIsBuy = false;
 // True when signal is armed by FibZone leg but price not yet in zone at bar eval.
 // TryEnter re-checks live zone every tick while FibZone is ON.
 bool   g_fibZoneTickGate = false;
+// True when S/R is the only directional module: signal armed side-neutral,
+// the live level trigger picks buy/sell at the tick it fires.
+bool   g_srSideFromTick  = false;
 
 // BOS EVENT: one latch per structure TF (BOTH must never share one timestamp).
 datetime g_bosEventSeenT1Bar = 0;
@@ -570,7 +574,7 @@ int PanelLoadInt(const string id, const int fallback)
 // Compact fingerprint of every panel-backed INPUT default.
 string PanelInputFingerprint()
 {
-   return "v532|" + IntegerToString((int)ConfluenceMode) + "|"
+   return "v533|" + IntegerToString((int)ConfluenceMode) + "|"
         + IntegerToString((int)BosMode) + "|"
         + IntegerToString((int)BosSignalMode) + "|"
         + IntegerToString((int)BosBreakMode) + "|"
@@ -580,7 +584,7 @@ string PanelInputFingerprint()
         + IntegerToString((int)TradeBuy) + IntegerToString((int)TradeSell) + "|"
         + IntegerToString((int)UseGrid) + "|" + IntegerToString(MaxLayers) + "|"
         + IntegerToString((int)T1_UseStochCross) + IntegerToString((int)T1_UseStochClassic)
-        + IntegerToString((int)T1_UseSrBounce) + IntegerToString((int)T1_UseSrBreakRetest)
+        + IntegerToString((int)T1_UseSrBounce) + IntegerToString((int)T1_UseSrBreak)
         + IntegerToString((int)T1_UseFibZone) + IntegerToString((int)T1_UseMacdBias)
         + IntegerToString((int)T1_UseRsiBias) + IntegerToString((int)T1_UseMA)
         + IntegerToString((int)T1_UseBos) + "|"
@@ -591,7 +595,7 @@ string PanelInputFingerprint()
         + IntegerToString((int)T2_UseRsiBias) + IntegerToString((int)T2_UseMA)
         + IntegerToString((int)T2_MaFromT1) + "|" + IntegerToString((int)T2_StochObOsMode) + "|"
         + IntegerToString((int)T2_MaTrendMode) + "|" + IntegerToString((int)T2_MACheckMode) + "|"
-        + IntegerToString((int)SrLevelsSource) + "|" + IntegerToString((int)RequireRejectCandle) + "|"
+        + IntegerToString((int)SrLevelsSource) + "|"
         + IntegerToString((int)MaStyle) + IntegerToString((int)MaMethod)
         + IntegerToString(T2_MaPeriod) + IntegerToString(T2_MaFastPeriod)
         + IntegerToString(T2_MaSlowPeriod)
@@ -610,7 +614,8 @@ void RuntimeApplyInputDefaults()
    g_BosBreakMode = BosBreakMode;
    g_T1_FibScanMode = T1_FibScanMode;
    g_T2_FibScanMode = T2_FibScanMode;
-   g_BosSource = BosStructureSource;
+   // BOS source is own / T2 only — a legacy BOTH input falls back to OWN.
+   g_BosSource = (BosStructureSource == TF_SOURCE_T2) ? TF_SOURCE_T2 : TF_SOURCE_OWN;
    g_SwingSLMode = SwingSLMode;
    g_TradeBuy = TradeBuy;
    g_TradeSell = TradeSell;
@@ -624,7 +629,7 @@ void RuntimeApplyInputDefaults()
    g_T1_UseStochCross = T1_UseStochCross;
    g_T1_UseStochClassic = T1_UseStochClassic;
    g_T1_UseSrBounce = T1_UseSrBounce;
-   g_T1_UseSrBreakRetest = T1_UseSrBreakRetest;
+   g_T1_UseSrBreak = T1_UseSrBreak;
    g_T1_UseFibZone = T1_UseFibZone;
    g_T1_UseMacdBias = T1_UseMacdBias;
    g_T1_UseRsiBias = T1_UseRsiBias;
@@ -641,8 +646,8 @@ void RuntimeApplyInputDefaults()
    g_T2_MaFromT1 = T2_MaFromT1;
    g_T2_MaTrendMode = T2_MaTrendMode;
    g_T2_MACheckMode = T2_MACheckMode;
-   g_SrSource = SrLevelsSource;
-   g_RequireRejectCandle = RequireRejectCandle;
+   // S/R source is own / T2 only — a legacy BOTH input falls back to OWN.
+   g_SrSource = (SrLevelsSource == TF_SOURCE_T2) ? TF_SOURCE_T2 : TF_SOURCE_OWN;
 
    g_UseVirtualMaSL = UseVirtualMaSL;
    g_MaSLLine = MaSLLine;
@@ -677,14 +682,13 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("T1_stX", g_T1_UseStochCross);
    PanelSaveBool("T1_stC", g_T1_UseStochClassic);
    PanelSaveBool("T1_srB", g_T1_UseSrBounce);
-   PanelSaveBool("T1_srR", g_T1_UseSrBreakRetest);
+   PanelSaveBool("T1_srR", g_T1_UseSrBreak);
    PanelSaveBool("T1_fib", g_T1_UseFibZone);
    PanelSaveBool("T1_macd", g_T1_UseMacdBias);
    PanelSaveBool("T1_rsi", g_T1_UseRsiBias);
    PanelSaveInt("T1_ma", g_T1_MA);
    PanelSaveBool("T1_bos", g_T1_UseBos);
    PanelSaveInt("SrLv", (int)g_SrSource);
-   PanelSaveBool("SrRej", g_RequireRejectCandle);
 
    PanelSaveBool("T2_stoch", g_T2_UseStoch);
    PanelSaveBool("T2_stOb", g_T2_StochObOs);
@@ -730,14 +734,13 @@ void RuntimeLoadFromGV()
    g_T1_UseStochCross = PanelLoadBool("T1_stX", g_T1_UseStochCross);
    g_T1_UseStochClassic = PanelLoadBool("T1_stC", g_T1_UseStochClassic);
    g_T1_UseSrBounce = PanelLoadBool("T1_srB", g_T1_UseSrBounce);
-   g_T1_UseSrBreakRetest = PanelLoadBool("T1_srR", g_T1_UseSrBreakRetest);
+   g_T1_UseSrBreak = PanelLoadBool("T1_srR", g_T1_UseSrBreak);
    g_T1_UseFibZone = PanelLoadBool("T1_fib", g_T1_UseFibZone);
    g_T1_UseMacdBias = PanelLoadBool("T1_macd", g_T1_UseMacdBias);
    g_T1_UseRsiBias = PanelLoadBool("T1_rsi", g_T1_UseRsiBias);
    g_T1_MA = PanelLoadInt("T1_ma", g_T1_MA);
    g_T1_UseBos = PanelLoadBool("T1_bos", g_T1_UseBos);
    g_SrSource = (ENUM_TF_SOURCE)PanelLoadInt("SrLv", (int)g_SrSource);
-   g_RequireRejectCandle = PanelLoadBool("SrRej", g_RequireRejectCandle);
 
    g_T2_UseStoch = PanelLoadBool("T2_stoch", g_T2_UseStoch);
    g_T2_StochObOs = PanelLoadBool("T2_stOb", g_T2_StochObOs);
@@ -780,9 +783,11 @@ void RuntimeLoadFromGV()
       g_T1_FibScanMode = FIB_SCAN_CLOSED;
    if(g_T2_FibScanMode != FIB_SCAN_CLOSED && g_T2_FibScanMode != FIB_SCAN_LIVE)
       g_T2_FibScanMode = FIB_SCAN_CLOSED;
-   if(g_BosSource < TF_SOURCE_OWN || g_BosSource > TF_SOURCE_BOTH)
+   if(g_BosSource != TF_SOURCE_OWN && g_BosSource != TF_SOURCE_T2)
       g_BosSource = TF_SOURCE_OWN;
-   if(g_SrSource < TF_SOURCE_OWN || g_SrSource > TF_SOURCE_BOTH)
+   // S/R source is own / T2 only now — coerce legacy BOTH (near-dead: needs
+   // price at both TFs' levels on the same tick) and anything invalid to OWN.
+   if(g_SrSource != TF_SOURCE_OWN && g_SrSource != TF_SOURCE_T2)
       g_SrSource = TF_SOURCE_OWN;
    g_MaxLayers = MathMax(1, MathMin(3, g_MaxLayers));
    if(g_SwingSLMode != BOS_ZIGZAG && g_SwingSLMode != BOS_FRACTAL && g_SwingSLMode != BOS_BOTH_AND)
@@ -1046,13 +1051,12 @@ string BosTip()
 string SourceText(const ENUM_TF_SOURCE source)
 {
    if(source == TF_SOURCE_T2) return "T2";
-   if(source == TF_SOURCE_BOTH) return "both";
    return "own";
 }
 string BosSrcChipText() { return SourceText(g_BosSource); }
 string BosSrcTip()
 {
-   return "BOS structure source: " + SourceText(g_BosSource) + " (own / T2 / both-AND)";
+   return "BOS structure source: " + SourceText(g_BosSource) + " (own / T2)";
 }
 
 string BosSigChipText()
@@ -1153,7 +1157,7 @@ string SrLvChipText()
 
 string SrLvTip()
 {
-   return "S/R level source: " + SourceText(g_SrSource) + " (own / T2 / both-AND; PA=T1)";
+   return "S/R level source: " + SourceText(g_SrSource) + " (own / T2)";
 }
 
 string MaDirText(const ENUM_MA_TREND_MODE mode) { return mode == MA_TREND_FOLLOW ? "follow" : "reversal"; }
@@ -1171,7 +1175,6 @@ string FibScanTip(const ENUM_FIB_SCAN_MODE mode, const string tfTag)
       ? tfTag + " zigzag scan: live forming bar (fibo-gun parity). Click for closed"
       : tfTag + " zigzag scan: closed bars only. Click for live forming bar";
 }
-string RejectText() { return g_RequireRejectCandle ? "reject" : "free"; }
 string GridCountText() { return "max " + IntegerToString(g_MaxLayers); }
 
 string MaSLLineTip()
@@ -1237,11 +1240,11 @@ void PanelCycleBosSignalMode()
    PanelSaveInt("BosSig", (int)g_BosSignalMode);
 }
 
+// Sources are own / T2 only — BOTH removed (S/R both needs price at two
+// levels on one tick; BOS both was a rarely-useful double AND).
 void PanelCycleSource(ENUM_TF_SOURCE &source, const string gvId)
 {
-   if(source == TF_SOURCE_OWN) source = TF_SOURCE_T2;
-   else if(source == TF_SOURCE_T2) source = TF_SOURCE_BOTH;
-   else source = TF_SOURCE_OWN;
+   source = (source == TF_SOURCE_OWN) ? TF_SOURCE_T2 : TF_SOURCE_OWN;
    PanelSaveInt(gvId, (int)source);
 }
 
@@ -1292,11 +1295,10 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_bosSig"), BosSigChipText(), BosSigTip(), true, true);
    PanelStyleChip(PanelObj("T1_bosBrk"), BosBreakText(), "Fractal BOS break by wick / close", true, true);
 
-   PanelStyleFamily(PanelObj("FamSr"), "S/R OR", "S/R family: bounce OR break-retest (either arms it), then ANDs; PA=T1", true);
+   PanelStyleFamily(PanelObj("FamSr"), "S/R OR", "S/R family: live at the level — break OR reject (either fires it), then ANDs", true);
    PanelStyleChip(PanelObj("T1_srLv"), SrLvChipText(), SrLvTip(), true, true);
-   PanelStyleChip(PanelObj("T1_srR"), "retest", "T1 entry: S/R break-retest", g_T1_UseSrBreakRetest, false);
-   PanelStyleChip(PanelObj("T1_srB"), "bounce", "T1 entry: S/R bounce", g_T1_UseSrBounce, false);
-   PanelStyleChip(PanelObj("T1_srRej"), RejectText(), "Require rejection candle / free", true, true);
+   PanelStyleChip(PanelObj("T1_srR"), "break", "T1 entry: S/R break — open in break direction the tick price crosses the level", g_T1_UseSrBreak, false);
+   PanelStyleChip(PanelObj("T1_srB"), "reject", "T1 entry: S/R reject — open reversal the tick price touches the level", g_T1_UseSrBounce, false);
 
    PanelStyleChip(PanelObj("L2"), " T2 bias . AND", "T2 bias (+T2): every ON module must pass (AND)", true, true);
    const bool t2Active = (g_ConfluenceMode == CONF_T1_AND_T2);
@@ -1427,8 +1429,8 @@ void PanelBuild()
    string t1bos[] = { "T1_bos", "T1_bosSrc", "T1_bosEng", "T1_bosSig", "T1_bosBrk" };
    PanelPlaceEvenRow(t1bos, 5, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1sr[] = { "FamSr", "T1_srLv", "T1_srR", "T1_srB", "T1_srRej" };
-   PanelPlaceEvenRow(t1sr, 5, x0, y, rowW, gap, chipH);
+   string t1sr[] = { "FamSr", "T1_srLv", "T1_srR", "T1_srB" };
+   PanelPlaceEvenRow(t1sr, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
@@ -1457,7 +1459,7 @@ void PanelBuild()
       "FamSt","T1_stX","T1_stXm","T1_stC","T1_stCm",
       "FamMa","T1_ma","T1_maDir","T1_maChk",
       "T1_bos","T1_bosSrc","T1_bosEng","T1_bosSig","T1_bosBrk",
-      "FamSr","T1_srLv","T1_srR","T1_srB","T1_srRej","L2",
+      "FamSr","T1_srLv","T1_srR","T1_srB","L2",
       "FamOsc2","T2_rsi","T2_macd","T2_fib","T2_fibSc",
       "FamSt2","T2_stoch","T2_stMd","T2_stDir",
       "FamMa2","T2_maSrc","T2_ma","T2_maDir","T2_maChk","LG",
@@ -1554,7 +1556,7 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T1_stC") PanelToggleBool(g_T1_UseStochClassic, "T1_stC");
    else if(id == "T1_stCm") PanelCycleStochClassicMode();
    else if(id == "T1_srB") PanelToggleBool(g_T1_UseSrBounce, "T1_srB");
-   else if(id == "T1_srR") PanelToggleBool(g_T1_UseSrBreakRetest, "T1_srR");
+   else if(id == "T1_srR") PanelToggleBool(g_T1_UseSrBreak, "T1_srR");
    else if(id == "T1_fib") PanelToggleBool(g_T1_UseFibZone, "T1_fib");
    else if(id == "T1_macd") PanelToggleBool(g_T1_UseMacdBias, "T1_macd");
    else if(id == "T1_rsi") PanelToggleBool(g_T1_UseRsiBias, "T1_rsi");
@@ -1567,7 +1569,6 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T1_maChk") PanelCycleMaCheck(g_T1_MACheckMode, "T1_MaChk");
    else if(id == "T1_bos") PanelToggleBool(g_T1_UseBos, "T1_bos");
    else if(id == "T1_srLv") PanelCycleSource(g_SrSource, "SrLv");
-   else if(id == "T1_srRej") PanelToggleBool(g_RequireRejectCandle, "SrRej");
    else if(id == "T2_stoch") PanelToggleBool(g_T2_UseStoch, "T2_stoch");
    else if(id == "T2_stMd") PanelToggleBool(g_T2_StochObOs, "T2_stOb");
    else if(id == "T2_stDir")
@@ -1730,7 +1731,7 @@ int OnInit()
               + " T2=" + EnumToString(g_t2)
               + " BosMode=" + EnumToString(g_BosMode)
               + " BosSig=" + EnumToString(g_BosSignalMode)
-              + " BosSrc=" + (g_BosSource == TF_SOURCE_OWN ? "own" : (g_BosSource == TF_SOURCE_T2 ? "T2" : "both"))
+              + " BosSrc=" + SourceText(g_BosSource)
               + " SwMode=" + EnumToString(g_SwingSLMode)
               + " FibScan=" + FibScanText(g_T1_FibScanMode) + "/" + FibScanText(g_T2_FibScanMode)
               + " | Buy=" + (g_TradeBuy ? "ON" : "OFF")
@@ -1989,28 +1990,30 @@ bool GetActiveSR(const ENUM_TIMEFRAMES tf, double &support, double &resistance)
    return true;
 }
 
-bool HadRecentBreakUp(const double &close[], int barsAvailable, double level, int lookback)
+// S/R = live pending-order trigger at the pivot level, checked every tick.
+// break : open in the break direction the tick price crosses the level by
+//         SrBufferPips (buy stop above resistance / sell stop below support).
+// reject: open the reversal the tick price comes within SrBufferPips of the
+//         level (sell limit at resistance / buy limit at support).
+// OR family: either ON mode fires it. No candle-close wait, no retest.
+bool LiveSrTrigger(const bool wantBuy)
 {
-   int lb = MathMax(2, lookback);
-   for(int i = 2; i <= lb + 1; i++)
-   {
-      if(i >= barsAvailable) break;
-      if(close[i] <= level && close[i - 1] > level)
-         return true;
-   }
-   return false;
-}
+   if(!g_T1_UseSrBounce && !g_T1_UseSrBreak) return true; // module off = pass
 
-bool HadRecentBreakDown(const double &close[], int barsAvailable, double level, int lookback)
-{
-   int lb = MathMax(2, lookback);
-   for(int i = 2; i <= lb + 1; i++)
-   {
-      if(i >= barsAvailable) break;
-      if(close[i] >= level && close[i - 1] < level)
-         return true;
-   }
-   return false;
+   const ENUM_TIMEFRAMES levelsTf = (g_SrSource == TF_SOURCE_T2) ? g_t2 : g_t1;
+   double support = 0, resistance = 0;
+   if(!GetActiveSR(levelsTf, support, resistance)) return false;
+   if(support <= 0 || resistance <= 0 || support >= resistance) return false;
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double buf = MathMax(0.0, SrBufferPips) * g_pip;
+
+   bool brk = g_T1_UseSrBreak &&
+              (wantBuy ? (ask >= resistance + buf) : (bid <= support - buf));
+   bool rej = g_T1_UseSrBounce &&
+              (wantBuy ? (bid <= support + buf) : (ask >= resistance - buf));
+   return brk || rej;
 }
 
 bool EvalStoch(const int hStoch, const bool useCross, const bool useClassic,
@@ -2068,12 +2071,42 @@ bool EvalStoch(const int hStoch, const bool useCross, const bool useClassic,
    return true;
 }
 
+// Post-arm live T1 stoch state. The cross EVENT armed on closed bars; here we
+// only require the live %K/%D to still hold the trade side (cross) or the live
+// %K to still sit in its zone (classic). OR family: either ON module keeps it.
+bool LiveStochT1Ok(const bool wantBuy)
+{
+   if(!g_T1_UseStochCross && !g_T1_UseStochClassic) return true;
+   if(g_stochT1 == INVALID_HANDLE) return false;
+
+   double k[], d[];
+   ArraySetAsSeries(k, true);
+   ArraySetAsSeries(d, true);
+   if(CopyBuffer(g_stochT1, 0, 0, 1, k) != 1) return false;
+   if(CopyBuffer(g_stochT1, 1, 0, 1, d) != 1) return false;
+
+   bool crossOk = g_T1_UseStochCross &&
+                  (wantBuy ? (k[0] > d[0]) : (k[0] < d[0]));
+
+   bool classicOk = false;
+   if(g_T1_UseStochClassic)
+   {
+      bool inOS = (k[0] < StochOversoldLevel);
+      bool inOB = (k[0] > StochOverboughtLevel);
+      classicOk = (g_StochClassicMode == STOCH_CLASSIC_MOM)
+                  ? (wantBuy ? inOB : inOS)
+                  : (wantBuy ? inOS : inOB);
+   }
+   return crossOk || classicOk;
+}
+
 // T2 stoch zone: mid (%K vs T2_StochMidLevel) or OS/OB (buy OS / sell OB).
+// shift 1 = closed bar (arming); shift 0 = live value (post-arm tick gate).
 bool EvalStochZone(const int hStoch, const bool useIt, const bool obOs,
                    const ENUM_STOCH_CLASSIC_MODE obOsMode,
                    const double midLevel, const double oversoldLevel,
                    const double overboughtLevel,
-                   bool &buyOK, bool &sellOK)
+                   const int shift, bool &buyOK, bool &sellOK)
 {
    buyOK = true; sellOK = true;
    if(!useIt) return true;
@@ -2089,24 +2122,25 @@ bool EvalStochZone(const int hStoch, const bool useIt, const bool obOs,
    {
       if(obOsMode == STOCH_CLASSIC_MOM)
       {
-         buyOK  = (k[1] > overboughtLevel);
-         sellOK = (k[1] < oversoldLevel);
+         buyOK  = (k[shift] > overboughtLevel);
+         sellOK = (k[shift] < oversoldLevel);
       }
       else
       {
-         buyOK  = (k[1] < oversoldLevel);
-         sellOK = (k[1] > overboughtLevel);
+         buyOK  = (k[shift] < oversoldLevel);
+         sellOK = (k[shift] > overboughtLevel);
       }
    }
    else
    {
-      buyOK  = (k[1] > midLevel);
-      sellOK = (k[1] < midLevel);
+      buyOK  = (k[shift] > midLevel);
+      sellOK = (k[shift] < midLevel);
    }
    return true;
 }
 
-bool EvalMacd(const int hMacd, const bool useIt, bool &buyOK, bool &sellOK)
+// shift 1 = closed bar (arming); shift 0 = live value (post-arm tick gate).
+bool EvalMacd(const int hMacd, const bool useIt, const int shift, bool &buyOK, bool &sellOK)
 {
    buyOK = true; sellOK = true;
    if(!useIt) return true;
@@ -2117,12 +2151,13 @@ bool EvalMacd(const int hMacd, const bool useIt, bool &buyOK, bool &sellOK)
    ArraySetAsSeries(m, true);
    if(CopyBuffer(hMacd, 0, 0, 2, m) != 2)
    { LogDebugGuard("dbg_macd", "EvalMacd: buffer not ready"); return false; }
-   buyOK  = (m[1] > 0);
-   sellOK = (m[1] < 0);
+   buyOK  = (m[shift] > 0);
+   sellOK = (m[shift] < 0);
    return true;
 }
 
-bool EvalRsi(const int hRsi, const bool useIt, bool &buyOK, bool &sellOK)
+// shift 1 = closed bar (arming); shift 0 = live value (post-arm tick gate).
+bool EvalRsi(const int hRsi, const bool useIt, const int shift, bool &buyOK, bool &sellOK)
 {
    buyOK = true; sellOK = true;
    if(!useIt) return true;
@@ -2133,8 +2168,8 @@ bool EvalRsi(const int hRsi, const bool useIt, bool &buyOK, bool &sellOK)
    ArraySetAsSeries(r, true);
    if(CopyBuffer(hRsi, 0, 0, 2, r) != 2)
    { LogDebugGuard("dbg_rsi", "EvalRsi: buffer not ready"); return false; }
-   buyOK  = (r[1] > RSIMidLevel);
-   sellOK = (r[1] < RSIMidLevel);
+   buyOK  = (r[shift] > RSIMidLevel);
+   sellOK = (r[shift] < RSIMidLevel);
    return true;
 }
 
@@ -2242,60 +2277,6 @@ bool EvalMA(const ENUM_TIMEFRAMES tf,
    {
       buyOK  = (dir < 0);
       sellOK = (dir > 0);
-   }
-   return true;
-}
-
-// paTf = bounce/break candles. levelsTf = pivot S/R source (own T1 or T2).
-bool EvalSr(const ENUM_TIMEFRAMES paTf, const bool useBounce, const bool useRetest,
-            bool &buyOK, bool &sellOK, const ENUM_TIMEFRAMES levelsTf)
-{
-   buyOK = false; sellOK = false;
-   if(!useBounce && !useRetest) { buyOK = true; sellOK = true; return true; }
-
-   double support = 0, resistance = 0;
-   if(!GetActiveSR(levelsTf, support, resistance)) return false;
-   if(support <= 0 || resistance <= 0 || support >= resistance) return false;
-
-   double touch = MathMax(0.0, TouchPips) * g_pip;
-
-   double o[], h[], l[], c[];
-   ArraySetAsSeries(o, true);
-   ArraySetAsSeries(h, true);
-   ArraySetAsSeries(l, true);
-   ArraySetAsSeries(c, true);
-
-   int need = MathMax(BreakLookbackBars + 4, 6);
-   if(CopyOpen (_Symbol, paTf, 0, need, o) != need) return false;
-   if(CopyHigh (_Symbol, paTf, 0, need, h) != need) return false;
-   if(CopyLow  (_Symbol, paTf, 0, need, l) != need) return false;
-   if(CopyClose(_Symbol, paTf, 0, need, c) != need) return false;
-
-   double o1 = o[1], h1 = h[1], l1 = l[1], c1 = c[1];
-   bool bullReject = (c1 > o1);
-   bool bearReject = (c1 < o1);
-
-   bool bounceBuy  = (l1 <= support + touch) && (c1 > support) &&
-                     (!g_RequireRejectCandle || bullReject);
-   bool bounceSell = (h1 >= resistance - touch) && (c1 < resistance) &&
-                     (!g_RequireRejectCandle || bearReject);
-
-   bool retestBuy  = HadRecentBreakUp(c, need, resistance, BreakLookbackBars) &&
-                     (l1 <= resistance + touch) && (c1 > resistance) &&
-                     (!g_RequireRejectCandle || bullReject);
-   bool retestSell = HadRecentBreakDown(c, need, support, BreakLookbackBars) &&
-                     (h1 >= support - touch) && (c1 < support) &&
-                     (!g_RequireRejectCandle || bearReject);
-
-   if(useBounce)
-   {
-      buyOK  = buyOK  || bounceBuy;
-      sellOK = sellOK || bounceSell;
-   }
-   if(useRetest)
-   {
-      buyOK  = buyOK  || retestBuy;
-      sellOK = sellOK || retestSell;
    }
    return true;
 }
@@ -2674,38 +2655,16 @@ bool EvalBos(const ENUM_TIMEFRAMES tf, const int hAtr, const bool useIt,
    return true;
 }
 
-bool EvalSrBySource(const bool useBounce, const bool useRetest,
-                    bool &buyOK, bool &sellOK)
-{
-   bool lb = false, ls = false, hb = false, hs = false;
-   if(g_SrSource == TF_SOURCE_OWN)
-      return EvalSr(g_t1, useBounce, useRetest, buyOK, sellOK, g_t1);
-   if(g_SrSource == TF_SOURCE_T2)
-      return EvalSr(g_t1, useBounce, useRetest, buyOK, sellOK, g_t2);
-   if(!EvalSr(g_t1, useBounce, useRetest, lb, ls, g_t1)) return false;
-   if(!EvalSr(g_t1, useBounce, useRetest, hb, hs, g_t2)) return false;
-   buyOK = lb && hb;
-   sellOK = ls && hs;
-   return true;
-}
-
 bool EvalBosBySource(bool &buyOK, bool &sellOK)
 {
-   bool lb = false, ls = false, hb = false, hs = false;
-   if(g_BosSource == TF_SOURCE_OWN)
-      return EvalBos(g_t1, g_atrT1, true, buyOK, sellOK);
    if(g_BosSource == TF_SOURCE_T2)
       return EvalBos(g_t2, g_atrT2, true, buyOK, sellOK);
-   if(!EvalBos(g_t1, g_atrT1, true, lb, ls)) return false;
-   if(!EvalBos(g_t2, g_atrT2, true, hb, hs)) return false;
-   buyOK = lb && hb;
-   sellOK = ls && hs;
-   return true;
+   return EvalBos(g_t1, g_atrT1, true, buyOK, sellOK);
 }
 
 // Evaluate one TF: every enabled module family must pass (all AND).
 // T1 Stoch: cross OR classic. T2 Stoch: zone (mid/obos) via useStochZone.
-// Within S/R: bounce OR retest. S/R and BOS sources may be own/T2/both-AND.
+// S/R is NOT here — live pending-order trigger in TryEnter (LiveSrTrigger).
 // If nothing enabled: outBuy/outSell stay false (caller may treat empty T2 as pass).
 // fibLegOnly: FibZone arms from leg direction only (price checked later per tick).
 // maTf + MA handles: T2 bias may evaluate MA on T1 when g_T2_MaFromT1.
@@ -2714,7 +2673,7 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
             const bool useStochZone, const bool stochObOs,
             const ENUM_STOCH_CLASSIC_MODE stochZoneMode,
             const double stochMid, const double stochOS, const double stochOB,
-            const bool useBounce, const bool useRetest, const bool useFib,
+            const bool useFib,
             const bool useMacd, const bool useRsi, const int maState, const bool useBos,
             const int hStoch, const int hRsi, const int hMacd,
             const ENUM_TIMEFRAMES maTf,
@@ -2727,10 +2686,10 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
 {
    outBuy = false; outSell = false;
 
+   // S/R is not evaluated here: it's a live pending-order trigger in TryEnter.
    const bool useStoch = useStochZone ? true : (useCross || useClassic);
-   const bool useSr    = (useBounce || useRetest);
    const bool useMA    = MaEnabled(maState);
-   if(!useStoch && !useSr && !useFib && !useMacd && !useRsi && !useMA && !useBos)
+   if(!useStoch && !useFib && !useMacd && !useRsi && !useMA && !useBos)
       return true;
 
    bool buy = true, sell = true;
@@ -2741,19 +2700,13 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
       if(useStochZone)
       {
          if(!EvalStochZone(hStoch, true, stochObOs, stochZoneMode,
-                           stochMid, stochOS, stochOB, stB, stS)) return false;
+                           stochMid, stochOS, stochOB, 1, stB, stS)) return false;
       }
       else
       {
          if(!EvalStoch(hStoch, useCross, useClassic, stB, stS)) return false;
       }
       buy &= stB; sell &= stS;
-   }
-   if(useSr)
-   {
-      bool srB = false, srS = false;
-      if(!EvalSrBySource(useBounce, useRetest, srB, srS)) return false;
-      buy &= srB; sell &= srS;
    }
    if(useFib)
    {
@@ -2764,13 +2717,13 @@ bool EvalTf(const ENUM_TIMEFRAMES tf,
    if(useMacd)
    {
       bool macdBuy = false, macdSell = false;
-      if(!EvalMacd(hMacd, true, macdBuy, macdSell)) return false;
+      if(!EvalMacd(hMacd, true, 1, macdBuy, macdSell)) return false;
       buy &= macdBuy; sell &= macdSell;
    }
    if(useRsi)
    {
       bool rsiBuy = false, rsiSell = false;
-      if(!EvalRsi(hRsi, true, rsiBuy, rsiSell)) return false;
+      if(!EvalRsi(hRsi, true, 1, rsiBuy, rsiSell)) return false;
       buy &= rsiBuy; sell &= rsiSell;
    }
    if(useMA)
@@ -2831,8 +2784,8 @@ string EnabledModulesContext()
    if(MaEnabled(g_T1_MA))    AddModuleTag(t1, MaStateTag(g_T1_MA));
    if(g_T1_UseStochCross)    AddModuleTag(t1, "stX");
    if(g_T1_UseStochClassic)  AddModuleTag(t1, "stC");
-   if(g_T1_UseBos)           AddModuleTag(t1, "bos:" + (g_BosSource == TF_SOURCE_OWN ? "own" : (g_BosSource == TF_SOURCE_T2 ? "t2" : "both")));
-   if(g_T1_UseSrBreakRetest) AddModuleTag(t1, "srBrk");
+   if(g_T1_UseBos)           AddModuleTag(t1, "bos:" + SourceText(g_BosSource));
+   if(g_T1_UseSrBreak) AddModuleTag(t1, "srBrk");
    if(g_T1_UseSrBounce)      AddModuleTag(t1, "srRev");
 
    string out = " | T1=" + (StringLen(t1) > 0 ? t1 : "none");
@@ -2855,12 +2808,12 @@ string EnabledModulesContext()
 // after both Fib passes, so Pass1/Pass2 can still see the same event).
 void MarkBosEventStructBarSeen()
 {
-   if(g_BosSource == TF_SOURCE_OWN || g_BosSource == TF_SOURCE_BOTH)
+   if(g_BosSource == TF_SOURCE_OWN)
    {
       datetime t = iTime(_Symbol, g_t1, 1);
       if(t > 0) g_bosEventSeenT1Bar = t;
    }
-   if(g_BosSource == TF_SOURCE_T2 || g_BosSource == TF_SOURCE_BOTH)
+   else
    {
       datetime t = iTime(_Symbol, g_t2, 1);
       if(t > 0) g_bosEventSeenT2Bar = t;
@@ -2872,13 +2825,14 @@ void UpdateSignal()
    g_haveSignal      = false;
    g_signalIsBuy     = false;
    g_fibZoneTickGate = false;
+   g_srSideFromTick  = false;
 
    // Pass 1: normal eval (FibZone requires price in zone now)
    bool b1 = false, s1 = false;
    if(!EvalTf(g_t1,
               g_T1_UseStochCross, g_T1_UseStochClassic, false, false,
               g_StochClassicMode, StochPullbackLevel, StochOversoldLevel, StochOverboughtLevel,
-              g_T1_UseSrBounce, g_T1_UseSrBreakRetest, g_T1_UseFibZone,
+              g_T1_UseFibZone,
               g_T1_UseMacdBias, g_T1_UseRsiBias, g_T1_MA, g_T1_UseBos,
               g_stochT1, g_rsiT1, g_macdT1,
               g_t1, g_maT1, g_maFT1, g_maST1,
@@ -2902,7 +2856,7 @@ void UpdateSignal()
       if(!EvalTf(g_t2,
                  false, false, g_T2_UseStoch, g_T2_StochObOs,
                  g_T2_StochObOsMode, T2_StochMidLevel, T2_StochOversoldLevel, T2_StochOverboughtLevel,
-                 false, false, g_T2_UseFibZone,
+                 g_T2_UseFibZone,
                  g_T2_UseMacdBias, g_T2_UseRsiBias, g_T2_MA, false,
                  g_stochT2, g_rsiT2, g_macdT2,
                  maTf, hMaS, hMaF, hMaL,
@@ -2920,6 +2874,17 @@ void UpdateSignal()
       return;
    }
 
+   // S/R with no directional module: both sides pass — arm side-neutral and
+   // let the live level trigger pick buy/sell at the tick it fires.
+   const bool srOn = (g_T1_UseSrBounce || g_T1_UseSrBreak);
+   if(srOn && (b1 && b2) && (s1 && s2))
+   {
+      g_haveSignal     = true;
+      g_srSideFromTick = true;
+      MarkBosEventStructBarSeen();
+      return;
+   }
+
    // Pass 2: FibZone leg-armed only (price may enter zone later this bar).
    const bool wantFibGate = (g_T1_UseFibZone ||
                              (g_ConfluenceMode == CONF_T1_AND_T2 && g_T2_UseFibZone));
@@ -2933,7 +2898,7 @@ void UpdateSignal()
    if(!EvalTf(g_t1,
               g_T1_UseStochCross, g_T1_UseStochClassic, false, false,
               g_StochClassicMode, StochPullbackLevel, StochOversoldLevel, StochOverboughtLevel,
-              g_T1_UseSrBounce, g_T1_UseSrBreakRetest, g_T1_UseFibZone,
+              g_T1_UseFibZone,
               g_T1_UseMacdBias, g_T1_UseRsiBias, g_T1_MA, g_T1_UseBos,
               g_stochT1, g_rsiT1, g_macdT1,
               g_t1, g_maT1, g_maFT1, g_maST1,
@@ -2956,7 +2921,7 @@ void UpdateSignal()
       if(!EvalTf(g_t2,
                  false, false, g_T2_UseStoch, g_T2_StochObOs,
                  g_T2_StochObOsMode, T2_StochMidLevel, T2_StochOversoldLevel, T2_StochOverboughtLevel,
-                 false, false, g_T2_UseFibZone,
+                 g_T2_UseFibZone,
                  g_T2_UseMacdBias, g_T2_UseRsiBias, g_T2_MA, false,
                  g_stochT2, g_rsiT2, g_macdT2,
                  maTf, hMaS, hMaF, hMaL,
@@ -2991,6 +2956,22 @@ void TryEnter()
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   // S/R pending-order gate: fire the tick price hits the level. Side-neutral
+   // arm (S/R only directional module) resolves buy/sell here; otherwise the
+   // armed side just waits for its level. Silent wait — level not hit yet.
+   if(g_T1_UseSrBounce || g_T1_UseSrBreak)
+   {
+      if(g_srSideFromTick)
+      {
+         bool buyHit  = g_TradeBuy  && LiveSrTrigger(true);
+         bool sellHit = g_TradeSell && LiveSrTrigger(false);
+         if(buyHit == sellHit) return; // neither hit (or ambiguous tick)
+         g_signalIsBuy = buyHit;
+      }
+      else if(!LiveSrTrigger(g_signalIsBuy))
+         return;
+   }
 
    // FibZone: re-check live zone on every entry attempt (incl. layers).
    // Tick-gate arm = silent wait outside zone; otherwise DiagBlock.
@@ -3037,6 +3018,45 @@ void TryEnter()
                  maDir, maChk, maBuf, maDiff, maB, maS) ||
          (g_signalIsBuy ? !maB : !maS))
       { DiagBlock("T2 MA filter"); return; }
+   }
+
+   // Post-arm LIVE re-checks (every tick, incl. layers): rsi / macd / stoch
+   // follow the current tick value, same as fib zone + MA above.
+   // BOS + S/R stay closed-bar by design (break event / touch-close structure).
+   bool lvB = false, lvS = false;
+   if(g_T1_UseRsiBias)
+   {
+      if(!EvalRsi(g_rsiT1, true, 0, lvB, lvS) || (g_signalIsBuy ? !lvB : !lvS))
+      { DiagBlock("RSI live"); return; }
+   }
+   if(g_T1_UseMacdBias)
+   {
+      if(!EvalMacd(g_macdT1, true, 0, lvB, lvS) || (g_signalIsBuy ? !lvB : !lvS))
+      { DiagBlock("MACD live"); return; }
+   }
+   if(!LiveStochT1Ok(g_signalIsBuy))
+   { DiagBlock("Stoch live"); return; }
+
+   if(g_ConfluenceMode == CONF_T1_AND_T2)
+   {
+      if(g_T2_UseRsiBias)
+      {
+         if(!EvalRsi(g_rsiT2, true, 0, lvB, lvS) || (g_signalIsBuy ? !lvB : !lvS))
+         { DiagBlock("T2 RSI live"); return; }
+      }
+      if(g_T2_UseMacdBias)
+      {
+         if(!EvalMacd(g_macdT2, true, 0, lvB, lvS) || (g_signalIsBuy ? !lvB : !lvS))
+         { DiagBlock("T2 MACD live"); return; }
+      }
+      if(g_T2_UseStoch)
+      {
+         if(!EvalStochZone(g_stochT2, true, g_T2_StochObOs, g_T2_StochObOsMode,
+                           T2_StochMidLevel, T2_StochOversoldLevel, T2_StochOverboughtLevel,
+                           0, lvB, lvS) ||
+            (g_signalIsBuy ? !lvB : !lvS))
+         { DiagBlock("T2 Stoch live"); return; }
+      }
    }
 
    int    layers; double deepest; bool existingIsBuy;

@@ -63,21 +63,22 @@ input int    SlowEMA_L4             = 26;
 input int    SignalPeriod_L4        = 9;
 
 input group "--- GLOBAL MACD ---"
-input ENUM_APPLIED_PRICE MACDPrice  = PRICE_CLOSE;   // Applied price
+input ENUM_APPLIED_PRICE MACDPrice  = PRICE_CLOSE;  // Applied price
 
 // Histogram colors: positive side / negative side / market-asleep.
 // UseHistogramColors=false ignores all three and paints the whole
 // histogram in HistFlatColor -- the "normal" built-in-MACD look.
-input bool  UseHistogramColors = true;     // false = flat single color (built-in look)
-input color HistFlatColor      = clrSilver; // Histogram color when colors are OFF
-input color HistUpColor    = clrLime;   // Histogram above zero (awake)
-input color HistDownColor  = clrRed;    // Histogram below zero (awake)
-input color HistSleepColor = clrSilver; // Histogram while market is asleep
-input int   HistThickness  = 1;
+input bool  UseHistogramColors      = false;        // false = flat single color (built-in look)
+input color HistFlatColor           = clrSilver;    // Histogram color when colors are OFF
 
-input color SignalColor     = clrRed;
-input int   SignalThickness = 1;
-input ENUM_LINE_STYLE SignalStyle = STYLE_SOLID;
+input color HistUpColor             = clrLime;      // Histogram above zero (awake)
+input color HistDownColor           = clrRed;       // Histogram below zero (awake)
+input color HistSleepColor          = clrSilver;    // Histogram while market is asleep
+input int   HistThickness           = 1;
+
+input color SignalColor             = clrRed;
+input int   SignalThickness         = 1;
+input ENUM_LINE_STYLE SignalStyle   = STYLE_SOLID;
 
 input group "--- ATR GUARD ---"
 // The ATR guard never blocks anything by itself -- it only COLORS the
