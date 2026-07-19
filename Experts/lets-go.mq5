@@ -29,7 +29,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.30"
+#property version   "5.31"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -223,7 +223,7 @@ input int    FibLookbackBars  = 100;   // Zigzag: bars scanned
 input double FibZoneLevelMin  = 0.382; // FibZone: shallow edge
 input double FibZoneLevelMax  = 0.618; // FibZone: deep edge
 
-input int                 BosFractalPeriod   = 3;              // Fractal: bars each side
+input int                 BosFractalPeriod   = 2;              // Fractal: bars each side
 input ENUM_BOS_BREAK_MODE BosBreakMode       = BOS_BREAK_CLOSE; // Fractal break type
 input int                 BosFractalLookback = 200;            // Fractal: bars scanned
 
