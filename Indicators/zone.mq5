@@ -15,10 +15,17 @@
 //|  "delete all objects", etc.). On ordinary ticks only the single  |
 //|  still-forming candle is updated, and only if its high/low       |
 //|  actually moved -- otherwise the tick does nothing.              |
+//|                                                                  |
+//|  Chart-TF visibility lock: each slot has a VisibleFrom..VisibleTo|
+//|  chart-period range, stamped on its rectangles as an             |
+//|  OBJPROP_TIMEFRAMES mask (capped strictly below the slot's own   |
+//|  tf). The terminal shows/hides them natively on period switches; |
+//|  the objects stay alive and keep updating in the background, so  |
+//|  changing chart TF costs nothing instead of delete + rebuild.    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "5.00"
+#property version   "5.10"
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
@@ -36,6 +43,8 @@ input bool     InpTF1_ShowBackground     = true;         // 1st Show Background 
 input color    InpTF1_Color              = clrSilver;    // 1st Fill Color
 input bool     InpTF1_ShowBorder         = true;         // 1st Show Border?
 input color    InpTF1_BorderColor        = clrSilver;    // 1st Border Color
+input ENUM_TIMEFRAMES InpTF1_VisibleFrom = PERIOD_CURRENT;   // 1st Visible from chart TF
+input ENUM_TIMEFRAMES InpTF1_VisibleTo   = PERIOD_CURRENT;   // 1st Visible up to chart TF
 
 input group "--- Timeframe-2nd ---"
 input bool     InpTF2_Enable             = true;         // Enable 2nd Timeframe
@@ -44,6 +53,8 @@ input bool     InpTF2_ShowBackground     = false;        // 2nd Show Background 
 input color    InpTF2_Color              = clrRed;       // 2nd Fill Color
 input bool     InpTF2_ShowBorder         = true;         // 2nd Show Border?
 input color    InpTF2_BorderColor        = clrRed;       // 2nd Border Color
+input ENUM_TIMEFRAMES InpTF2_VisibleFrom = PERIOD_CURRENT;   // 2nd Visible from chart TF
+input ENUM_TIMEFRAMES InpTF2_VisibleTo   = PERIOD_CURRENT;   // 2nd Visible up to chart TF
 
 // Instance-unique object prefix, built in OnInit from the timeframe pair.
 // A fixed prefix would make two attached copies share one namespace, so
@@ -59,6 +70,7 @@ bool            g_showBorder[2];
 color           g_fillColor[2];
 color           g_borderColor[2];
 string          g_tfName[2];
+long            g_visMask[2];   // OBJPROP_TIMEFRAMES bitmask: chart TFs to render on
 
 //--- per-slot runtime state
 datetime g_lastBarTime[2];      // open time of the newest known candle (new-bar detection)
@@ -115,6 +127,18 @@ int OnInit()
    }
 
    g_prefix = "MTF_RNG_" + g_tfName[0] + "_" + (g_enabled[1] ? g_tfName[1] : "X") + "_";
+
+   // Visibility masks: on which CHART periods each slot's rectangles render.
+   // Capped strictly below the slot's own tf, so "bigger/equal timeframe =
+   // gone" behaves exactly as before -- just hidden by the terminal now
+   // instead of deleted and rebuilt on every period switch.
+   g_visMask[0] = BuildVisMask(InpTF1_VisibleFrom, InpTF1_VisibleTo, g_tf[0]);
+   g_visMask[1] = BuildVisMask(InpTF2_VisibleFrom, InpTF2_VisibleTo, g_tf[1]);
+   for(int s = 0; s < 2; s++)
+      if(g_enabled[s] && g_visMask[s] == 0)
+         Print("Dual MTF Range: ", g_tfName[s], " visible-range inputs leave no",
+               " chart period below ", g_tfName[s],
+               " -- its rectangles will stay hidden everywhere.");
 
    // Start the warm-up grace clock (see StillWarmingUp above).
    g_initTick = GetTickCount();
@@ -183,16 +207,18 @@ void ProcessSlot(int slot)
 {
    ENUM_TIMEFRAMES tf = g_tf[slot];
 
-   // A slot only draws higher-tf ranges strictly above the chart period,
-   // and only if it's enabled with at least one visible element.
+   // A slot is active if it's enabled with at least one visible element.
+   // The chart period is deliberately NOT checked here: rectangles exist on
+   // every chart TF and the OBJPROP_TIMEFRAMES mask decides where they
+   // actually render, so a period switch costs nothing instead of a full
+   // delete + rebuild. The mask is capped below the slot's tf in OnInit.
    bool active = g_enabled[slot] &&
-                 (g_showBg[slot] || g_showBorder[slot]) &&
-                 (tf > Period());
+                 (g_showBg[slot] || g_showBorder[slot]);
 
    if(!active)
    {
-      // If it drew before but is now inactive (e.g. chart switched up to or
-      // above this tf), remove its now-meaningless rectangles once.
+      // Safety net: if this slot somehow drew before going inactive,
+      // remove its now-meaningless rectangles once.
       if(g_lastBarTime[slot] != 0)
       {
          ObjectsDeleteAll(0, g_prefix + IntegerToString(slot) + "_");
@@ -289,9 +315,9 @@ void RedrawTF(int slot)
       // can't carry an independent fill color and outline color at once, so
       // the fill block and the crisp outline are drawn as their own objects.
       if(g_showBg[slot])
-         DrawRect(BgName(slot, i),  start, hi, end, lo, fill,                 true,  0);
+         DrawRect(BgName(slot, i),  start, hi, end, lo, fill,                 true,  0, g_visMask[slot]);
       if(g_showBorder[slot])
-         DrawRect(BrdName(slot, i), start, hi, end, lo, g_borderColor[slot],  false, 1);
+         DrawRect(BrdName(slot, i), start, hi, end, lo, g_borderColor[slot],  false, 1, g_visMask[slot]);
    }
 
    // Remove any candles that scrolled out of the window since last rebuild.
@@ -365,7 +391,7 @@ bool CheckObjectsMissing(int slot)
 //| Create-once / move-thereafter rectangle. No delete+recreate.     |
 //+------------------------------------------------------------------+
 void DrawRect(string name, datetime t1, double p1, datetime t2, double p2,
-              color clr, bool fill, int width)
+              color clr, bool fill, int width, long visMask)
 {
    if(ObjectFind(0, name) < 0)
    {
@@ -385,6 +411,7 @@ void DrawRect(string name, datetime t1, double p1, datetime t2, double p2,
    ObjectSetInteger(0, name, OBJPROP_BACK,       true);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN,     true);
+   ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, visMask);
 }
 
 //+------------------------------------------------------------------+
@@ -397,6 +424,49 @@ string BgName(int slot, int idx)
 string BrdName(int slot, int idx)
 {
    return g_prefix + IntegerToString(slot) + "_BRD_" + IntegerToString(idx);
+}
+
+//+------------------------------------------------------------------+
+//| Chart-period visibility mask (OBJPROP_TIMEFRAMES).               |
+//| One bit per standard chart period, ascending: bit 0 = M1 up to   |
+//| bit 20 = MN1 -- the exact bit order of the OBJ_PERIOD_* flags.   |
+//+------------------------------------------------------------------+
+const ENUM_TIMEFRAMES VIS_ORDER[21] =
+{
+   PERIOD_M1,  PERIOD_M2,  PERIOD_M3,  PERIOD_M4,  PERIOD_M5,
+   PERIOD_M6,  PERIOD_M10, PERIOD_M12, PERIOD_M15, PERIOD_M20,
+   PERIOD_M30, PERIOD_H1,  PERIOD_H2,  PERIOD_H3,  PERIOD_H4,
+   PERIOD_H6,  PERIOD_H8,  PERIOD_H12, PERIOD_D1,  PERIOD_W1,
+   PERIOD_MN1
+};
+
+int PeriodIndex(ENUM_TIMEFRAMES tf)
+{
+   for(int i = 0; i < 21; i++)
+      if(VIS_ORDER[i] == tf)
+         return i;
+   return -1;
+}
+
+long BuildVisMask(ENUM_TIMEFRAMES from, ENUM_TIMEFRAMES to, ENUM_TIMEFRAMES lockedTF)
+{
+   // PERIOD_CURRENT on either side means "no limit on that side".
+   int a = (from == PERIOD_CURRENT) ? 0  : PeriodIndex(from);
+   int b = (to   == PERIOD_CURRENT) ? 20 : PeriodIndex(to);
+   if(a < 0) a = 0;
+   if(b < 0) b = 20;
+   if(a > b) { int t = a; a = b; b = t; }   // swapped inputs: be forgiving
+
+   // Hard cap: never render on the locked tf itself or anything above it,
+   // preserving the old "chart at/above locked tf = nothing shown" rule.
+   int cap = PeriodIndex(lockedTF);
+   if(cap >= 0 && b >= cap)
+      b = cap - 1;
+
+   long mask = 0;
+   for(int i = a; i <= b; i++)
+      mask |= ((long)1 << i);
+   return mask; // 0 = OBJ_NO_PERIODS: hidden on every chart period
 }
 
 //+------------------------------------------------------------------+

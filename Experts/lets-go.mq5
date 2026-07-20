@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //|                                                      lets-go.mq5 |
 //|           Modular dual-TF confluence grid EA                     |
 //|                                                                  |
@@ -17,8 +17,8 @@
 //|           Fibo: entry always live (price in zone at the tick);   |
 //|           the closed/live chip governs the LEG scan only.        |
 //|           MA: master + m1/m2, live or closed timing.             |
-//|           BOS: swing levels are live levels — wick = tick break, |
-//|           close = candle-confirmed; event = at the break (entry  |
+//|           BOS: swing levels are live levels — live = tick break, |
+//|           closed = candle-confirmed; event = at the break (entry |
 //|           consumes it), bias = standing trend permission.        |
 //|           S/R: full standalone entry — break/reject fires the    |
 //|           tick price hits the pivot level, alone or with others. |
@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.40"
+#property version   "5.44"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -1229,11 +1229,13 @@ string SigTimingTip(const string what, const bool on, const ENUM_SIG_TIMING t)
       : what + " CLOSED: the closed candle arms it. Click: live";
 }
 
-// 3-state T2 stoch chip (state filter): off -> closed -> live -> off.
-string T2StochChipText()
+// T2 stoch timing chip (own chip since the master is plain on/off).
+string T2StochTimingText() { return (g_T2_StochTiming == SIG_LIVE) ? "live" : "closed"; }
+string T2StochTimingTip()
 {
-   if(!g_T2_UseStoch) return "stoch";
-   return (g_T2_StochTiming == SIG_LIVE) ? "st.live" : "st.closd";
+   return (g_T2_StochTiming == SIG_LIVE)
+      ? "T2 stoch LIVE: the tick decides. Click for closed"
+      : "T2 stoch CLOSED: the closed candle arms it. Click for live";
 }
 
 string MaSLLineChipText()
@@ -1257,7 +1259,7 @@ string MaCheckText(const ENUM_MA_CHECK mode)
 {
    return (mode == MA_CHECK_RUNNING) ? "live" : "closed";
 }
-string BosBreakText() { return g_BosBreakMode == BOS_BREAK_CLOSE ? "close" : "wick"; }
+string BosBreakText() { return g_BosBreakMode == BOS_BREAK_CLOSE ? "closed" : "live"; }
 string FibScanText(const ENUM_FIB_SCAN_MODE mode) { return mode == FIB_SCAN_LIVE ? "live" : "closed"; }
 string FibScanTip(const ENUM_FIB_SCAN_MODE mode, const string tfTag)
 {
@@ -1354,7 +1356,10 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("T1_macd"), MacdChipText(g_T1_UseMacdBias, g_T1_MacdTiming),
                   SigTimingTip("T1 MACD", g_T1_UseMacdBias, g_T1_MacdTiming), g_T1_UseMacdBias, false);
    PanelStyleChip(PanelObj("T1_fib"), "fibo", "T1 entry: Fib golden zone (entry always live; chip = leg scan)", g_T1_UseFibZone, false);
-   PanelStyleChip(PanelObj("T1_fibSc"), FibScanText(g_T1_FibScanMode), FibScanTip(g_T1_FibScanMode, "T1"), true, true);
+   if(g_T1_UseFibZone)
+      PanelStyleChip(PanelObj("T1_fibSc"), FibScanText(g_T1_FibScanMode), FibScanTip(g_T1_FibScanMode, "T1"), true, true);
+   else
+      PanelStyleDisabled(PanelObj("T1_fibSc"), FibScanText(g_T1_FibScanMode), "T1 fibo OFF");
 
    PanelStyleChip(PanelObj("T1_st"), "stoch", "T1 Stoch family ON/OFF (cross OR classic arms it, then ANDs with others)", g_StOn, false);
    if(g_StOn)
@@ -1392,7 +1397,7 @@ void PanelPaintState()
       PanelStyleChip(PanelObj("T1_bosSrc"), BosSrcChipText(), BosSrcTip(), true, true);
       PanelStyleChip(PanelObj("T1_bosEng"), BosChipText(), BosTip(), true, true);
       PanelStyleChip(PanelObj("T1_bosSig"), BosSigChipText(), BosSigTip(), true, true);
-      PanelStyleChip(PanelObj("T1_bosBrk"), BosBreakText(), "BOS break: wick = live tick at the level, close = candle-confirmed", true, true);
+      PanelStyleChip(PanelObj("T1_bosBrk"), BosBreakText(), "BOS break: live = tick at the level, closed = candle-confirmed", true, true);
    }
    else
    {
@@ -1425,17 +1430,21 @@ void PanelPaintState()
       PanelStyleChip(PanelObj("T2_macd"), MacdChipText(g_T2_UseMacdBias, g_T2_MacdTiming),
                      SigTimingTip("T2 MACD", g_T2_UseMacdBias, g_T2_MacdTiming), g_T2_UseMacdBias, false);
       PanelStyleChip(PanelObj("T2_fib"), "fibo", "T2 bias: Fib golden zone (entry always live; chip = leg scan)", g_T2_UseFibZone, false);
-      PanelStyleChip(PanelObj("T2_fibSc"), FibScanText(g_T2_FibScanMode), FibScanTip(g_T2_FibScanMode, "T2"), true, true);
+      if(g_T2_UseFibZone)
+         PanelStyleChip(PanelObj("T2_fibSc"), FibScanText(g_T2_FibScanMode), FibScanTip(g_T2_FibScanMode, "T2"), true, true);
+      else
+         PanelStyleDisabled(PanelObj("T2_fibSc"), FibScanText(g_T2_FibScanMode), "T2 fibo OFF");
 
-      PanelStyleChip(PanelObj("T2_stoch"), T2StochChipText(),
-                     SigTimingTip("T2 stoch state", g_T2_UseStoch, g_T2_StochTiming), g_T2_UseStoch, false);
+      PanelStyleChip(PanelObj("T2_stoch"), "stoch", "T2 stoch bias ON/OFF", g_T2_UseStoch, false);
       if(g_T2_UseStoch)
       {
+         PanelStyleChip(PanelObj("T2_stTm"), T2StochTimingText(), T2StochTimingTip(), true, true);
          PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeTip(), true, true);
          PanelStyleChip(PanelObj("T2_stDir"), T2StochDirText(), "T2 OB/OS momentum / reversal (used when mode=OB/OS)", true, true);
       }
       else
       {
+         PanelStyleDisabled(PanelObj("T2_stTm"), T2StochTimingText(), "T2 stoch OFF");
          PanelStyleDisabled(PanelObj("T2_stMd"), T2StochModeChipText(), "T2 stoch OFF");
          PanelStyleDisabled(PanelObj("T2_stDir"), T2StochDirText(), "T2 stoch OFF");
       }
@@ -1466,15 +1475,15 @@ void PanelPaintState()
    }
    else
    {
-      string hIds[] = {"T2_rsi","T2_macd","T2_fib","T2_fibSc","T2_stoch","T2_stMd","T2_stDir","T2_maOn","T2_ma","T2_maSrc","T2_maDir","T2_maChk"};
-      string hTxt[12];
+      string hIds[] = {"T2_rsi","T2_macd","T2_fib","T2_fibSc","T2_stoch","T2_stTm","T2_stMd","T2_stDir","T2_maOn","T2_ma","T2_maSrc","T2_maDir","T2_maChk"};
+      string hTxt[13];
       hTxt[0]=RsiChipText(g_T2_UseRsiBias, g_T2_RsiTiming);
       hTxt[1]=MacdChipText(g_T2_UseMacdBias, g_T2_MacdTiming);
       hTxt[2]="fibo"; hTxt[3]=FibScanText(g_T2_FibScanMode);
-      hTxt[4]=T2StochChipText(); hTxt[5]=T2StochModeChipText(); hTxt[6]=T2StochDirText();
-      hTxt[7]="MA"; hTxt[8]=MaModeChipText(g_T2_MaSel); hTxt[9]=T2MaSrcChipText();
-      hTxt[10]=MaDirText(g_T2_MaFromT1 ? g_T1_MaTrendMode : g_T2_MaTrendMode);
-      hTxt[11]=MaCheckText(g_T2_MaFromT1 ? g_T1_MACheckMode : g_T2_MACheckMode);
+      hTxt[4]="stoch"; hTxt[5]=T2StochTimingText(); hTxt[6]=T2StochModeChipText(); hTxt[7]=T2StochDirText();
+      hTxt[8]="MA"; hTxt[9]=MaModeChipText(g_T2_MaSel); hTxt[10]=T2MaSrcChipText();
+      hTxt[11]=MaDirText(g_T2_MaFromT1 ? g_T1_MaTrendMode : g_T2_MaTrendMode);
+      hTxt[12]=MaCheckText(g_T2_MaFromT1 ? g_T1_MACheckMode : g_T2_MACheckMode);
       for(int i=0; i<ArraySize(hIds); i++) PanelStyleDisabled(PanelObj(hIds[i]), hTxt[i], "T2 bias locked while mode=T1");
    }
 
@@ -1496,9 +1505,15 @@ void PanelPaintState()
 
    PanelStyleChip(PanelObj("LR"), " risk exits", "Risk / exit toggles", true, true);
    PanelStyleChip(PanelObj("MaSL"), "MaSL", "Virtual MA stop ON/OFF", g_UseVirtualMaSL, false);
-   PanelStyleChip(PanelObj("MaLn"), MaSLLineChipText(), MaSLLineTip(), true, true);
+   if(g_UseVirtualMaSL)
+      PanelStyleChip(PanelObj("MaLn"), MaSLLineChipText(), MaSLLineTip(), true, true);
+   else
+      PanelStyleDisabled(PanelObj("MaLn"), MaSLLineChipText(), "MaSL OFF");
    PanelStyleChip(PanelObj("SwSL"), "SwSL", "Virtual swing stop ON/OFF", g_UseSwingVirtualSL, false);
-   PanelStyleChip(PanelObj("SwMd"), SwMdChipText(), SwMdTip(), true, true);
+   if(g_UseSwingVirtualSL)
+      PanelStyleChip(PanelObj("SwMd"), SwMdChipText(), SwMdTip(), true, true);
+   else
+      PanelStyleDisabled(PanelObj("SwMd"), SwMdChipText(), "SwSL OFF");
    PanelStyleChip(PanelObj("Trail"),"Trail","Basket pip trail TP", g_UseBasketTP, false);
 
 }
@@ -1572,8 +1587,8 @@ void PanelBuild()
    string t2osc[] = { "T2_rsi", "T2_macd", "T2_fib", "T2_fibSc" };
    PanelPlaceEvenRow(t2osc, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t2st[] = { "T2_stoch", "T2_stMd", "T2_stDir" };
-   PanelPlaceEvenRow(t2st, 3, x0, y, rowW, gap, chipH);
+   string t2st[] = { "T2_stoch", "T2_stTm", "T2_stMd", "T2_stDir" };
+   PanelPlaceEvenRow(t2st, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
    string t2ma[] = { "T2_maOn", "T2_ma", "T2_maSrc", "T2_maDir", "T2_maChk" };
    PanelPlaceEvenRow(t2ma, 5, x0, y, rowW, gap, chipH);
@@ -1596,7 +1611,7 @@ void PanelBuild()
       "T1_bos","T1_bosSrc","T1_bosEng","T1_bosSig","T1_bosBrk",
       "T1_sr","T1_srR","T1_srB","T1_srLv","L2",
       "T2_rsi","T2_macd","T2_fib","T2_fibSc",
-      "T2_stoch","T2_stMd","T2_stDir",
+      "T2_stoch","T2_stTm","T2_stMd","T2_stDir",
       "T2_maOn","T2_ma","T2_maSrc","T2_maDir","T2_maChk","LG",
       "Session","Weekend","News","Broker","GuardSt","LR",
       "MaSL","MaLn","SwSL","SwMd","Trail"
@@ -1659,16 +1674,19 @@ bool PanelHandleClick(const string sparam)
    else if(id == "GRIDN") PanelCycleGridCount();
    else if(id == "T1_fibSc")
    {
+      if(!g_T1_UseFibZone) return true; // scan chip locked while fibo OFF
       g_T1_FibScanMode = (g_T1_FibScanMode == FIB_SCAN_CLOSED) ? FIB_SCAN_LIVE : FIB_SCAN_CLOSED;
       PanelSaveInt("T1_FibScan", (int)g_T1_FibScanMode);
    }
    else if(id == "T2_fibSc")
    {
+      if(!g_T2_UseFibZone) return true; // scan chip locked while fibo OFF
       g_T2_FibScanMode = (g_T2_FibScanMode == FIB_SCAN_CLOSED) ? FIB_SCAN_LIVE : FIB_SCAN_CLOSED;
       PanelSaveInt("T2_FibScan", (int)g_T2_FibScanMode);
    }
    else if(id == "SwMd")
    {
+      if(!g_UseSwingVirtualSL) return true; // method locked while SwSL OFF
       if(g_SwingSLMode == BOS_ZIGZAG) g_SwingSLMode = BOS_FRACTAL;
       else if(g_SwingSLMode == BOS_FRACTAL) g_SwingSLMode = BOS_BOTH_AND;
       else g_SwingSLMode = BOS_ZIGZAG;
@@ -1809,16 +1827,11 @@ bool PanelHandleClick(const string sparam)
       if(!g_SrOn) return true;
       PanelCycleSource(g_SrSource, "SrLv");
    }
-   else if(id == "T2_stoch")
+   else if(id == "T2_stoch") PanelToggleBool(g_T2_UseStoch, "T2_stoch");
+   else if(id == "T2_stTm")
    {
-      // off -> st.closd -> st.live -> off
-      if(!g_T2_UseStoch)
-      { g_T2_UseStoch = true; g_T2_StochTiming = SIG_CLOSED; }
-      else if(g_T2_StochTiming == SIG_CLOSED)
-         g_T2_StochTiming = SIG_LIVE;
-      else
-      { g_T2_UseStoch = false; g_T2_StochTiming = SIG_CLOSED; }
-      PanelSaveBool("T2_stoch", g_T2_UseStoch);
+      if(!g_T2_UseStoch) return true;
+      g_T2_StochTiming = (g_T2_StochTiming == SIG_CLOSED) ? SIG_LIVE : SIG_CLOSED;
       PanelSaveInt("T2_stT", (int)g_T2_StochTiming);
    }
    else if(id == "T2_stMd")
@@ -1894,7 +1907,11 @@ bool PanelHandleClick(const string sparam)
    }
    else if(id == "Broker") PanelToggleBool(g_UseBrokerSessionGuard, "Broker");
    else if(id == "MaSL") PanelToggleBool(g_UseVirtualMaSL, "MaSL");
-   else if(id == "MaLn") PanelCycleMaSLLine();
+   else if(id == "MaLn")
+   {
+      if(!g_UseVirtualMaSL) return true; // line locked while MaSL OFF
+      PanelCycleMaSLLine();
+   }
    else if(id == "SwSL") PanelToggleBool(g_UseSwingVirtualSL, "SwSL");
    else if(id == "Trail") PanelToggleBool(g_UseBasketTP, "Trail");
    else changed = false;
