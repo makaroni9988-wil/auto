@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.47"
+#property version   "5.48"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -460,7 +460,7 @@ ulong  g_lastModifyBurstMs = 0;
 
 //====================== LOGGING / PUSH ======================
 // Journal:  lets-go #magic SYMBOL | OPEN/CLOSE/LINES/FAIL/INIT/...
-// Push: INIT FAILED + BASKET CLOSED only. InpDebugLog = panel notes.
+// Push: INIT FAILED + BASKET CLOSED only. InpDebugLog = panel notes + DBG traces.
 string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
 void LogInfo(const string msg)  { Print(Tag(), " | ", msg); }
 void LogDebug(const string msg) { if(InpDebugLog) Print(Tag(), " | ", msg); }
@@ -1349,7 +1349,10 @@ void PanelPaintState()
 
    PanelStyleChip(PanelObj("CONF"), ConfChipText(), ConfTip(), true, true);
    PanelStyleChip(PanelObj("GRID"), "Grid", "Grid ON = MaxLayers; OFF = 1 layer", g_UseGrid, false);
-   PanelStyleChip(PanelObj("GRIDN"), GridCountText(), "Grid maximum layers (1 / 2 / 3)", true, true);
+   if(g_UseGrid)
+      PanelStyleChip(PanelObj("GRIDN"), GridCountText(), "Grid maximum layers (1 / 2 / 3)", true, true);
+   else
+      PanelStyleDisabled(PanelObj("GRIDN"), GridCountText(), "Grid OFF");
    PanelStyleChip(PanelObj("BUY"),  "Buy",  "Allow BUY signals",  g_TradeBuy,  false);
    PanelStyleChip(PanelObj("SELL"), "Sell", "Allow SELL signals", g_TradeSell, false);
 
@@ -1675,7 +1678,11 @@ bool PanelHandleClick(const string sparam)
       PanelSaveInt("Conf", (int)g_ConfluenceMode);
    }
    else if(id == "GRID") PanelToggleBool(g_UseGrid, "Grid");
-   else if(id == "GRIDN") PanelCycleGridCount();
+   else if(id == "GRIDN")
+   {
+      if(!g_UseGrid) return true; // count locked while Grid OFF
+      PanelCycleGridCount();
+   }
    else if(id == "T1_fibSc")
    {
       if(!g_T1_UseFibZone) return true; // scan chip locked while fibo OFF
