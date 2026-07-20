@@ -1,5 +1,5 @@
 ﻿//+------------------------------------------------------------------+
-//|                                                      restart.mq5 |
+//|                                                      lets-go.mq5 |
 //|           Modular dual-TF confluence grid EA                     |
 //|                                                                  |
 //|  Skeleton: grid, basket SL/TP, virtual exits, session/weekend/   |
@@ -28,17 +28,17 @@
 //|           MaSL: ON/OFF + Fast/Slow exit line (T1 MA lines).      |
 //|  Exits  : broker pip-cap; optional virtual MaSL and/or SwSL.     |
 //|  Panel  : chip toggles (top-left), GV memory.                    |
-//|  Journal: Tag "restart #magic SYMBOL". Push INIT/BASKET only.    |
+//|  Journal: Tag "lets-go #magic SYMBOL". Push INIT/BASKET only.    |
 //|                                                                  |
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.42"
+#property version   "5.43"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
-#define EA_LABEL "restart"
+#define EA_LABEL "lets-go"
 
 //====================== ENUMS ======================
 enum ENUM_CONF_MODE
@@ -461,7 +461,7 @@ double g_pendingTP         = 0;
 ulong  g_lastModifyBurstMs = 0;
 
 //====================== LOGGING / PUSH ======================
-// Journal:  restart #magic SYMBOL | OPEN/CLOSE/LINES/FAIL/INIT/...
+// Journal:  lets-go #magic SYMBOL | OPEN/CLOSE/LINES/FAIL/INIT/...
 // Push: INIT FAILED + BASKET CLOSED only. InpDebugLog = panel notes.
 string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
 void LogInfo(const string msg)  { Print(Tag(), " | ", msg); }
@@ -1338,7 +1338,7 @@ void PanelPaintState()
 {
    if(!ShowPanel) return;
 
-   PanelStyleChip(PanelObj("TTL"), g_panelCollapsed ? " restart  ▸" : " restart  ▾",
+   PanelStyleChip(PanelObj("TTL"), g_panelCollapsed ? " lets-go  ▸" : " lets-go  ▾",
                   "Click to collapse / expand panel", true, true);
 
    if(g_panelCollapsed) return;
@@ -3420,7 +3420,7 @@ void OpenLayer(const bool isFirstLayer)
 
       sl = NormalizePrice(sl);
       tp = (tp > 0) ? NormalizePrice(tp) : 0.0;
-      if(trade.Buy(lots, _Symbol, ask, sl, tp, "restart grid buy"))
+      if(trade.Buy(lots, _Symbol, ask, sl, tp, "lets-go grid buy"))
       {
          LogInfo("OPEN BUY " + DoubleToString(lots, 2) + " @ " + DoubleToString(ask, _Digits) + (isFirstLayer ? " | new basket" : " | add layer") + " | SL " + DoubleToString(sl, _Digits) + (tp > 0 ? " TP " + DoubleToString(tp, _Digits) : ""));
          g_lastEntryBar = g_lastBarTime;
@@ -3443,7 +3443,7 @@ void OpenLayer(const bool isFirstLayer)
 
       sl = NormalizePrice(sl);
       tp = (tp > 0) ? NormalizePrice(tp) : 0.0;
-      if(trade.Sell(lots, _Symbol, bid, sl, tp, "restart grid sell"))
+      if(trade.Sell(lots, _Symbol, bid, sl, tp, "lets-go grid sell"))
       {
          LogInfo("OPEN SELL " + DoubleToString(lots, 2) + " @ " + DoubleToString(bid, _Digits) + (isFirstLayer ? " | new basket" : " | add layer") + " | SL " + DoubleToString(sl, _Digits) + (tp > 0 ? " TP " + DoubleToString(tp, _Digits) : ""));
          g_lastEntryBar = g_lastBarTime;
