@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.44"
+#property version   "5.47"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -70,7 +70,6 @@ enum ENUM_MA_STYLE
 enum ENUM_MA_CHECK
 {
    MA_CHECK_RUNNING,      // Live side only (+/- buffer)
-   MA_CHECK_CANDLE_CLOSE, // Live side + last close must confirm
    MA_CHECK_CLOSED_ONLY   // Last close only — no live gate (bias style)
 };
 enum ENUM_MA_TREND_MODE
@@ -107,8 +106,7 @@ enum ENUM_FIB_SCAN_MODE
 enum ENUM_TF_SOURCE
 {
    TF_SOURCE_OWN,
-   TF_SOURCE_T2,
-   TF_SOURCE_BOTH // legacy — coerced to OWN on load (kept so old .set/GV values parse)
+   TF_SOURCE_T2
 };
 
 //====================== INPUTS ======================
@@ -190,7 +188,7 @@ input ENUM_APPLIED_PRICE MaAppliedPrice = PRICE_CLOSE; // Applied price
 input int                MaShift        = 0;           // MA horizontal shift
 
 input ENUM_MA_STYLE MaStyle        = MA_STYLE_DOUBLE;    // Default when T1/T2 UseMA is ON
-input ENUM_MA_CHECK T1_MACheckMode = MA_CHECK_CANDLE_CLOSE; // T1 Running / CandleClose / ClosedOnly (m1 / m2)
+input ENUM_MA_CHECK T1_MACheckMode = MA_CHECK_CLOSED_ONLY; // T1 Running / ClosedOnly (m1 / m2)
 input double        MABufferPips   = 100;                // T1 m1 buffer (pips)
 
 input int MaPeriod     = 34; // Single line (m1)
@@ -205,7 +203,7 @@ input group "===== T2 MA (independent when panel source = own) ====="
 input ENUM_MA_METHOD     T2_MaMethod       = MODE_EMA;         // T2 own MA method
 input ENUM_APPLIED_PRICE T2_MaAppliedPrice = PRICE_CLOSE;      // T2 own applied price
 input int                T2_MaShift        = 0;                // T2 own horizontal shift
-input ENUM_MA_CHECK      T2_MACheckMode    = MA_CHECK_CANDLE_CLOSE; // T2 own Running / CandleClose / ClosedOnly
+input ENUM_MA_CHECK      T2_MACheckMode    = MA_CHECK_CLOSED_ONLY; // T2 own Running / ClosedOnly
 input ENUM_MA_TREND_MODE T2_MaTrendMode    = MA_TREND_FOLLOW;  // T2 own Follow or Reversal
 input double             T2_MABufferPips   = 100;              // T2 own m1 buffer (pips)
 input double             T2_MaMinDiffPips  = 100;              // T2 own m2 minimum separation
@@ -840,15 +838,14 @@ void RuntimeLoadFromGV()
    if(g_BosSignalMode != BOS_SIGNAL_EVENT && g_BosSignalMode != BOS_SIGNAL_BIAS)
       g_BosSignalMode = BOS_SIGNAL_EVENT;
    if(g_BosBreakMode != BOS_BREAK_CLOSE && g_BosBreakMode != BOS_BREAK_WICK)
-      g_BosBreakMode = BOS_BREAK_WICK;
+      g_BosBreakMode = BOS_BREAK_CLOSE;
    if(g_T1_FibScanMode != FIB_SCAN_CLOSED && g_T1_FibScanMode != FIB_SCAN_LIVE)
       g_T1_FibScanMode = FIB_SCAN_CLOSED;
    if(g_T2_FibScanMode != FIB_SCAN_CLOSED && g_T2_FibScanMode != FIB_SCAN_LIVE)
       g_T2_FibScanMode = FIB_SCAN_CLOSED;
    if(g_BosSource != TF_SOURCE_OWN && g_BosSource != TF_SOURCE_T2)
       g_BosSource = TF_SOURCE_OWN;
-   // S/R source is own / T2 only now — coerce legacy BOTH (near-dead: needs
-   // price at both TFs' levels on the same tick) and anything invalid to OWN.
+   // S/R source is own / T2 only — anything invalid (e.g. stale GV int) falls back to OWN.
    if(g_SrSource != TF_SOURCE_OWN && g_SrSource != TF_SOURCE_T2)
       g_SrSource = TF_SOURCE_OWN;
    ApplyFamilyMasters();
@@ -924,9 +921,9 @@ void PanelClearMemory()
 {
    // wipe remembered clicks for this account/symbol/magic
    string ids[] = {
-      "INP_FP","Conf","BosMode","BosSig","BosBrk","T1_FibScan","T2_FibScan","BosSrc","SwMode","Buy","Sell","Grid","GridN","Collapsed","SrLv","SrRej",
+      "INP_FP","Conf","BosMode","BosSig","BosBrk","T1_FibScan","T2_FibScan","BosSrc","SwMode","Buy","Sell","Grid","GridN","Collapsed","SrLv",
       "StXMode","StCMode","T1_stXt","T1_stCt","T2_stT","T1_rsiT","T2_rsiT","T1_macdT","T2_macdT","T1_MaDir","T1_MaChk",
-      "T1_stOn","T1_stX","T1_stC","T1_srOn","T1_srB","T1_srR","T1_srMode","T1_fib","T1_macd","T1_rsi","T1_maOn","T1_ma","T1_bos",
+      "T1_stOn","T1_stX","T1_stC","T1_srOn","T1_srB","T1_srR","T1_fib","T1_macd","T1_rsi","T1_maOn","T1_ma","T1_bos",
       "T2_stoch","T2_stOb","T2_stDir","T2_fib","T2_macd","T2_rsi","T2_maOn","T2_ma","T2_maT1","T2_MaDir","T2_MaChk",
       "MaSL","MaLn","SwSL","Trail","Session","Weekend","News","Broker"
    };
@@ -1291,11 +1288,18 @@ void PanelCycleMaSLLine()
    PanelSaveInt("MaLn", (int)g_MaSLLine);
 }
 
+// Shared 3-way cycle for any ZigZag/Fractal/Both engine-select chip
+// (entry BOS engine and swing-SL engine both use this exact triad).
+ENUM_BOS_MODE CycleBosTriad(const ENUM_BOS_MODE mode)
+{
+   if(mode == BOS_ZIGZAG) return BOS_FRACTAL;
+   if(mode == BOS_FRACTAL) return BOS_BOTH_AND;
+   return BOS_ZIGZAG;
+}
+
 void PanelCycleBosMode()
 {
-   if(g_BosMode == BOS_ZIGZAG) g_BosMode = BOS_FRACTAL;
-   else if(g_BosMode == BOS_FRACTAL) g_BosMode = BOS_BOTH_AND;
-   else g_BosMode = BOS_ZIGZAG;
+   g_BosMode = CycleBosTriad(g_BosMode);
    PanelSaveInt("BosMode", (int)g_BosMode);
 }
 
@@ -1687,9 +1691,7 @@ bool PanelHandleClick(const string sparam)
    else if(id == "SwMd")
    {
       if(!g_UseSwingVirtualSL) return true; // method locked while SwSL OFF
-      if(g_SwingSLMode == BOS_ZIGZAG) g_SwingSLMode = BOS_FRACTAL;
-      else if(g_SwingSLMode == BOS_FRACTAL) g_SwingSLMode = BOS_BOTH_AND;
-      else g_SwingSLMode = BOS_ZIGZAG;
+      g_SwingSLMode = CycleBosTriad(g_SwingSLMode);
       PanelSaveInt("SwMode", (int)g_SwingSLMode);
       g_haveSwingSL = false;
       g_swingSL = 0;
