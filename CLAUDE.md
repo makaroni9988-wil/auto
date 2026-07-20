@@ -31,9 +31,13 @@
 - Compilation happens on the user's MetaEditor (target: 0 errors, 0
   warnings). This environment cannot compile MQL5 — say so, never claim
   compiled.
-- Panel: 5-column aligned grid, no dead filler chips, full readable words
-  on chip faces (fits Consolas 8 in 60px), colors only via PNL_* palette
-  constants, section spacing via sectionGap.
+- Panel: 4-column aligned grid (since v5.54), no dead filler chips, full
+  readable words on chip faces (fits Consolas 8 in 60px), colors only via
+  PNL_* palette constants, section spacing via sectionGap. Section headers
+  (L1/L2/LG) double as dynamic readouts (T1/T2 timeframe, guards open/block)
+  — see PanelPaintState. Panel chip-face helpers end `ChipText`, tooltip
+  helpers end `ChipTip` (generic non-chip formatters like TfText/MaDirText
+  keep plain `Text`).
 - When renaming panel OBJECT ids, NEVER rename GV (GlobalVariable) keys —
   they persist the user's saved panel state across restarts.
 - Preserve each file's existing line endings; don't reformat untouched code.
