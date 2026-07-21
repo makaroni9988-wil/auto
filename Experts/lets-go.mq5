@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.58"
+#property version   "5.59"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -174,7 +174,6 @@ input group "===== MA (m1 single line / m2 double line + MaSL lines) ====="
 //   m1 = single MA line (price vs MA, Follow / Reversal).
 //   m2 = double line (fast vs slow, Follow / Reversal).
 // Timing (LIVE = live tick, CLOSED_ONLY = closed candle arms it).
-// CANDLE_CLOSE is legacy — coerced to CLOSED_ONLY on load.
 // T1 uses these settings. T2 has an independent own setup below.
 // Risk row only toggles MaSL + Fast/Slow.
 input ENUM_MA_METHOD     MaMethod       = MODE_EMA;    // SMA / EMA / SMMA / LWMA
@@ -543,7 +542,7 @@ int PanelLoadInt(const string id, const int fallback)
 // Compact fingerprint of every panel-backed INPUT default.
 string PanelInputFingerprint()
 {
-   return "v553|" + IntegerToString((int)ConfluenceMode) + "|"
+   return "v559|" + IntegerToString((int)ConfluenceMode) + "|"
         + IntegerToString((int)TradeBuy) + IntegerToString((int)TradeSell) + "|"
         + IntegerToString((int)UseGrid) + "|" + IntegerToString(MaxLayers) + "|"
         + IntegerToString((int)T1_UseStochCross) + IntegerToString((int)T1_UseStochClassic)
@@ -588,8 +587,7 @@ void RuntimeApplyInputDefaults()
    g_T1_MacdTiming = T1_MacdTiming;
    g_T2_MacdTiming = T2_MacdTiming;
    g_T1_MaTrendMode = T1_MaTrendMode;
-   // Hybrid CANDLE_CLOSE is legacy — two timings only (live / closed).
-   g_T1_MACheckMode = (T1_MACheckMode == MA_CHECK_LIVE) ? MA_CHECK_LIVE : MA_CHECK_CLOSED;
+   g_T1_MACheckMode = T1_MACheckMode;
 
    g_StCrossSel   = T1_UseStochCross;
    g_StClassicSel = T1_UseStochClassic;
@@ -611,9 +609,8 @@ void RuntimeApplyInputDefaults()
    ApplyFamilyMasters();
    g_T2_MaFromT1 = T2_MaFromT1;
    g_T2_MaTrendMode = T2_MaTrendMode;
-   g_T2_MACheckMode = (T2_MACheckMode == MA_CHECK_LIVE) ? MA_CHECK_LIVE : MA_CHECK_CLOSED;
-   // S/R source is own / T2 only — a legacy BOTH input falls back to OWN.
-   g_SrSource = (SrLevelsSource == TF_SOURCE_T2) ? TF_SOURCE_T2 : TF_SOURCE_OWN;
+   g_T2_MACheckMode = T2_MACheckMode;
+   g_SrSource = SrLevelsSource;
 
    g_UseVirtualMaSL = UseVirtualMaSL;
    g_MaSLLine = MaSLLine;
@@ -693,19 +690,10 @@ void RuntimeLoadFromGV()
    g_T1_MaTrendMode = (ENUM_MA_TREND_MODE)PanelLoadInt("T1_MaDir", (int)g_T1_MaTrendMode);
    g_T1_MACheckMode = (ENUM_MA_CHECK)PanelLoadInt("T1_MaChk", (int)g_T1_MACheckMode);
 
-   // Stoch chips carry their own off (3-state). Legacy migration: if an old
-   // family-master GV ("T1_stOn") is present and OFF, force both selections off
-   // so an upgrade never silently arms a stoch side.
    g_StCrossSel   = PanelLoadBool("T1_stX", g_StCrossSel);
    g_StClassicSel = PanelLoadBool("T1_stC", g_StClassicSel);
-   if(GlobalVariableCheck(PanelGvKey("T1_stOn")) && !PanelLoadBool("T1_stOn", true))
-   { g_StCrossSel = false; g_StClassicSel = false; }
-   // S/R: master + one break-or-reject selection. Legacy reject key ("T1_srB")
-   // only wins when the old break flag was off (they were independent before).
    g_SrOn         = PanelLoadBool("T1_srOn", g_SrOn);
    g_SrBreakSel   = PanelLoadBool("T1_srR", g_SrBreakSel);
-   if(!g_SrBreakSel && !PanelLoadBool("T1_srB", false))
-      g_SrBreakSel = true; // neither side saved -> default break
    ApplyFamilyMasters();
    g_T1_UseMacdBias = PanelLoadBool("T1_macd", g_T1_UseMacdBias);
    g_T1_UseRsiBias = PanelLoadBool("T1_rsi", g_T1_UseRsiBias);
@@ -723,7 +711,7 @@ void RuntimeLoadFromGV()
    g_T2_MaTrendMode = (ENUM_MA_TREND_MODE)PanelLoadInt("T2_MaDir", (int)g_T2_MaTrendMode);
    g_T2_MACheckMode = (ENUM_MA_CHECK)PanelLoadInt("T2_MaChk", (int)g_T2_MACheckMode);
 
-   // T1 mode must be m1/m2 (a legacy saved OFF becomes the style default).
+   // Mode chip is m1/m2 only — anything else falls back to MaStyle.
    if(!MaEnabled(g_T1_MaSel)) g_T1_MaSel = MaStyleToState(MaStyle);
 
    g_UseVirtualMaSL = PanelLoadBool("MaSL", g_UseVirtualMaSL);
@@ -741,7 +729,6 @@ void RuntimeLoadFromGV()
    // Corrupt GV memory → fall back to input defaults
    if(g_ConfluenceMode != CONF_T1_ONLY && g_ConfluenceMode != CONF_T1_AND_T2)
       g_ConfluenceMode = CONF_T1_ONLY;
-   // S/R source is own / T2 only — anything invalid (e.g. stale GV int) falls back to OWN.
    if(g_SrSource != TF_SOURCE_OWN && g_SrSource != TF_SOURCE_T2)
       g_SrSource = TF_SOURCE_OWN;
    ApplyFamilyMasters();
@@ -767,8 +754,7 @@ void RuntimeLoadFromGV()
       g_StochClassicMode = STOCH_CLASSIC_REV;
    if(g_T2_StochObOsMode != STOCH_CLASSIC_MOM && g_T2_StochObOsMode != STOCH_CLASSIC_REV)
       g_T2_StochObOsMode = STOCH_CLASSIC_REV;
-   // Two timings only: LIVE (live) / CLOSED_ONLY (closed). The legacy
-   // CANDLE_CLOSE hybrid and anything invalid coerce to CLOSED_ONLY.
+   // MA timing is live / closed only — anything else → closed.
    if(g_T1_MACheckMode != MA_CHECK_LIVE)
       g_T1_MACheckMode = MA_CHECK_CLOSED;
    if(g_T2_MACheckMode != MA_CHECK_LIVE)
@@ -813,14 +799,14 @@ void RuntimeLoadFromInputsThenGV()
 
 void PanelClearMemory()
 {
-   // wipe remembered clicks for this account/symbol/magic
+   // wipe remembered clicks for this account/symbol/magic (current keys only)
    string ids[] = {
-      "INP_FP","Conf","Buy","Sell","Grid","GridN","Collapsed","SrLv",
+      "INP_FP","Conf","Buy","Sell","Grid","Collapsed","SrLv",
       "StXMode","StCMode","T1_stXt","T1_stCt","T2_stT","T1_rsiT","T2_rsiT","T1_macdT","T2_macdT","T1_MaDir","T1_MaChk",
-      "T1_stOn","T1_stX","T1_stC","T1_srOn","T1_srB","T1_srR","T1_srFlip","T1_macd","T1_rsi","T1_maOn","T1_ma",
-      "T2_stoch","T2_stOb","T2_stDir","T2_macd","T2_rsi","T2_maOn","T2_ma","T2_maT1","T2_MaDir","T2_MaChk",
+      "T1_stX","T1_stC","T1_srOn","T1_srR","T1_macd","T1_rsi","T1_maOn","T1_ma",
+      "T2_stoch","T2_stOb","T2_stDir","T2_macd","T2_rsi","T2_maOn","T2_maT1","T2_MaDir","T2_MaChk",
       "MaSL","MaLn","SwSL","Trail","Session","Weekend","News","Broker"
-   }; // legacy keys (GridN/T1_stOn/T1_srB/T2_ma) kept here so upgrades still wipe them
+   };
    for(int i = 0; i < ArraySize(ids); i++)
       GlobalVariableDel(PanelGvKey(ids[i]));
 }
@@ -1156,8 +1142,6 @@ void PanelCycleStochClassicMode()
    PanelSaveInt("StCMode", (int)g_StochClassicMode);
 }
 
-// Sources are own / T2 only — BOTH removed (S/R both needs price at two
-// levels on one tick; BOS both was a rarely-useful double AND).
 void PanelCycleSource(ENUM_TF_SOURCE &source, const string gvId)
 {
    source = (source == TF_SOURCE_OWN) ? TF_SOURCE_T2 : TF_SOURCE_OWN;
