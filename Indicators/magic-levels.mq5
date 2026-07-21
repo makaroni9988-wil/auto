@@ -1,5 +1,5 @@
 #property copyright "Copyright 2026"
-#property version   "1.10"
+#property version   "1.11"
 #property indicator_chart_window
 #property indicator_plots 0
 
@@ -21,12 +21,15 @@ input int    InpLabelBarBuffer = 1;                 // Label buffer from left ed
 string g_prefix;
 string g_activeNames[];
 int    g_activeCount;
+string g_lastFingerprint;   // last seen trade state; tick/timer skip redraw when unchanged
 
 int OnInit()
 {
    g_prefix = "MNTL_" + (string)ChartID() + "_";
+   g_lastFingerprint = "";
    EventSetMillisecondTimer(InpRefreshMs);
    RefreshLines();
+   g_lastFingerprint = TradeFingerprint();
    ChartRedraw(0);
    return(INIT_SUCCEEDED);
 }
@@ -52,14 +55,21 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
 {
-   RefreshLines();
+   // Tick path stays for zero-delay trade updates,
+   // but only rebuild objects when position/order state actually changed.
+   if(TradeStateChanged())
+      RefreshLines();
    return(rates_total);
 }
 
 void OnTimer()
 {
-   RefreshLines();
-   ChartRedraw(0);
+   // Quiet market / modify from another terminal: catch changes ticks miss.
+   if(TradeStateChanged())
+   {
+      RefreshLines();
+      ChartRedraw(0);
+   }
 }
 
 void OnChartEvent(const int id,
@@ -72,6 +82,66 @@ void OnChartEvent(const int id,
    // on the next timer tick instead of immediately.
    if(id == CHARTEVENT_CHART_CHANGE)
       RefreshLines();
+}
+
+// Snapshot of matching positions/orders. Cheap string build; compared each
+// tick so we skip Object* spam when nothing moved.
+string TradeFingerprint()
+{
+   string fp = "";
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(!PositionSelectByTicket(ticket))
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber)
+         continue;
+
+      fp += StringFormat("P%I64u:%d:%.8f:%.8f:%.8f:%.2f;",
+                         ticket,
+                         (int)PositionGetInteger(POSITION_TYPE),
+                         PositionGetDouble(POSITION_PRICE_OPEN),
+                         PositionGetDouble(POSITION_SL),
+                         PositionGetDouble(POSITION_TP),
+                         PositionGetDouble(POSITION_VOLUME));
+   }
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(!OrderSelect(ticket))
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol)
+         continue;
+      if((ulong)OrderGetInteger(ORDER_MAGIC) != InpMagicNumber)
+         continue;
+
+      fp += StringFormat("O%I64u:%d:%.8f:%.8f:%.8f:%.2f;",
+                         ticket,
+                         (int)OrderGetInteger(ORDER_TYPE),
+                         OrderGetDouble(ORDER_PRICE_OPEN),
+                         OrderGetDouble(ORDER_SL),
+                         OrderGetDouble(ORDER_TP),
+                         OrderGetDouble(ORDER_VOLUME_CURRENT));
+   }
+
+   return fp;
+}
+
+bool TradeStateChanged()
+{
+   string fp = TradeFingerprint();
+   if(fp == g_lastFingerprint)
+      return false;
+   g_lastFingerprint = fp;
+   return true;
 }
 
 void DeleteAllLines()
@@ -137,20 +207,28 @@ void DrawLevel(string name,double price,color clr,ENUM_LINE_STYLE style,string l
    price = NormalizeDouble(price,_Digits);
 
    // --- the horizontal line ---
+   bool created = false;
    if(ObjectFind(0,name) < 0)
+   {
       ObjectCreate(0,name,OBJ_HLINE,0,0,price);
+      created = true;
+   }
 
    // Only touch what actually changed - recreating unchanged objects
    // every refresh is what caused the visible line "blink".
-   if(ObjectGetDouble(0,name,OBJPROP_PRICE) != price)
+   if(created || ObjectGetDouble(0,name,OBJPROP_PRICE) != price)
       ObjectSetDouble(0,name,OBJPROP_PRICE,price);
 
-   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
-   ObjectSetInteger(0,name,OBJPROP_STYLE,style);
-   ObjectSetInteger(0,name,OBJPROP_WIDTH,InpLineWidth);
-   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
-   ObjectSetInteger(0,name,OBJPROP_BACK,false);
+   // Static props once on create; trade-state gate already covers live updates.
+   if(created)
+   {
+      ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+      ObjectSetInteger(0,name,OBJPROP_STYLE,style);
+      ObjectSetInteger(0,name,OBJPROP_WIDTH,InpLineWidth);
+      ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+      ObjectSetInteger(0,name,OBJPROP_BACK,false);
+   }
 
    MarkActive(name);
 
@@ -161,21 +239,31 @@ void DrawLevel(string name,double price,color clr,ENUM_LINE_STYLE style,string l
    string labelName = name + "_LBL";
    datetime leftTime = GetLeftVisibleTime();
 
+   bool labelCreated = false;
    if(ObjectFind(0,labelName) < 0)
+   {
       ObjectCreate(0,labelName,OBJ_TEXT,0,leftTime,price);
+      labelCreated = true;
+   }
 
+   // Time always: scroll/zoom must re-pin to the left edge even when
+   // trade prices are unchanged (chart-change path).
    ObjectSetInteger(0,labelName,OBJPROP_TIME,0,leftTime);
    ObjectSetDouble (0,labelName,OBJPROP_PRICE,0,price);
    ObjectSetString (0,labelName,OBJPROP_TEXT,labelText);
-   ObjectSetString (0,labelName,OBJPROP_FONT,InpLabelFont);
-   ObjectSetInteger(0,labelName,OBJPROP_FONTSIZE,InpLabelFontSize);
-   ObjectSetInteger(0,labelName,OBJPROP_COLOR,InpLabelColor);
-   // LEFT_LOWER: anchor is the text's bottom-left corner, so the label
-   // renders ABOVE the line instead of vertically centered through it.
-   ObjectSetInteger(0,labelName,OBJPROP_ANCHOR,ANCHOR_LEFT_LOWER);
-   ObjectSetInteger(0,labelName,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,labelName,OBJPROP_HIDDEN,true);
-   ObjectSetInteger(0,labelName,OBJPROP_BACK,false);
+
+   if(labelCreated)
+   {
+      ObjectSetString (0,labelName,OBJPROP_FONT,InpLabelFont);
+      ObjectSetInteger(0,labelName,OBJPROP_FONTSIZE,InpLabelFontSize);
+      ObjectSetInteger(0,labelName,OBJPROP_COLOR,InpLabelColor);
+      // LEFT_LOWER: anchor is the text's bottom-left corner, so the label
+      // renders ABOVE the line instead of vertically centered through it.
+      ObjectSetInteger(0,labelName,OBJPROP_ANCHOR,ANCHOR_LEFT_LOWER);
+      ObjectSetInteger(0,labelName,OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,labelName,OBJPROP_HIDDEN,true);
+      ObjectSetInteger(0,labelName,OBJPROP_BACK,false);
+   }
 
    MarkActive(labelName);
 }
