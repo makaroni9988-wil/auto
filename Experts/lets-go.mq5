@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.59"
+#property version   "5.60"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -267,6 +267,7 @@ input uint PanelClickGuardMs   = 200;   // Double-click guard (ms)
 input group "===== Logging ====="
 input bool InpDetailedBlockedLog = true;  // BLOCKED: list enabled T1 / T2 modules
 input bool InpDebugLog           = false; // Panel clicks + memory notes
+input bool InpNotifyOnOpen       = true;  // Push notification on OPEN (new basket + add layer)
 
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
 // MA module per TF: 0=OFF, 1=m1 (single line), 2=m2 (double line)
@@ -422,7 +423,8 @@ ulong  g_lastModifyBurstMs = 0;
 
 //====================== LOGGING / PUSH ======================
 // Journal:  lets-go #magic SYMBOL | OPEN/CLOSE/LINES/FAIL/INIT/...
-// Push: INIT FAILED + BASKET CLOSED only. InpDebugLog = panel notes + DBG traces.
+// Push: INIT FAILED + BASKET CLOSED always; OPEN gated by InpNotifyOnOpen (default on).
+// InpDebugLog = panel notes + DBG traces.
 string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
 void LogInfo(const string msg)  { Print(Tag(), " | ", msg); }
 void LogDebug(const string msg) { if(InpDebugLog) Print(Tag(), " | ", msg); }
@@ -2799,11 +2801,13 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(isBuy) g_srDoneLvlBuy = lvl; else g_srDoneLvlSell = lvl; // consume the S/R level
    g_lastEntryBar = g_lastBarTime;
    PendUntrackIndex(idx);
-   LogInfo("OPEN " + (isBuy ? "BUY" : "SELL") + " "
+   string pendFillMsg = "OPEN " + (isBuy ? "BUY" : "SELL") + " "
            + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2)
            + " @ " + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_PRICE), _Digits)
            + " | pending fill at S/R level "
-           + DoubleToString(lvl, _Digits));
+           + DoubleToString(lvl, _Digits);
+   LogInfo(pendFillMsg);
+   if(InpNotifyOnOpen) NotifyPush(pendFillMsg);
    DeleteOurPendings("sibling after fill");
    SyncBasketLines();
 }
@@ -3047,7 +3051,9 @@ void OpenLayer(const bool isFirstLayer)
       tp = (tp > 0) ? NormalizePrice(tp) : 0.0;
       if(trade.Buy(lots, _Symbol, ask, sl, tp, "lets-go grid buy"))
       {
-         LogInfo("OPEN BUY " + DoubleToString(lots, 2) + " @ " + DoubleToString(ask, _Digits) + (isFirstLayer ? " | new basket" : " | add layer") + " | SL " + DoubleToString(sl, _Digits) + (tp > 0 ? " TP " + DoubleToString(tp, _Digits) : ""));
+         string buyOpenMsg = "OPEN BUY " + DoubleToString(lots, 2) + " @ " + DoubleToString(ask, _Digits) + (isFirstLayer ? " | new basket" : " | add layer") + " | SL " + DoubleToString(sl, _Digits) + (tp > 0 ? " TP " + DoubleToString(tp, _Digits) : "");
+         LogInfo(buyOpenMsg);
+         if(InpNotifyOnOpen) NotifyPush(buyOpenMsg);
          g_lastEntryBar = g_lastBarTime;
          if(g_T1_UseSrBreak || g_T1_UseSrBounce) g_srDoneLvlBuy = g_srEvtLvlBuy; // ENTRY consumes the S/R level
          SyncBasketLines();
@@ -3070,7 +3076,9 @@ void OpenLayer(const bool isFirstLayer)
       tp = (tp > 0) ? NormalizePrice(tp) : 0.0;
       if(trade.Sell(lots, _Symbol, bid, sl, tp, "lets-go grid sell"))
       {
-         LogInfo("OPEN SELL " + DoubleToString(lots, 2) + " @ " + DoubleToString(bid, _Digits) + (isFirstLayer ? " | new basket" : " | add layer") + " | SL " + DoubleToString(sl, _Digits) + (tp > 0 ? " TP " + DoubleToString(tp, _Digits) : ""));
+         string sellOpenMsg = "OPEN SELL " + DoubleToString(lots, 2) + " @ " + DoubleToString(bid, _Digits) + (isFirstLayer ? " | new basket" : " | add layer") + " | SL " + DoubleToString(sl, _Digits) + (tp > 0 ? " TP " + DoubleToString(tp, _Digits) : "");
+         LogInfo(sellOpenMsg);
+         if(InpNotifyOnOpen) NotifyPush(sellOpenMsg);
          g_lastEntryBar = g_lastBarTime;
          if(g_T1_UseSrBreak || g_T1_UseSrBounce) g_srDoneLvlSell = g_srEvtLvlSell; // ENTRY consumes the S/R level
          SyncBasketLines();
