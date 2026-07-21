@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.55"
+#property version   "5.57"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -203,12 +203,11 @@ input double             T2_MABufferPips   = 100;              // T2 own buffer 
 input int                T2_MaPeriod       = 200;              // T2 own single line
 
 input group "===== S/R Pivot Entry (T1 entry; levels own or T2) ====="
-input int    PivotLeftBars          = 5;     // Pivot left bars (levels TF; match sr-breaks)
-input int    PivotRightBars         = 5;     // Pivot right bars (levels TF; match sr-breaks)
+input int    PivotLeftBars          = 10;    // Pivot left bars (levels TF; match sr-breaks)
+input int    PivotRightBars         = 10;    // Pivot right bars (levels TF; match sr-breaks)
 input int    LevelsLookback         = 200;   // Bars to scan for pivots on levels TF
 input double SrBufferPips           = 100;   // Break: beyond level by this. Reject: within this of level. 0 = exact line
 input ENUM_TF_SOURCE SrLevelsSource = TF_SOURCE_OWN; // S/R levels: own / T2
-input bool   SrFlipMode             = false; // Flip: a CLOSED T1 break past a level swaps its role (R<->S)
 
 input group "===== Stop / Exit ====="
 // Broker SL = hard pip cap. Virtual MA / swing SL are optional; first hit closes.
@@ -294,7 +293,7 @@ bool g_T1_UseStochCross, g_T1_UseStochClassic, g_T1_UseSrBounce, g_T1_UseSrBreak
 // Stoch cross / classic each carry their own OFF (3-state chip) — no family
 // master. S/R has a master (g_SrOn) plus one break-or-reject selection.
 bool g_StCrossSel = false, g_StClassicSel = false;
-bool g_SrOn = false, g_SrBreakSel = true, g_SrFlip = false; // g_SrBreakSel: true=break, false=reject
+bool g_SrOn = false, g_SrBreakSel = true; // g_SrBreakSel: true=break, false=reject
 bool g_T1_UseMacdBias, g_T1_UseRsiBias;
 bool g_T2_UseStoch, g_T2_StochObOs;
 bool g_T2_UseMacdBias, g_T2_UseRsiBias;
@@ -393,7 +392,7 @@ double g_srDoneLvlBuy = 0, g_srDoneLvlSell = 0; // consumed on entry
 // PENDING ENGINE tracking: S/R (when ON) rests real broker stop/limit orders
 // at its levels. Only orders we placed (or adopted by comment tag on
 // re-attach) are tracked — reconcile never touches others.
-#define PEND_MAX 4
+#define PEND_MAX 2  // straddle ceiling: one buy-side + one sell-side pending, never same-side double
 ulong  g_pendTicket[PEND_MAX];
 double g_pendLevel[PEND_MAX];
 bool   g_pendIsBuy[PEND_MAX];
@@ -561,7 +560,7 @@ string PanelInputFingerprint()
         + IntegerToString((int)T2_UseRsiBias) + IntegerToString((int)T2_UseMA)
         + IntegerToString((int)T2_MaFromT1) + "|" + IntegerToString((int)T2_StochObOsMode) + "|"
         + IntegerToString((int)T2_MaTrendMode) + "|" + IntegerToString((int)T2_MACheckMode) + "|"
-        + IntegerToString((int)SrLevelsSource) + IntegerToString((int)SrFlipMode) + "|"
+        + IntegerToString((int)SrLevelsSource) + "|"
         + IntegerToString((int)MaStyle) + IntegerToString((int)MaMethod)
         + IntegerToString(T2_MaPeriod)
         + IntegerToString((int)MaSLLine) + "|"
@@ -596,7 +595,6 @@ void RuntimeApplyInputDefaults()
    // One break-or-reject selection; master ON when either input is set.
    g_SrOn         = (T1_UseSrBreak || T1_UseSrBounce);
    g_SrBreakSel   = (T1_UseSrBreak || !T1_UseSrBounce); // break wins ties; default break
-   g_SrFlip       = SrFlipMode;
    ApplyFamilyMasters();
    g_T1_UseMacdBias = T1_UseMacdBias;
    g_T1_UseRsiBias = T1_UseRsiBias;
@@ -649,7 +647,6 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("T1_stC", g_StClassicSel);
    PanelSaveBool("T1_srOn", g_SrOn);
    PanelSaveBool("T1_srR", g_SrBreakSel);
-   PanelSaveBool("T1_srFlip", g_SrFlip);
    PanelSaveBool("T1_macd", g_T1_UseMacdBias);
    PanelSaveBool("T1_rsi", g_T1_UseRsiBias);
    PanelSaveBool("T1_maOn", g_T1_MaOn);
@@ -708,7 +705,6 @@ void RuntimeLoadFromGV()
    g_SrBreakSel   = PanelLoadBool("T1_srR", g_SrBreakSel);
    if(!g_SrBreakSel && !PanelLoadBool("T1_srB", false))
       g_SrBreakSel = true; // neither side saved -> default break
-   g_SrFlip       = PanelLoadBool("T1_srFlip", g_SrFlip);
    ApplyFamilyMasters();
    g_T1_UseMacdBias = PanelLoadBool("T1_macd", g_T1_UseMacdBias);
    g_T1_UseRsiBias = PanelLoadBool("T1_rsi", g_T1_UseRsiBias);
@@ -1098,13 +1094,6 @@ string SrLvChipTip()
    return "S/R level source: " + SourceText(g_SrSource) + " (own / T2)";
 }
 
-string SrFlipChipTip()
-{
-   return g_SrFlip
-      ? "Flip ON: a closed T1 break past a level swaps its role (resistance<->support). Click to turn OFF"
-      : "Flip OFF: levels keep their role. Click to turn ON (closed break swaps R<->S)";
-}
-
 string MaDirText(const ENUM_MA_TREND_MODE mode) { return mode == MA_TREND_FOLLOW ? "follow" : "reversal"; }
 // Two timings only: live (tick) / closed (candle arms it).
 string MaCheckText(const ENUM_MA_CHECK mode)
@@ -1235,13 +1224,11 @@ void PanelPaintState()
    if(g_SrOn)
    {
       PanelStyleChip(PanelObj("T1_srLv"), SrLvChipText(), SrLvChipTip(), true, true);
-      PanelStyleChip(PanelObj("T1_srFlip"), "flip", SrFlipChipTip(), g_SrFlip, false);
       PanelStyleChip(PanelObj("T1_srBR"), SrBrChipText(), SrBrChipTip(), true, true);
    }
    else
    {
       PanelStyleDisabled(PanelObj("T1_srLv"), SrLvChipText(), "S/R family OFF");
-      PanelStyleDisabled(PanelObj("T1_srFlip"), "flip", "S/R family OFF");
       PanelStyleDisabled(PanelObj("T1_srBR"), SrBrChipText(), "S/R family OFF");
    }
 
@@ -1399,8 +1386,8 @@ void PanelBuild()
    string t1ma[] = { "T1_maOn", "T1_ma", "T1_maDir", "T1_maChk" };
    PanelPlaceEvenRow(t1ma, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1sr[] = { "T1_sr", "T1_srLv", "T1_srFlip", "T1_srBR" };
-   PanelPlaceEvenRow(t1sr, 4, x0, y, rowW, gap, chipH);
+   string t1sr[] = { "T1_sr", "T1_srLv", "T1_srBR" };
+   PanelPlaceEvenRow(t1sr, 3, x0, y, rowW, gap, chipH);
    y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
@@ -1428,7 +1415,7 @@ void PanelBuild()
       "T1_rsi","T1_rsiTm","T1_macd","T1_macdTm",
       "T1_stX","T1_stXm","T1_stC","T1_stCm",
       "T1_maOn","T1_ma","T1_maDir","T1_maChk",
-      "T1_sr","T1_srLv","T1_srFlip","T1_srBR","L2",
+      "T1_sr","T1_srLv","T1_srBR","L2",
       "T2_rsi","T2_rsiTm","T2_macd","T2_macdTm",
       "T2_stoch","T2_stTm","T2_stMd","T2_stDir",
       "T2_maOn","T2_maSrc","T2_maDir","T2_maChk","LG",
@@ -1540,12 +1527,6 @@ bool PanelHandleClick(const string sparam)
       g_SrBreakSel = !g_SrBreakSel; // one trigger: break <-> reject
       PanelSaveBool("T1_srR", g_SrBreakSel);
       ApplyFamilyMasters();
-   }
-   else if(id == "T1_srFlip")
-   {
-      if(!g_SrOn) return true;
-      g_SrFlip = !g_SrFlip;
-      PanelSaveBool("T1_srFlip", g_SrFlip);
    }
    else if(id == "T1_rsi") PanelToggleBool(g_T1_UseRsiBias, "T1_rsi");
    else if(id == "T1_rsiTm")
@@ -2004,22 +1985,33 @@ bool IsPivotLowAt_Rates(const MqlRates &rates[], int idx, int total, int leftBar
    return true;
 }
 
-bool GetActiveSR(const ENUM_TIMEFRAMES tf, double &support, double &resistance)
+// LEVEL POOL: scan EVERY confirmed pivot (high AND low) within LevelsLookback on
+// the levels TF and return the NEAREST level above the reference price and the
+// nearest below it. Positional and color-agnostic — a level is judged purely by
+// which side of price it sits on, not by whether it was born a pivot high or a
+// pivot low. So any line above price is a buy-stop level, any below a sell-stop
+// level, and the CLOSEST one on each side always wins (a far level is used only
+// when nothing closer exists). This replaces the old single latest-high +
+// latest-low read, which left one side empty whenever price ran past its one
+// tracked level. Uses the same three inputs as before: LevelsLookback (scan
+// depth), PivotLeftBars / PivotRightBars (what counts as a pivot).
+// Nearest-per-side means at most one buy-side + one sell-side order — never a
+// same-side double. Returns false only when NO pivot exists on either side yet.
+bool GetNearestSrLevels(const ENUM_TIMEFRAMES tf, const double px,
+                        double &aboveLvl, bool &haveAbove,
+                        double &belowLvl, bool &haveBelow)
 {
-   support = 0; resistance = 0;
+   aboveLvl = 0; belowLvl = 0; haveAbove = false; haveBelow = false;
 
    int need = MathMax(LevelsLookback, PivotLeftBars + PivotRightBars + 5);
    MqlRates rates[];
    int got = CopyRates(_Symbol, tf, 0, need, rates);
    if(got < PivotLeftBars + PivotRightBars + 3)
-   { LogDebugGuard("dbg_sr", "GetActiveSR " + EnumToString(tf) + ": not enough bars yet"); return false; }
+   { LogDebugGuard("dbg_sr", "GetNearestSrLevels " + EnumToString(tf) + ": not enough bars yet"); return false; }
 
    int total = got;
    int lastCompleted = total - 2;
    int startBar = MathMax(PivotLeftBars, total - LevelsLookback);
-
-   double curHigh = EMPTY_VALUE;
-   double curLow  = EMPTY_VALUE;
 
    for(int i = startBar; i <= lastCompleted; i++)
    {
@@ -2027,74 +2019,67 @@ bool GetActiveSR(const ENUM_TIMEFRAMES tf, double &support, double &resistance)
       if(pivotIdx < PivotLeftBars) continue;
       if(pivotIdx + PivotRightBars > lastCompleted) continue;
 
+      // Every confirmed pivot is a candidate; keep only the closest on each side.
       if(IsPivotHighAt_Rates(rates, pivotIdx, total, PivotLeftBars, PivotRightBars))
-         curHigh = rates[pivotIdx].high;
+      {
+         double v = rates[pivotIdx].high;
+         if(v > px)      { if(!haveAbove || v < aboveLvl) { aboveLvl = v; haveAbove = true; } }
+         else if(v < px) { if(!haveBelow || v > belowLvl) { belowLvl = v; haveBelow = true; } }
+      }
       if(IsPivotLowAt_Rates(rates, pivotIdx, total, PivotLeftBars, PivotRightBars))
-         curLow = rates[pivotIdx].low;
+      {
+         double v = rates[pivotIdx].low;
+         if(v > px)      { if(!haveAbove || v < aboveLvl) { aboveLvl = v; haveAbove = true; } }
+         else if(v < px) { if(!haveBelow || v > belowLvl) { belowLvl = v; haveBelow = true; } }
+      }
    }
 
-   if(curHigh == EMPTY_VALUE || curLow == EMPTY_VALUE)
-   { LogDebugGuard("dbg_sr", "GetActiveSR " + EnumToString(tf) + ": no pivot high/low found yet"); return false; }
-   resistance = curHigh;
-   support    = curLow;
-   return true;
-}
-
-// Close of the last CLOSED candle on the levels TF (flip role decisions).
-bool SrLastClose(const ENUM_TIMEFRAMES tf, double &lc)
-{
-   double c[];
-   if(CopyClose(_Symbol, tf, 1, 1, c) != 1) return false;
-   lc = c[0];
+   if(!haveAbove && !haveBelow)
+   { LogDebugGuard("dbg_sr", "GetNearestSrLevels " + EnumToString(tf) + ": no pivots found yet"); return false; }
    return true;
 }
 
 // S/R = one-shot pending-order trigger at the pivot level, checked every tick.
-// break : trade the break direction the tick price crosses the level by
-//         SrBufferPips (buy at resistance / sell at support).
-// reject: trade the reversal the tick price reaches the level within
-//         SrBufferPips (sell at resistance / buy at support).
+// POSITIONAL + NEAREST (pool): a level has no born role — it is typed purely by
+//   which side of CURRENT price it sits on, re-read every tick. Of ALL pivots in
+//   the lookback window, only the NEAREST one on each side is ever used (so a
+//   breach never parks an order at a far level, and there is never a same-side
+//   double). Roles flip automatically with no memory (this replaced the old
+//   born-role + flip scheme, and the old single latest-high + latest-low read).
+// break : nearest level above price -> buy  when the tick breaks UP through it (+buf);
+//         nearest level below price -> sell when the tick breaks DOWN through it (-buf).
+// reject: nearest level below price -> buy  when the tick reaches DOWN to it (within buf);
+//         nearest level above price -> sell when the tick reaches UP to it (within buf).
 // ONE-SHOT: an ENTRY consumes the level (g_srDoneLvl*); the same touch cannot
 //   re-fire. It re-arms only when price LEAVES the level (raw touch goes false)
 //   and returns — this is the anti-machine-gun fix (price parked beyond the
 //   level stays consumed, no re-open after SL). Purely price-position, no memory.
-// flip (SrFlipMode): a CLOSED T1 candle beyond a level swaps its role — a level
-//   the close broke above acts as support, one broken below acts as resistance.
-//   OFF = levels keep their born role and just go dormant when price is beyond.
 bool LiveSrTrigger(const bool wantBuy)
 {
    if(!g_T1_UseSrBounce && !g_T1_UseSrBreak) return true; // module off = pass
 
    const ENUM_TIMEFRAMES levelsTf = (g_SrSource == TF_SOURCE_T2) ? g_t2 : g_t1;
-   double S = 0, R = 0;
-   if(!GetActiveSR(levelsTf, S, R)) return false;
-   if(S <= 0 || R <= 0 || S >= R) return false;
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double buf = MathMax(0.0, SrBufferPips) * g_pip;
+   double px  = 0.5 * (ask + bid); // side reference: which side of price a level is on
 
-   // flip: relabel a level whose role a CLOSED T1 candle has reversed.
-   double lc = 0; bool haveLc = SrLastClose(levelsTf, lc);
-   bool rAsSup = g_SrFlip && haveLc && lc > R;   // R closed above -> acts as support
-   bool sAsRes = g_SrFlip && haveLc && lc < S;   // S closed below -> acts as resistance
+   // nearest level each side of price, picked from all pivots in the lookback
+   double aboveLvl = 0, belowLvl = 0; bool haveAbove = false, haveBelow = false;
+   if(!GetNearestSrLevels(levelsTf, px, aboveLvl, haveAbove, belowLvl, haveBelow))
+      return false;
 
    bool   rawHit = false;
    double cand   = 0;
    if(wantBuy)
    {
-      // break UP through a resistance-role level -> buy
-      if(g_T1_UseSrBreak)
-      {
-         if(!rAsSup && ask >= R + buf)      { rawHit = true; cand = R; } // born resistance
-         else if(sAsRes && ask >= S + buf)  { rawHit = true; cand = S; } // S flipped to resistance
-      }
-      // reject up off a support-role level -> buy
-      if(!rawHit && g_T1_UseSrBounce)
-      {
-         if(rAsSup && bid <= R + buf)       { rawHit = true; cand = R; } // R flipped to support
-         else if(!sAsRes && bid <= S + buf) { rawHit = true; cand = S; } // born support
-      }
+      // break: nearest level ABOVE price, tick breaks up through it -> buy
+      if(g_T1_UseSrBreak && haveAbove && ask >= aboveLvl + buf)
+         { rawHit = true; cand = aboveLvl; }
+      // reject: nearest level BELOW price, tick reaches down to it -> buy
+      else if(g_T1_UseSrBounce && haveBelow && bid <= belowLvl + buf)
+         { rawHit = true; cand = belowLvl; }
       if(!rawHit)            { g_srDoneLvlBuy = 0; return false; } // price left level -> re-arm
       if(cand == g_srDoneLvlBuy) return false;                    // same touch already consumed
       g_srEvtLvlBuy = cand;
@@ -2102,18 +2087,12 @@ bool LiveSrTrigger(const bool wantBuy)
    }
    else
    {
-      // break DOWN through a support-role level -> sell
-      if(g_T1_UseSrBreak)
-      {
-         if(!sAsRes && bid <= S - buf)      { rawHit = true; cand = S; } // born support
-         else if(rAsSup && bid <= R - buf)  { rawHit = true; cand = R; } // R flipped to support
-      }
-      // reject down off a resistance-role level -> sell
-      if(!rawHit && g_T1_UseSrBounce)
-      {
-         if(!rAsSup && ask >= R - buf)      { rawHit = true; cand = R; } // born resistance
-         else if(sAsRes && ask >= S - buf)  { rawHit = true; cand = S; } // S flipped to resistance
-      }
+      // break: nearest level BELOW price, tick breaks down through it -> sell
+      if(g_T1_UseSrBreak && haveBelow && bid <= belowLvl - buf)
+         { rawHit = true; cand = belowLvl; }
+      // reject: nearest level ABOVE price, tick reaches up to it -> sell
+      else if(g_T1_UseSrBounce && haveAbove && ask >= aboveLvl - buf)
+         { rawHit = true; cand = aboveLvl; }
       if(!rawHit)             { g_srDoneLvlSell = 0; return false; }
       if(cand == g_srDoneLvlSell) return false;
       g_srEvtLvlSell = cand;
@@ -2718,47 +2697,31 @@ void ManagePendingEntries()
    if(aBuy || aSell)
    {
       const ENUM_TIMEFRAMES levelsTf = (g_SrSource == TF_SOURCE_T2) ? g_t2 : g_t1;
-      double S = 0, R = 0;
-      if(GetActiveSR(levelsTf, S, R) && S > 0 && R > 0 && S < R)
+      const double buf = MathMax(0.0, SrBufferPips) * g_pip;
+      const double px  = 0.5 * (SymbolInfoDouble(_Symbol, SYMBOL_ASK)
+                              + SymbolInfoDouble(_Symbol, SYMBOL_BID));
+      double aboveLvl = 0, belowLvl = 0; bool haveAbove = false, haveBelow = false;
+      if(GetNearestSrLevels(levelsTf, px, aboveLvl, haveAbove, belowLvl, haveBelow))
       {
          // No done-latch here on purpose: a stop/limit is only placeable when
          // price sits on the pre-touch side, which IS the re-arm rule.
-         // flip: a CLOSED candle beyond a level swaps its role (R<->S). The
-         // level pick below is identical to LiveSrTrigger, so a resting order
-         // and the live trigger can never disagree about flip.
-         double lc = 0; bool haveLc = SrLastClose(levelsTf, lc);
-         const bool rAsSup = g_SrFlip && haveLc && lc > R; // R closed above -> support
-         const bool sAsRes = g_SrFlip && haveLc && lc < S; // S closed below -> resistance
-         const double buf = MathMax(0.0, SrBufferPips) * g_pip;
-         if(aBuy)
+         // POSITIONAL + NEAREST (pool): the closest level on each side of price,
+         // picked from all pivots in the lookback, matching LiveSrTrigger exactly
+         // so a resting order and the live trigger can never disagree. At most one
+         // order per side (never a same-side double); break -> stop, reject -> limit.
+         //   nearest above price: break=buy stop  / reject=sell limit
+         //   nearest below price: break=sell stop / reject=buy limit
+         // nearest level ABOVE price -> one order (break=buy stop / reject=sell limit)
+         if(haveAbove && dn < PEND_MAX)
          {
-            // break UP through a resistance-role level -> buy stop
-            if(g_T1_UseSrBreak)
-            {
-               if(!rAsSup)      { dLvl[dn] = R + buf; dBuy[dn] = true; dStop[dn] = true; dn++; }
-               else if(sAsRes)  { dLvl[dn] = S + buf; dBuy[dn] = true; dStop[dn] = true; dn++; }
-            }
-            // reject up off a support-role level -> buy limit
-            if(g_T1_UseSrBounce && dn < PEND_MAX)
-            {
-               if(rAsSup)       { dLvl[dn] = R + buf; dBuy[dn] = true; dStop[dn] = false; dn++; }
-               else if(!sAsRes) { dLvl[dn] = S + buf; dBuy[dn] = true; dStop[dn] = false; dn++; }
-            }
+            if(g_T1_UseSrBreak && aBuy)        { dLvl[dn] = aboveLvl + buf; dBuy[dn] = true;  dStop[dn] = true;  dn++; }
+            else if(g_T1_UseSrBounce && aSell) { dLvl[dn] = aboveLvl - buf; dBuy[dn] = false; dStop[dn] = false; dn++; }
          }
-         if(aSell && dn < PEND_MAX)
+         // nearest level BELOW price -> one order (break=sell stop / reject=buy limit)
+         if(haveBelow && dn < PEND_MAX)
          {
-            // break DOWN through a support-role level -> sell stop
-            if(g_T1_UseSrBreak)
-            {
-               if(!sAsRes)      { dLvl[dn] = S - buf; dBuy[dn] = false; dStop[dn] = true; dn++; }
-               else if(rAsSup)  { dLvl[dn] = R - buf; dBuy[dn] = false; dStop[dn] = true; dn++; }
-            }
-            // reject down off a resistance-role level -> sell limit
-            if(g_T1_UseSrBounce && dn < PEND_MAX)
-            {
-               if(!rAsSup)      { dLvl[dn] = R - buf; dBuy[dn] = false; dStop[dn] = false; dn++; }
-               else if(sAsRes)  { dLvl[dn] = S - buf; dBuy[dn] = false; dStop[dn] = false; dn++; }
-            }
+            if(g_T1_UseSrBreak && aSell)       { dLvl[dn] = belowLvl - buf; dBuy[dn] = false; dStop[dn] = true;  dn++; }
+            else if(g_T1_UseSrBounce && aBuy)  { dLvl[dn] = belowLvl + buf; dBuy[dn] = true;  dStop[dn] = false; dn++; }
          }
       }
    }
