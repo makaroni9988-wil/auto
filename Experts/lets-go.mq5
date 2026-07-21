@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.57"
+#property version   "5.58"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -205,7 +205,7 @@ input int                T2_MaPeriod       = 200;              // T2 own single 
 input group "===== S/R Pivot Entry (T1 entry; levels own or T2) ====="
 input int    PivotLeftBars          = 10;    // Pivot left bars (levels TF; match sr-breaks)
 input int    PivotRightBars         = 10;    // Pivot right bars (levels TF; match sr-breaks)
-input int    LevelsLookback         = 200;   // Bars to scan for pivots on levels TF
+input int    LevelsLookback         = 100;   // Bars to scan for pivots on levels TF
 input double SrBufferPips           = 100;   // Break: beyond level by this. Reject: within this of level. 0 = exact line
 input ENUM_TF_SOURCE SrLevelsSource = TF_SOURCE_OWN; // S/R levels: own / T2
 
@@ -397,6 +397,7 @@ ulong  g_pendTicket[PEND_MAX];
 double g_pendLevel[PEND_MAX];
 bool   g_pendIsBuy[PEND_MAX];
 int    g_pendCount = 0;
+datetime g_srRecalcBar = 0; // levels-TF bar of the last relocate while orders rest
 
 bool   g_basketArmed = false;
 double g_basketPeak  = 0;
@@ -2661,6 +2662,15 @@ void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl)
 
 // Per tick: compute the orders that SHOULD rest right now, then reconcile
 // (delete stale, keep matching, place missing). Runs before TryEnter.
+// TWO STATES, no gray zone:
+//   - Nothing resting (flat) -> place instantly, every tick. The first order
+//     after going flat is never delayed.
+//   - An order already resting and untouched -> its level is only re-picked on
+//     a NEW closed candle of the levels TF. So an intra-candle spike crossing
+//     levels back and forth can't churn the broker with cancel/replace; the
+//     resting order stays put until the candle closes, then re-checks once.
+// Fills are always instant (broker-side, untouched by this). The safety pulls
+// below (S/R off, basket open, entry blocked) also stay tick-live.
 void ManagePendingEntries()
 {
    // Pending broker orders rest ONLY while the S/R module is ON — nothing
@@ -2683,6 +2693,14 @@ void ManagePendingEntries()
    if(!InSession() || !CanAttemptEntry())
    { if(g_pendCount > 0) DeleteOurPendings("entry blocked"); return; }
 
+   const ENUM_TIMEFRAMES levelsTf = (g_SrSource == TF_SOURCE_T2) ? g_t2 : g_t1;
+
+   // Relocation gate: freeze an already-resting, untouched order until the
+   // levels-TF candle closes. Nothing resting -> fall through and place now.
+   const datetime curBar = iTime(_Symbol, levelsTf, 0);
+   if(g_pendCount > 0 && curBar == g_srRecalcBar) return;
+   g_srRecalcBar = curBar;
+
    // ---- desired orders ----
    double dLvl[PEND_MAX]; bool dBuy[PEND_MAX], dStop[PEND_MAX];
    int dn = 0;
@@ -2696,7 +2714,6 @@ void ManagePendingEntries()
    }
    if(aBuy || aSell)
    {
-      const ENUM_TIMEFRAMES levelsTf = (g_SrSource == TF_SOURCE_T2) ? g_t2 : g_t1;
       const double buf = MathMax(0.0, SrBufferPips) * g_pip;
       const double px  = 0.5 * (SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                               + SymbolInfoDouble(_Symbol, SYMBOL_BID));
