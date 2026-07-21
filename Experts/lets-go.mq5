@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.60"
+#property version   "5.62"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -1990,7 +1990,29 @@ bool GetNearestSrLevels(const ENUM_TIMEFRAMES tf, const double px,
 {
    aboveLvl = 0; belowLvl = 0; haveAbove = false; haveBelow = false;
 
-   int need = MathMax(LevelsLookback, PivotLeftBars + PivotRightBars + 5);
+   // Fetch MORE than LevelsLookback on purpose — by PivotLeftBars+PivotRightBars
+   // extra. Why: a pivot at the OLDEST edge of the scan still needs
+   // PivotLeftBars bars further back than it, and PivotRightBars bars in front
+   // of it, just to be CONFIRMED as a pivot at all (see IsPivotHighAt_Rates /
+   // IsPivotLowAt_Rates below). If we only fetched exactly LevelsLookback bars,
+   // `total` below would equal LevelsLookback, so `total - LevelsLookback`
+   // (the startBar floor two lines down) collapses to 0 every time, and the
+   // MathMax falls back to PivotLeftBars instead — silently chopping the
+   // oldest ~(PivotLeftBars+PivotRightBars) bars off the requested depth
+   // before a single pivot test ever runs on them. Net effect: typing
+   // LevelsLookback=100 only ever actually scanned ~80 bars (with 10/10
+   // pivot bars), NOT 100 — while the sr-breaks indicator's MaxBarsBack=100
+   // scans close to the full 100, because it always has the FULL chart
+   // history loaded and only trims the far edge, so its pivot margin costs
+   // it nothing. That mismatch is exactly why the EA could pick a level
+   // farther away than one still visibly inside the indicator's same
+   // "100 bars" picture — the EA's true reach was quietly smaller.
+   // Fetching the margin up front keeps `total` bigger than LevelsLookback,
+   // so the subtraction below never degenerates, and LevelsLookback always
+   // means what it says — 100 typed in = 100 real bars of pivot-scanning
+   // depth, matching the indicator, no matter what PivotLeftBars/
+   // PivotRightBars are set to (10, 15, 5, whatever).
+   int need = LevelsLookback + PivotLeftBars + PivotRightBars;
    MqlRates rates[];
    int got = CopyRates(_Symbol, tf, 0, need, rates);
    if(got < PivotLeftBars + PivotRightBars + 3)
@@ -2793,7 +2815,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(!HistoryDealSelect(trans.deal)) return;
    if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
    if((long)HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != MagicNumber) return;
-   if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_IN) return;
+
+   ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(dealEntry == DEAL_ENTRY_OUT || dealEntry == DEAL_ENTRY_OUT_BY)
+   { NotifyBrokerClose(trans.deal); return; }
+
+   if(dealEntry != DEAL_ENTRY_IN) return;
    int idx = PendFindByOrder((ulong)HistoryDealGetInteger(trans.deal, DEAL_ORDER));
    if(idx < 0) return; // market entry — OpenLayer already did this
    const bool   isBuy  = g_pendIsBuy[idx];
@@ -2810,6 +2837,30 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(InpNotifyOnOpen) NotifyPush(pendFillMsg);
    DeleteOurPendings("sibling after fill");
    SyncBasketLines();
+}
+
+// Broker-side SL/TP/stop-out fill: CloseAllEA() never runs for these (that
+// path only closes via trade.PositionClose, tagged DEAL_REASON_EXPERT, and
+// pushes there already), so without this they close silently — no Journal
+// CLOSE line, no push, even though History shows them same as any other.
+void NotifyBrokerClose(const ulong dealTicket)
+{
+   ENUM_DEAL_REASON reason = (ENUM_DEAL_REASON)HistoryDealGetInteger(dealTicket, DEAL_REASON);
+   string tag;
+   switch(reason)
+   {
+      case DEAL_REASON_SL: tag = "broker SL"; break;
+      case DEAL_REASON_TP: tag = "broker TP"; break;
+      case DEAL_REASON_SO: tag = "stop out";  break;
+      default: return; // EXPERT/CLIENT/other — already handled elsewhere or not ours
+   }
+
+   double dealPL = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                 + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                 + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+   string msg = "POSITION CLOSED (" + tag + ") | Net P/L: " + DoubleToString(dealPL, 2);
+   LogInfo(msg);
+   NotifyPush(msg);
 }
 
 void TryEnter()
