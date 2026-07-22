@@ -33,7 +33,12 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.63"
+#property version   "5.64"
+// v5.64: Fib golden-zone T1 entry — sticky retracement AREA off the latest
+//        plain-ZigZag leg (shares the swing-SL zigzag params, no ATR, no
+//        iCustom; leg rebuilt once per bar to match the fibo.mq5 indicator).
+//        New 'fibo' chip on the S/R row; ANDs into the T1 gate, drives on its
+//        own when no other T1 module is on. Swing SL untouched.
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -208,6 +213,16 @@ input int    LevelsLookback         = 100;   // Bars to scan for pivots on level
 input double SrBufferPips           = 100;   // Break: beyond level by this. Reject: within this of level. 0 = exact line
 input ENUM_TF_SOURCE SrLevelsSource = TF_SOURCE_OWN; // S/R levels: own / T2
 
+input group "===== Fib Golden Zone (T1 entry; shares the SwSL ZigZag) ====="
+// Sticky retracement AREA off the latest ZigZag leg (older -> newer swing).
+// Leg is the plain ZigZag (SwingZZ* params below, same engine as the swing
+// SL and the fibo.mq5 / fibo-in.mq5 indicators); rebuilt once per bar, so the
+// zone is a fixed area that only moves on a new bar. Entry = live price inside
+// the zone, ANDed into the T1 gate like the other modules.
+input bool   UseFibZone   = false;  // Fib golden-zone entry ON/OFF
+input double ZoneLevelMin  = 0.382;  // Shallow edge of zone (fib ratio)
+input double ZoneLevelMax  = 0.618;  // Deep edge of zone (fib ratio)
+
 input group "===== Stop / Exit ====="
 // Broker SL = hard pip cap. Virtual MA / swing SL are optional; first hit closes.
 // MaSL uses T1 MA lines. m1: Fast/Slow both = single. m2: Fast vs Slow.
@@ -293,6 +308,7 @@ bool g_T1_UseStochCross, g_T1_UseStochClassic, g_T1_UseSrBounce, g_T1_UseSrBreak
 // master. S/R has a master (g_SrOn) plus one break-or-reject selection.
 bool g_StCrossSel = false, g_StClassicSel = false;
 bool g_SrOn = false, g_SrBreakSel = true; // g_SrBreakSel: true=break, false=reject
+bool g_T1_UseFibZone = false;             // Fib golden-zone entry (own ON/OFF chip)
 bool g_T1_UseMacdBias, g_T1_UseRsiBias;
 bool g_T2_UseStoch, g_T2_StochObOs;
 bool g_T2_UseMacdBias, g_T2_UseRsiBias;
@@ -407,6 +423,15 @@ double g_basketTP = 0;
 // Swing virtual SL ratchet (tighten-only while basket is open)
 bool   g_haveSwingSL = false;
 double g_swingSL     = 0;
+
+// Fib golden-zone leg cache: the ZigZag leg is rebuilt once per bar (matches
+// the fibo.mq5 indicator + your zigzag.mq5), so the zone is a fixed area that
+// only moves on a new bar; live price-in-zone is checked every tick.
+bool     g_fibHaveLeg   = false;
+bool     g_fibBullish   = false;
+double   g_fibOlder     = 0;
+double   g_fibNewer     = 0;
+datetime g_fibLegBar    = 0;   // T1 bar time the cached leg was built on
 
 datetime g_lastEntryFailTime = 0;
 datetime g_lastCloseFailTime = 0;
@@ -543,11 +568,12 @@ int PanelLoadInt(const string id, const int fallback)
 // Compact fingerprint of every panel-backed INPUT default.
 string PanelInputFingerprint()
 {
-   return "v559|" + IntegerToString((int)ConfluenceMode) + "|"
+   return "v564|" + IntegerToString((int)ConfluenceMode) + "|"
         + IntegerToString((int)TradeBuy) + IntegerToString((int)TradeSell) + "|"
         + IntegerToString((int)UseGrid) + "|" + IntegerToString(MaxLayers) + "|"
         + IntegerToString((int)T1_UseStochCross) + IntegerToString((int)T1_UseStochClassic)
         + IntegerToString((int)T1_UseSrBounce) + IntegerToString((int)T1_UseSrBreak)
+        + IntegerToString((int)UseFibZone)
         + IntegerToString((int)T1_UseMacdBias)
         + IntegerToString((int)T1_UseRsiBias) + IntegerToString((int)T1_UseMA) + "|"
         + IntegerToString((int)StochCrossMode) + IntegerToString((int)StochClassicMode)
@@ -596,6 +622,7 @@ void RuntimeApplyInputDefaults()
    g_SrOn         = (T1_UseSrBreak || T1_UseSrBounce);
    g_SrBreakSel   = (T1_UseSrBreak || !T1_UseSrBounce); // break wins ties; default break
    ApplyFamilyMasters();
+   g_T1_UseFibZone = UseFibZone;
    g_T1_UseMacdBias = T1_UseMacdBias;
    g_T1_UseRsiBias = T1_UseRsiBias;
    g_T1_MaOn  = T1_UseMA;
@@ -646,6 +673,7 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("T1_stC", g_StClassicSel);
    PanelSaveBool("T1_srOn", g_SrOn);
    PanelSaveBool("T1_srR", g_SrBreakSel);
+   PanelSaveBool("T1_fib", g_T1_UseFibZone);
    PanelSaveBool("T1_macd", g_T1_UseMacdBias);
    PanelSaveBool("T1_rsi", g_T1_UseRsiBias);
    PanelSaveBool("T1_maOn", g_T1_MaOn);
@@ -695,6 +723,7 @@ void RuntimeLoadFromGV()
    g_StClassicSel = PanelLoadBool("T1_stC", g_StClassicSel);
    g_SrOn         = PanelLoadBool("T1_srOn", g_SrOn);
    g_SrBreakSel   = PanelLoadBool("T1_srR", g_SrBreakSel);
+   g_T1_UseFibZone = PanelLoadBool("T1_fib", g_T1_UseFibZone);
    ApplyFamilyMasters();
    g_T1_UseMacdBias = PanelLoadBool("T1_macd", g_T1_UseMacdBias);
    g_T1_UseRsiBias = PanelLoadBool("T1_rsi", g_T1_UseRsiBias);
@@ -1206,6 +1235,7 @@ void PanelPaintState()
       PanelStyleDisabled(PanelObj("T1_maChk"), MaCheckText(g_T1_MACheckMode), "MA family OFF");
    }
 
+   PanelStyleChip(PanelObj("T1_fib"), "fibo", "T1 entry: Fib golden zone — sticky area off the latest ZigZag leg (shares the swing-SL zigzag)", g_T1_UseFibZone, false);
    PanelStyleChip(PanelObj("T1_sr"), "S/R", "T1 S/R family ON/OFF: one-shot trigger at the pivot level (break or reject), re-arms when price leaves", g_SrOn, false);
    if(g_SrOn)
    {
@@ -1372,8 +1402,8 @@ void PanelBuild()
    string t1ma[] = { "T1_maOn", "T1_ma", "T1_maDir", "T1_maChk" };
    PanelPlaceEvenRow(t1ma, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
-   string t1sr[] = { "T1_sr", "T1_srLv", "T1_srBR" };
-   PanelPlaceEvenRow(t1sr, 3, x0, y, rowW, gap, chipH);
+   string t1sr[] = { "T1_fib", "T1_sr", "T1_srLv", "T1_srBR" };
+   PanelPlaceEvenRow(t1sr, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("L2", x0, y, rowW, chipH); y += chipH + gap;
@@ -1401,7 +1431,7 @@ void PanelBuild()
       "T1_rsi","T1_rsiTm","T1_macd","T1_macdTm",
       "T1_stX","T1_stXm","T1_stC","T1_stCm",
       "T1_maOn","T1_ma","T1_maDir","T1_maChk",
-      "T1_sr","T1_srLv","T1_srBR","L2",
+      "T1_fib","T1_sr","T1_srLv","T1_srBR","L2",
       "T2_rsi","T2_rsiTm","T2_macd","T2_macdTm",
       "T2_stoch","T2_stTm","T2_stMd","T2_stDir",
       "T2_maOn","T2_maSrc","T2_maDir","T2_maChk","LG",
@@ -1514,6 +1544,7 @@ bool PanelHandleClick(const string sparam)
       PanelSaveBool("T1_srR", g_SrBreakSel);
       ApplyFamilyMasters();
    }
+   else if(id == "T1_fib") PanelToggleBool(g_T1_UseFibZone, "T1_fib");
    else if(id == "T1_rsi") PanelToggleBool(g_T1_UseRsiBias, "T1_rsi");
    else if(id == "T1_rsiTm")
    {
@@ -1690,6 +1721,12 @@ int OnInit()
    {
       LogInfo("INIT FAILED - PivotLeftBars/PivotRightBars must be >= 1");
       NotifyPush("INIT FAILED - PivotLeftBars/PivotRightBars must be >= 1");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(ZoneLevelMin >= ZoneLevelMax)
+   {
+      LogInfo("INIT FAILED - ZoneLevelMin must be < ZoneLevelMax");
+      NotifyPush("INIT FAILED - ZoneLevelMin must be < ZoneLevelMax");
       return(INIT_PARAMETERS_INCORRECT);
    }
    if(!g_TradeBuy && !g_TradeSell && !g_quietInit)
@@ -2446,6 +2483,7 @@ string EnabledModulesContext()
    if(g_T1_UseStochClassic)  AddModuleTag(t1, "stC");
    if(g_T1_UseSrBreak)       AddModuleTag(t1, "srBrk");
    if(g_T1_UseSrBounce)      AddModuleTag(t1, "srRev");
+   if(g_T1_UseFibZone)       AddModuleTag(t1, "fib");
 
    string out = " | T1=" + (StringLen(t1) > 0 ? t1 : "none");
    if(g_ConfluenceMode == CONF_T1_AND_T2)
@@ -2510,14 +2548,26 @@ void UpdateSignal()
               b1, s1))
       return; // data not ready
 
-   // S/R alone is a FULL entry module. With no other T1 module on, the eval
-   // above is empty (both false) — S/R must still trade: treat the empty
-   // eval as both-sides-pass and let the level tick pick the direction.
+   // S/R and Fib are each a FULL entry module. With no stoch/macd/rsi/ma on,
+   // the eval above is empty (both false) — S/R (side-neutral) or Fib
+   // (directional zone) must still trade: treat the empty eval as both-pass
+   // so the level tick / the zone can drive.
    const bool srOn = (g_T1_UseSrBounce || g_T1_UseSrBreak);
+   const bool fibOn = g_T1_UseFibZone;
    const bool t1Empty = !g_T1_UseStochCross && !g_T1_UseStochClassic &&
                         !g_T1_UseMacdBias &&
                         !g_T1_UseRsiBias && !MaEnabled(g_T1_MA);
-   if(srOn && t1Empty) { b1 = true; s1 = true; }
+   if((srOn || fibOn) && t1Empty) { b1 = true; s1 = true; }
+
+   // Fib golden zone: directional AREA — ANDs like the other T1 filters, and
+   // (seeded above) can drive entries on its own when no other module is on.
+   if(fibOn)
+   {
+      bool fBuy = false, fSell = false;
+      EvalFibZone(fBuy, fSell);
+      b1 = b1 && fBuy;
+      s1 = s1 && fSell;
+   }
 
    bool b2 = true, s2 = true; // T1-only mode, or empty T2 bias = pass-through
    if(!EvalT2Bias(b2, s2))
@@ -3392,13 +3442,16 @@ int RangeHighest(const double &arr[], int from, int to)
 
 // Plain ZigZag — a faithful port of the standard MetaQuotes ZigZag indicator
 // (Depth / Deviation / Backstep, NO ATR). Returns the most recent swing high
-// and swing low prices over the lookback window. Drop a ZigZag indicator with
-// the same three params on the chart and the pivots line up exactly.
-bool ScanZigZag(const ENUM_TIMEFRAMES tf, const int inpDepth, const int inpDeviation,
-                const int inpBackstep, const int lookback,
-                double &lastHigh, double &lastLow)
+// and swing low prices over the lookback window, plus their bar positions
+// (0 = oldest .. total-1 = forming) so a caller can tell which swing is newer.
+// Drop a ZigZag indicator with the same three params on the chart and the
+// pivots line up exactly.
+bool ScanZigZagCore(const ENUM_TIMEFRAMES tf, const int inpDepth, const int inpDeviation,
+                    const int inpBackstep, const int lookback,
+                    double &lastHigh, double &lastLow,
+                    int &outHighPos, int &outLowPos)
 {
-   lastHigh = 0; lastLow = 0;
+   lastHigh = 0; lastLow = 0; outHighPos = -1; outLowPos = -1;
    const int    depth    = MathMax(1, inpDepth);
    const int    backstep = MathMax(0, inpBackstep);
    const double devPts   = MathMax(0, inpDeviation) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -3487,6 +3540,87 @@ bool ScanZigZag(const ENUM_TIMEFRAMES tf, const int inpDepth, const int inpDevia
 
    lastHigh = (lastHighPos >= 0) ? curHigh : 0.0;
    lastLow  = (lastLowPos  >= 0) ? curLow  : 0.0;
+   outHighPos = lastHighPos;
+   outLowPos  = lastLowPos;
+   return true;
+}
+
+// SwSL-facing wrapper: unchanged signature (latest swing high/low only),
+// positions discarded. Keeps the swing SL path exactly as it was.
+bool ScanZigZag(const ENUM_TIMEFRAMES tf, const int inpDepth, const int inpDeviation,
+                const int inpBackstep, const int lookback,
+                double &lastHigh, double &lastLow)
+{
+   int hp, lp;
+   return ScanZigZagCore(tf, inpDepth, inpDeviation, inpBackstep, lookback,
+                         lastHigh, lastLow, hp, lp);
+}
+
+// Fib golden-zone leg: the latest ZigZag leg (older -> newer swing) + its
+// direction, from the SAME plain ZigZag the swing SL uses (SwingZZ* params).
+// The two most recent alternating pivots ARE the current leg; newer = the one
+// with the larger bar position. bullish = up leg (low -> high).
+bool GetFibLeg(bool &haveLeg, bool &bullish, double &olderP, double &newerP)
+{
+   haveLeg = false; bullish = false; olderP = 0; newerP = 0;
+
+   double zzHigh = 0, zzLow = 0; int hp = -1, lp = -1;
+   if(!ScanZigZagCore(g_t1, SwingZZDepth, SwingZZDeviation, SwingZZBackstep,
+                      SwingZZLookback, zzHigh, zzLow, hp, lp))
+      return false;
+   if(hp < 0 || lp < 0 || zzHigh <= 0 || zzLow <= 0) return false; // need both swings
+
+   if(hp > lp) { newerP = zzHigh; olderP = zzLow;  bullish = true;  } // low -> high
+   else        { newerP = zzLow;  olderP = zzHigh; bullish = false; } // high -> low
+   haveLeg = true;
+   return true;
+}
+
+// Fib golden zone: a sticky retracement AREA off the current leg. The leg is
+// rebuilt once per T1 bar (cached in g_fib*), so the zone only moves on a new
+// bar — matching the fibo.mq5 indicator. Entry is live: buyOK/sellOK are true
+// while live price sits inside the zone on the leg's side; both false (block)
+// when there is no leg or price is outside the zone. Caller gates on fibOn.
+bool EvalFibZone(bool &buyOK, bool &sellOK)
+{
+   buyOK = false; sellOK = false;
+
+   // rebuild the leg once per T1 bar (g_lastBarTime is refreshed each tick)
+   if(g_fibLegBar != g_lastBarTime)
+   {
+      g_fibLegBar = g_lastBarTime;
+      bool hv = false, bl = false; double op = 0, np = 0;
+      if(GetFibLeg(hv, bl, op, np))
+      { g_fibHaveLeg = hv; g_fibBullish = bl; g_fibOlder = op; g_fibNewer = np; }
+      else
+         g_fibHaveLeg = false;
+   }
+   if(!g_fibHaveLeg) return true; // no leg yet -> nothing in zone, block (both false)
+
+   double height = MathAbs(g_fibNewer - g_fibOlder);
+   if(height <= 0) return true;
+
+   // zone measured back from the newer swing toward the older (0 at newer,
+   // 1 at older) -- standard golden-zone retracement.
+   double zLow, zHigh;
+   if(g_fibBullish)
+   {
+      zLow  = g_fibNewer - height * ZoneLevelMax;
+      zHigh = g_fibNewer - height * ZoneLevelMin;
+   }
+   else
+   {
+      zLow  = g_fibNewer + height * ZoneLevelMin;
+      zHigh = g_fibNewer + height * ZoneLevelMax;
+   }
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double px  = g_fibBullish ? ask : bid;
+   if(px < zLow || px > zHigh) return true; // price not in the zone -> block
+
+   if(g_fibBullish) buyOK = true;
+   else             sellOK = true;
    return true;
 }
 
