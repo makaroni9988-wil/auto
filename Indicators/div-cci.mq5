@@ -53,7 +53,7 @@ input ENUM_LINE_STYLE LineStyle = STYLE_SOLID;
 
 input group  "--- CUSTOM LEVEL SETTINGS ---"
 
-input color  LevelColor          = clrSilver;  // Color for all level lines
+input color  LevelColor          = clrGray;    // Color for all level lines
 input ENUM_LINE_STYLE LevelStyle = STYLE_DOT;  // Level line style (proper dropdown)
 // One Single Input For All Levels (Up to 6 or more!)
 // NOTE: CCI is unbounded, so negative levels are allowed here.

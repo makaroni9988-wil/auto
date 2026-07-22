@@ -118,7 +118,7 @@ input int    PivotRightBars           = 2;
 input int    MaxBullDivergenceLines   = 2;
 input int    MaxBearDivergenceLines   = 2;
 
-input bool   DrawMACDDivergence       = true;
+input bool   DrawMACDDivergence       = false;
 input bool   DrawPriceDivergence      = false;
 
 input color  BullDivColor             = clrLime;

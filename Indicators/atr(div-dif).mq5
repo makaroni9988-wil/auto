@@ -59,8 +59,9 @@ input group "--- DISPLAY MODE ---"
 //   Same math as the Div-MACD ATR guard: this line crossing under its
 //   threshold = the MACD histogram turning gray, at the same moment.
 // Raw: classic ATR in price units, auto-scaling window (like built-in ATR).
-input ATR_DISPLAY_MODE ATRDisplayMode  = ATR_NORMALIZED;
-input int    ATRAveragePeriod          = 100;  // Bars for the ATR average (Normalized mode)
+input ATR_DISPLAY_MODE ATRDisplayMode   = ATR_NORMALIZED;
+input bool             ShowPlotValue    = false;          // Show the live number in crosshair/Data Window (off = label only)
+input int              ATRAveragePeriod = 100;            // Bars for the ATR average (Normalized mode)
 
 input color LineColor      = clrWhite;
 input int   LineThickness  = 1;
@@ -206,8 +207,9 @@ PlotIndexSetInteger(0, PLOT_DRAW_TYPE, DRAW_LINE);
    // Don't draw over the ATR's own warm-up region.
    PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, ATRPeriodValue);
 
-   // Hide Moving Decimal Numbers in Top-Left Label
-   PlotIndexSetInteger(0, PLOT_SHOW_DATA, false);
+   // Off by default: crosshair/Data Window shows only the label, no number.
+   // Turn ShowPlotValue on to read the live number for comparison/testing.
+   PlotIndexSetInteger(0, PLOT_SHOW_DATA, ShowPlotValue);
 
    if(ATRDisplayMode == ATR_NORMALIZED)
    {

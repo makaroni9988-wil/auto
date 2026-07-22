@@ -219,8 +219,8 @@ input group "===== Fib Golden Zone (T1 entry; shares the SwSL ZigZag) ====="
 // SL and the fibo.mq5 / fibo-in.mq5 indicators); rebuilt once per bar, so the
 // zone is a fixed area that only moves on a new bar. Entry = live price inside
 // the zone, ANDed into the T1 gate like the other modules.
-input bool   UseFibZone   = false;  // Fib golden-zone entry ON/OFF
-input double ZoneLevelMin  = 0.382;  // Shallow edge of zone (fib ratio)
+input bool   UseFibZone    = false;  // Fib golden-zone entry ON/OFF
+input double ZoneLevelMin  = 0.5;    // Shallow edge of zone (fib ratio)
 input double ZoneLevelMax  = 0.618;  // Deep edge of zone (fib ratio)
 
 input group "===== Stop / Exit ====="

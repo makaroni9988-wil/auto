@@ -59,12 +59,10 @@ input bool   Show_neg_0_382  = false; input double Val_neg_0_382  = -0.382; inpu
 input bool   Show_neg_0_236  = false; input double Val_neg_0_236  = -0.236; input color Col_neg_0_236  = clrRed;
 input bool   Show_0          = false; input double Val_0          = 0.0;    input color Col_0          = clrGray;
 input bool   Show_0_236      = false; input double Val_0_236      = 0.236;  input color Col_0_236      = clrRed;
-
-// Trend Zone (original LightGreen)
-input bool   Show_0_382      = true;  input double Val_0_382      = 0.382;  input color Col_0_382      = clrRed;
+input bool   Show_0_382      = false; input double Val_0_382      = 0.382;  input color Col_0_382      = clrLightGreen;
 
 // Golden Zone (original Green, Teal)
-input bool   Show_0_5        = false; input double Val_0_5        = 0.5;    input color Col_0_5        = clrRed;
+input bool   Show_0_5        = true;  input double Val_0_5        = 0.5;    input color Col_0_5        = clrRed;
 input bool   Show_0_618      = true;  input double Val_0_618      = 0.618;  input color Col_0_618      = clrRed;
 
 input bool   Show_0_65       = false; input double Val_0_65       = 0.65;   input color Col_0_65       = clrTeal;

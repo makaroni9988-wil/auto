@@ -103,7 +103,7 @@ input int    ATRPeriod      = 10;     // ATR period
 input int    LookbackBars   = 100;    // Bars scanned for the current leg
 
 input group "===== Golden Zone Entry ====="
-input double ZoneLevelMin   = 0.382;  // Shallow edge of zone
+input double ZoneLevelMin   = 0.5;    // Shallow edge of zone
 input double ZoneLevelMax   = 0.618;  // Deep edge of zone
 
 input group "===== Orders / Risk (BASKET lines: shared SL/TP, tighter-only) ====="

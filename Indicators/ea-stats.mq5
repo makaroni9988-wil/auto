@@ -26,7 +26,7 @@
 // are simple rolling windows (last 7 / 30 days from now), not calendar
 // week/month, so there's no "which day does the week start on" ambiguity.
 
-input string InpMagicNumbers = "778899,111,222,555"; // Comma list of magics to track (empty = auto-detect all)
+input string InpMagicNumbers = ""; // Comma list of magics to track (empty = auto-detect all)
 input string InpStatsFile    = "ea-stats.csv"; // Period summary output (MQL5/Files)
 input string InpDealsFile    = "ea-deals.csv"; // Raw per-deal ledger output (MQL5/Files)
 input int    InpRefreshMs    = 3000;    // Timer refresh interval (ms)

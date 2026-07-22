@@ -56,7 +56,7 @@ input group  "--- CUSTOM LEVEL SETTINGS ---"
 input color  LevelColor          = clrGray;    // Color for all level lines
 input ENUM_LINE_STYLE LevelStyle = STYLE_DOT;  // Level line style (proper dropdown)
 // One Single Input For All Levels (Up to 6 or more!)
-input string CustomLevels        = "50;30;70"; // Separate levels with a semicolon (e.g. 30;50;70)
+input string CustomLevels        = "50";       // Separate levels with a semicolon (e.g. 30;50;70)
 
 input group "--- DIVERGENCE SETTINGS ---"
 
