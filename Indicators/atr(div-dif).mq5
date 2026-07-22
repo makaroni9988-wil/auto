@@ -434,12 +434,21 @@ if(checkLevels)
 
    ResetLastError();
 
+   // CopyBuffer always fills the destination starting at ARRAY index 0 (the
+   // newest `toCopy` source bars land at destination[0..toCopy-1]) -- it has
+   // no notion of "place these at the tail of a bigger array". Copy into a
+   // small temp buffer first, then place it manually at the correct
+   // chronological offset in ATRRawBuffer. Copying straight into
+   // ATRRawBuffer here would clobber the OLDEST slots with the newest data
+   // on every incremental pass, leaving the tail ComputeDisplay() actually
+   // reads permanently stale after the first full copy.
+   double tail[];
    int copiedATR =
       CopyBuffer(atrHandle,
                  0,
                  0,
                  toCopy,
-                 ATRRawBuffer);
+                 tail);
 
    bool copyHasError = (copiedATR < 0);
    bool copyNotReady = (!copyHasError && copiedATR == 0);
@@ -469,12 +478,13 @@ if(checkLevels)
    if(toCopy >= rates_total)
       g_fullCopyDone = true;
 
-   // --- Displayed line: only the freshly (re)copied tail needs work ---
-   int computeFrom;
-   if(copiedATR >= rates_total)
-      computeFrom = 0;                          // full pass
-   else
-      computeFrom = rates_total - copiedATR;    // tail only
+   // Place the copied bars at their real chronological offset (CopyBuffer
+   // anchors start_pos=0 to the CURRENT bar, so the newest `copiedATR` bars
+   // always belong at the array's tail, whether this was a full or partial
+   // copy).
+   int computeFrom = rates_total - copiedATR;
+   for(int k = 0; k < copiedATR; k++)
+      ATRRawBuffer[computeFrom + k] = tail[k];
 
    ComputeDisplay(computeFrom, rates_total);
 
