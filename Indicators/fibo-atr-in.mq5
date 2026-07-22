@@ -12,7 +12,7 @@
 //| (DRAW_LINE levels + leg, DRAW_FILLING zones) so it shows inside  |
 //| an OBJ_CHART float/sub panel, where chart objects never display. |
 //| The chart-object path has been removed entirely -- use the plain |
-//| fibo.mq5 on a normal chart. Panel budget: 8 levels + 4 zones.    |
+//| fibo-atr.mq5 on a normal chart. Panel budget: 8 levels + 4 zones. |
 //| Not available here (buffer limits): text labels, Extend Left/    |
 //| Right past the data, tooltips. Cross alerts still work.          |
 //|                                                                  |
@@ -35,7 +35,7 @@
 
 // PANEL-ONLY BUILD. This file renders ONLY with indicator buffers, so it
 // shows correctly INSIDE a float/sub OBJ_CHART panel. It has no chart-object
-// path -- use the plain fibo.mq5 on a normal chart. Plot TYPES are never
+// path -- use the plain fibo-atr.mq5 on a normal chart. Plot TYPES are never
 // changed at runtime: the plot->buffer mapping depends on each type's buffer
 // count, so switching a 2-buffer DRAW_FILLING to DRAW_NONE would shift every
 // later plot onto the wrong buffers. Layout (fixed at compile time):
@@ -139,7 +139,7 @@ datetime g_lastScanBarTime = 0;    // engine rescans from scratch once per new b
 datetime g_lastAlertBarTime = 0;   // 64-bit, 2038-safe (suite standard)
 
 // Kept only as a code marker so this panel-only build is easy to tell apart
-// from the object build (fibo.mq5) at a glance, and to clean any stray
+// from the object build (fibo-atr.mq5) at a glance, and to clean any stray
 // objects a previous version may have left. This build creates no objects.
 string g_prefix;
 
