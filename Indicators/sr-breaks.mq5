@@ -1,3 +1,6 @@
+// version: 3.02
+//   - Default LeftBars/RightBars changed 15/15 -> 10/10 (tighter pivot
+//     lookback, more responsive S/R levels).
 // version: 3.01
 //   - Timeframe input switched from a custom enum to the NATIVE
 //     ENUM_TIMEFRAMES dropdown -- same picker as the chart panels, and
@@ -60,8 +63,8 @@
 // on that timeframe and project onto whatever period you're viewing.
 input ENUM_TIMEFRAMES Timeframe       = PERIOD_CURRENT; // Timeframe (lock)
 
-input int             LeftBars        = 15;             // Left Bars
-input int             RightBars       = 15;             // Right Bars
+input int             LeftBars        = 10;             // Left Bars
+input int             RightBars       = 10;             // Right Bars
 input double          VolumeThreshold = 20.0;           // Volume Threshold (%)
 input int             MaxBarsBack     = 200;            // Max bars to scan (0 = all available history)
 
