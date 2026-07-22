@@ -68,7 +68,7 @@ input ENUM_APPLIED_PRICE MACDPrice  = PRICE_CLOSE;  // Applied price
 // Histogram colors: positive side / negative side / market-asleep.
 // UseHistogramColors=false ignores all three and paints the whole
 // histogram in HistFlatColor -- the "normal" built-in-MACD look.
-input bool  UseHistogramColors      = false;        // false = flat single color (built-in look)
+input bool  UseHistogramColors      = true;         // false = flat single color (built-in look)
 input color HistFlatColor           = clrSilver;    // Histogram color when colors are OFF
 
 input color HistUpColor             = clrLime;      // Histogram above zero (awake)
@@ -104,7 +104,7 @@ input group "--- DIVERGENCE SETTINGS ---"
 
 // ON by default. Note: MACD histogram divergence on very low timeframes
 // is noisier than RSI/Stoch divergence -- flip off anytime if it's too busy.
-input bool   EnableDivergence         = true;
+input bool   EnableDivergence         = false;
 
 // Divergence calculated from the MACD histogram only
 // Zero-side filter (replaces the OB/OS filter of the bounded oscillators):

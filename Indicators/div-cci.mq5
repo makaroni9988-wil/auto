@@ -61,7 +61,7 @@ input string CustomLevels        = "-100;100"; // Separate levels with a semicol
 
 input group "--- DIVERGENCE SETTINGS ---"
 
-input bool   EnableDivergence         = true;
+input bool   EnableDivergence         = false;
 
 // Divergence calculated from the CCI line only
 input bool   RequireOBOSForDivergence = true;

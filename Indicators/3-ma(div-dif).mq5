@@ -49,7 +49,7 @@ input int    MATransp_L3     = 0;  // Transparency % (0=solid, 100=invisible)
 input group "--- LEVEL 4 ---"
 input bool   ShowMA_L4       = true;
 input int    MAPeriod_L4     = 200;
-input color  MAColor_L4      = clrWhite;
+input color  MAColor_L4      = clrSilver;
 input int    MAThickness_L4  = 1;
 input ENUM_LINE_STYLE MAStyle_L4 = STYLE_DOT;
 input int    MATransp_L4     = 0;  // Transparency % (0=solid, 100=invisible)
