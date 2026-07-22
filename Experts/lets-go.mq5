@@ -33,7 +33,7 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.62"
+#property version   "5.63"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -231,7 +231,6 @@ input int ModifyRetryDelayMs            = 500;  // Modify retry delay ms (betwee
 input int MaxConsecutiveRetryCooldownMs = 2000; // Max consecutive retry cooldown ms (between failed bursts)
 
 input group "===== Session Filter (WIB / Jakarta time) ====="
-input int  SessionTZOffset     = 7;    // UTC offset for inputs below (7 = WIB Jakarta)
 input bool UseSession          = true; // Enable daily trading-hours window
 input int  SessionStartHour    = 6;    // Daily window FROM this hour WIB (0-23)
 input int  SessionEndHour      = 3;    // NO new entries from this hour WIB (crosses midnight: 6→3)
@@ -1852,10 +1851,11 @@ void OnTick()
    TryEnter();
 }
 
-//====================== SESSION (WIB inputs, broker clock) ======================
+//====================== SESSION (WIB inputs; true Jakarta via GMT) ======================
 void GetWIBTime(MqlDateTime &dt)
 {
-   TimeToStruct(TimeCurrent() + SessionTZOffset * 3600, dt);
+   // WIB = UTC+7 fixed (no DST). Independent of broker server offset.
+   TimeToStruct(TimeGMT() + 7 * 3600, dt);
 }
 
 bool InWeekendBlock()

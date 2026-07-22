@@ -18,9 +18,8 @@
 //|    - Grid: adds a layer only when price pushes LayerStepPips      |
 //|      deeper into the zone against the position, up to MaxLayers.  |
 //|    - Timeframe LOCK: engine + trades run on InpTimeframe.         |
-//|    - Session filter: daily window + weekend block entered in WIB. |
-//|      SessionTZOffset must equal WIB(+7) minus the broker's UTC    |
-//|      offset — 7 on a UTC+0 broker (verified for this account).    |
+//|    - Session filter: daily window + weekend block entered in WIB  |
+//|      (true Jakarta via TimeGMT+7; independent of broker offset).  |
 //|    - Optional BOS gate: the leg endpoint must break the PREVIOUS  |
 //|      same-side swing, then pullback to fib zone + MA must align.  |
 //|    - MA filter: LIVE check at the entry moment — buys only above  |
@@ -32,7 +31,7 @@
 //|   profit guarantee. Grids carry tail risk — mind MaxLayers.       |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "3.52"
+#property version   "3.53"
 // v3.50: MA filter rebuilt around the CURRENT moment, not bar-1 history.
 //        Both modes require live price on the correct side of the MA NOW
 //        (+/- MABufferPips) -> entries can never print on the wrong side of
@@ -76,7 +75,6 @@ input double BasketStartPips     = 200;  // Arm the basket trail once total pips
 input double BasketGivebackPips  = 50;   // Close ALL layers if basket falls this many pips from its peak
 
 input group "===== Session Filter (WIB / Jakarta time) ====="
-input int  SessionTZOffset       = 7;    // UTC offset for inputs below (7 = WIB Jakarta)
 input bool UseSession            = true; // Enable daily trading-hours window
 input int  SessionStartHour      = 6;    // Daily window FROM this hour WIB (0-23)
 input int  SessionEndHour        = 3;    // NO new entries from this hour WIB (crosses midnight: 6→3)
@@ -282,10 +280,11 @@ void OnTick()
    TryEnter();
 }
 
-//====================== SESSION (WIB inputs, broker clock) ======================
+//====================== SESSION (WIB inputs; true Jakarta via GMT) ======================
 void GetWIBTime(MqlDateTime &dt)
 {
-   TimeToStruct(TimeCurrent() + SessionTZOffset * 3600, dt);
+   // WIB = UTC+7 fixed (no DST). Independent of broker server offset.
+   TimeToStruct(TimeGMT() + 7 * 3600, dt);
 }
 
 bool InWeekendBlock()
