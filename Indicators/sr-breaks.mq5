@@ -21,7 +21,7 @@
 //   - v2.00 correctness kept: pivots and arrows confirmed on CLOSED bars only;
 //     break arrows vs wick arrows separately toggleable and separately colored.
 
-#property version   "3.01"
+#property version   "3.02"
 #property indicator_chart_window
 #property indicator_buffers 6
 #property indicator_plots   6
