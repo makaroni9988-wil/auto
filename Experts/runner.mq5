@@ -9,20 +9,20 @@
 //|         MaxLayersPerDir layers (1 = single roll, >1 = a web).    |
 //|                                                                  |
 //|  Runner: one pending rests ahead of each side while it has room  |
-//|         for another layer (< MaxLayersPerDir), REGARDLESS of P/L  |
-//|         — a losing side still webs (that is the range grind). The |
-//|         order is placed once and left alone within the candle;    |
-//|         when the candle closes and the pivot moved it is MOVED in |
-//|         place (OrderModify) — no delete, no gap, no jumping.      |
-//|         Pre-positioned so a fast spike FILLS it (no race, no      |
-//|         naked gap); a freed slot re-arms instantly.               |
+//|         for another layer (< MaxLayersPerDir), REGARDLESS of P/L |
+//|         — a losing side still webs (that is the range grind). The|
+//|         order is placed once and left alone within the candle;   |
+//|         when the candle closes and the pivot moved it is MOVED in|
+//|         place (OrderModify) — no delete, no gap, no jumping.     |
+//|         Pre-positioned so a fast spike FILLS it (no race, no     |
+//|         naked gap); a freed slot re-arms instantly.              |
 //|                                                                  |
-//|  Bank : DYNAMIC — no fixed take-profit. When a pending fills      |
-//|         (price reached a level), EVERY layer in profit is closed  |
-//|         by MARKET order. Market close has no broker minimum-       |
-//|         distance, so banking always happens AT the level (a fixed |
-//|         TP would get pushed off by the stops-level). Losers run;  |
-//|         the freed slots re-arm -> small-bank accumulation.        |
+//|  Bank : DYNAMIC — no fixed take-profit. When a pending fills     |
+//|         (price reached a level), EVERY layer in profit is closed |
+//|         by MARKET order. Market close has no broker minimum-     |
+//|         distance, so banking always happens AT the level (a fixed|
+//|         TP would get pushed off by the stops-level). Losers run; |
+//|         the freed slots re-arm -> small-bank accumulation.       |
 //|                                                                  |
 //|  Exits: NO per-trade SL. The backstop is a set of stackable      |
 //|         guards (OR — first to trip wins): global DD%, global     |
@@ -108,7 +108,7 @@ input bool   TradeSell             = true;      // Allow SELL slot
 
 input group "===== Orders ====="
 input double LotSize               = 0.01;      // Lots per layer
-input long   MagicNumber           = 556677;    // EA id (own history on a shared account)
+input long   MagicNumber           = 1091958;   // EA id (own history on a shared account)
 input int    MaxSpreadPips         = 0;         // Skip new pendings above this spread (0 = ignore)
 input int    SlippagePoints        = 20;        // Max deviation for market closes (points)
 input int    HardSLPips            = 0;         // Optional OFFLINE broker SL, pips (0 = none; guards are the SL)
@@ -128,12 +128,12 @@ input group "===== Guards (stackable, OR — first to trip wins; all default OFF
 // DD guards are GLOBAL: measured across BOTH legs' net floating, close everything.
 // Pips guard: per-direction (close only the losing side) or global (close both).
 input bool   UseGuardDDPct          = false;        // Global drawdown-% guard
-input double GuardDDPctValue        = 20;           // Close all when net floating <= -this % of base
-input double AccountRiskBase        = 0;            // DD% base (0 = live account balance; else your allocation)
+input double GuardDDPctValue        = 10;           // Close all when net floating <= -this % of base
+input double AccountRiskBase        = 10000;        // DD% base (0 = live account balance; else your allocation)
 input bool   UseGuardDDMoney        = false;        // Global drawdown-money guard
-input double GuardDDMoneyValue      = 20;           // Close all when net floating <= -this (account currency)
+input double GuardDDMoneyValue      = 1000;         // Close all when net floating <= -this (account currency)
 input bool   UseGuardPips           = false;        // Pips-per-layer guard
-input double GuardPipsValue         = 1000;         // Close when a layer's floating <= -this (pips)
+input double GuardPipsValue         = 2000;         // Close when a layer's floating <= -this (pips)
 input ENUM_PIP_SCOPE GuardPipsScope = PIP_PER_DIR;  // pips guard: per-dir (loss side) or global (both)
 
 input group "===== Session Filter (WIB / Jakarta time) ====="
@@ -585,7 +585,7 @@ void PanelPaintState()
    PanelStyleChip(PanelObj("SLhalt"), "SL halt",
       "Manual SL recognition: drag an SL onto a layer (outside the range) — if any layer's SL hits, close ALL + halt BUY/SELL",
       g_UseSLHalt, false);
-   PanelStyleChip(PanelObj("LyrLbl"), "max layer",
+   PanelStyleChip(PanelObj("LyrLbl"), "max lyrs",
       "Web depth: max layers per direction. Set with the number chip", true, true);
    PanelStyleChip(PanelObj("Lyr"), IntegerToString(g_MaxLayersPerDir),
       "Max layers per direction = " + IntegerToString(g_MaxLayersPerDir)
