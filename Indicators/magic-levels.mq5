@@ -1,9 +1,9 @@
 #property copyright "Copyright 2026"
-#property version   "1.11"
+#property version   "1.12"
 #property indicator_chart_window
 #property indicator_plots 0
 
-input ulong InpMagicNumber  = 12345;      // Magic number to display
+input string InpMagicNumbers = "12345";   // Magic numbers to display (semicolon-separated, e.g. 222;333;456)
 input color InpBuyColor     = clrGreen;   // BUY entry line color
 input color InpSellColor    = clrGreen;   // SELL entry line color
 input color InpSLColor      = clrRed;     // Stop Loss line color
@@ -22,16 +22,45 @@ string g_prefix;
 string g_activeNames[];
 int    g_activeCount;
 string g_lastFingerprint;   // last seen trade state; tick/timer skip redraw when unchanged
+ulong  g_magics[];
 
 int OnInit()
 {
    g_prefix = "MNTL_" + (string)ChartID() + "_";
    g_lastFingerprint = "";
+   ParseMagics();
    EventSetMillisecondTimer(InpRefreshMs);
    RefreshLines();
    g_lastFingerprint = TradeFingerprint();
    ChartRedraw(0);
    return(INIT_SUCCEEDED);
+}
+
+// Splits InpMagicNumbers on ';' into g_magics, e.g. "222;333;456" -> [222,333,456].
+void ParseMagics()
+{
+   string parts[];
+   int n = StringSplit(InpMagicNumbers,';',parts);
+   ArrayResize(g_magics,0);
+   for(int i = 0; i < n; i++)
+   {
+      string t = parts[i];
+      StringTrimLeft(t);
+      StringTrimRight(t);
+      if(t == "")
+         continue;
+      int sz = ArraySize(g_magics);
+      ArrayResize(g_magics,sz + 1);
+      g_magics[sz] = (ulong)StringToInteger(t);
+   }
+}
+
+bool IsTrackedMagic(ulong magic)
+{
+   for(int i = 0; i < ArraySize(g_magics); i++)
+      if(g_magics[i] == magic)
+         return true;
+   return false;
 }
 
 void OnDeinit(const int reason)
@@ -99,7 +128,7 @@ string TradeFingerprint()
          continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
-      if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber)
+      if(!IsTrackedMagic((ulong)PositionGetInteger(POSITION_MAGIC)))
          continue;
 
       fp += StringFormat("P%I64u:%d:%.8f:%.8f:%.8f:%.2f;",
@@ -120,7 +149,7 @@ string TradeFingerprint()
          continue;
       if(OrderGetString(ORDER_SYMBOL) != _Symbol)
          continue;
-      if((ulong)OrderGetInteger(ORDER_MAGIC) != InpMagicNumber)
+      if(!IsTrackedMagic((ulong)OrderGetInteger(ORDER_MAGIC)))
          continue;
 
       fp += StringFormat("O%I64u:%d:%.8f:%.8f:%.8f:%.2f;",
@@ -299,7 +328,8 @@ void RefreshLines()
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
 
-      if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber)
+      ulong magic = (ulong)PositionGetInteger(POSITION_MAGIC);
+      if(!IsTrackedMagic(magic))
          continue;
 
       long  type       = PositionGetInteger(POSITION_TYPE);
@@ -313,7 +343,7 @@ void RefreshLines()
 
       string base = g_prefix + "POS_" + (string)ticket;
 
-      string entryLabel = StringFormat("%s %s at %s",dirText,
+      string entryLabel = StringFormat("#%s %s %s at %s",(string)magic,dirText,
                                         DoubleToString(volume,2),
                                         DoubleToString(openPrice,_Digits));
 
@@ -334,7 +364,8 @@ void RefreshLines()
       if(OrderGetString(ORDER_SYMBOL) != _Symbol)
          continue;
 
-      if((ulong)OrderGetInteger(ORDER_MAGIC) != InpMagicNumber)
+      ulong magic = (ulong)OrderGetInteger(ORDER_MAGIC);
+      if(!IsTrackedMagic(magic))
          continue;
 
       long   type   = OrderGetInteger(ORDER_TYPE);
@@ -345,7 +376,7 @@ void RefreshLines()
 
       string base = g_prefix + "ORD_" + (string)ticket;
 
-      string priceLabel = StringFormat("%s %s at %s",OrderTypeText(type),
+      string priceLabel = StringFormat("#%s %s %s at %s",(string)magic,OrderTypeText(type),
                                         DoubleToString(volume,2),
                                         DoubleToString(price,_Digits));
 
