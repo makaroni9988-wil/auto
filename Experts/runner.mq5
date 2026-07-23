@@ -1754,7 +1754,7 @@ void CloseAllProfitLayers()
 
 // Next pivot in the profit direction for one open layer.
 // BUY -> nearest pivot strictly ABOVE entry; SELL -> nearest strictly BELOW.
-bool NextFavorLevel(const bool isBuy, const double entry, const double &lv[], const int n,
+bool NextFavorLevel(const bool isBuy, const double entry, double &lv[], const int n,
                     double &lvlOut)
 {
    lvlOut = 0;
