@@ -12,9 +12,14 @@
 //| BAR over the last LookbackBars bars; nothing is latched, so the  |
 //| leg can re-anchor at bar open. Leg = the two most recent         |
 //| alternating swings (older -> newer).                             |
+//|                                                                  |
+//| v1.10: FiboStructureShift lets the fib anchor to an OLDER leg    |
+//| while the zigzag keeps drawing the newest swing. 1 = newest leg  |
+//| (unchanged), 2 = one confirmed swing behind, etc. Only the leg   |
+//| the fib picks moves; the pivot engine is untouched.              |
 //+------------------------------------------------------------------+
 #property copyright "MQL5 port"
-#property version   "1.00"
+#property version   "1.10"
 #property indicator_chart_window
 #property indicator_buffers 17
 #property indicator_plots   13
@@ -45,6 +50,7 @@
 input int    Depth              = 12;     // ZigZag depth (bars)
 input int    Deviation          = 5;      // ZigZag deviation (points)
 input int    Backstep           = 3;      // ZigZag backstep (bars)
+input int    FiboStructureShift = 1;      // Fib leg age (1=newest, 2=one leg behind, ...)
 input bool   Reverse            = false;  // Reverse anchor direction
 input int    BackgroundTransparencyPct = 85; // Fill transparency (0=solid,100=invisible)
 input bool   EnableAlerts       = false;  // Alert on level cross
@@ -325,7 +331,13 @@ void ScanZigZagLeg(const int rates_total, const int bars,
       hiMap[i] = (hi[i] == ext) ? ext : 0.0;
    }
 
-   // ---- pass 2: keep alternating pivots; track the latest of each ----
+   // ---- pass 2: record every confirmed alternating pivot, oldest -> newest.
+   // A pivot is only final once the OPPOSITE extreme confirms (until then it
+   // can still relocate), so we push it at each state flip; the last running
+   // pivot is pushed after the loop. FiboStructureShift then anchors the fib
+   // to a chosen pair without disturbing this engine (shift 1 = last two).
+   double swPrice[]; int swPos[];
+   int    swN = 0;
    int    whatlookfor = 0;      // 0 = first, 1 = expecting a high, -1 = expecting a low
    int    lastHighPos = -1, lastLowPos = -1;
    double curHigh = 0.0, curLow = 0.0;
@@ -341,32 +353,54 @@ void ScanZigZagLeg(const int rates_total, const int bars,
             if(loMap[i] != 0.0 && loMap[i] < curLow && hiMap[i] == 0.0)
             { lastLowPos = i; curLow = loMap[i]; }
             if(hiMap[i] != 0.0 && loMap[i] == 0.0)
-            { curHigh = hiMap[i]; lastHighPos = i; whatlookfor = -1; }
+            { PushSwing(swPrice, swPos, swN, curLow, lastLowPos);   // low now final
+              curHigh = hiMap[i]; lastHighPos = i; whatlookfor = -1; }
             break;
          case -1: // expecting a low; a higher high relocates the last high
             if(hiMap[i] != 0.0 && hiMap[i] > curHigh && loMap[i] == 0.0)
             { lastHighPos = i; curHigh = hiMap[i]; }
             if(loMap[i] != 0.0 && hiMap[i] == 0.0)
-            { curLow = loMap[i]; lastLowPos = i; whatlookfor = 1; }
+            { PushSwing(swPrice, swPos, swN, curHigh, lastHighPos); // high now final
+              curLow = loMap[i]; lastLowPos = i; whatlookfor = 1; }
             break;
       }
    }
+   // last running pivot (the newest, still-relocatable one)
+   if(whatlookfor == 1)       PushSwing(swPrice, swPos, swN, curLow,  lastLowPos);
+   else if(whatlookfor == -1) PushSwing(swPrice, swPos, swN, curHigh, lastHighPos);
 
-   // leg = the two most recent alternating pivots (newer = larger bar index)
-   if(lastHighPos >= 0 && lastLowPos >= 0)
+   // need at least one full leg (two alternating pivots)
+   if(swN < 2) return;
+
+   // shift back by whole pivots; clamp to the oldest available leg
+   int s = MathMax(1, FiboStructureShift);
+   if(s > swN - 1) s = swN - 1;
+   int aPos = swPos[swN - 1 - s], bPos = swPos[swN - s];   // one high, one low
+   double aPrice = swPrice[swN - 1 - s], bPrice = swPrice[swN - s];
+
+   // newer = larger bar index (chronologically later)
+   if(bPos > aPos)
    {
-      if(lastHighPos > lastLowPos)
-      {
-         g_newerBar = base + lastHighPos; g_newerPrice = curHigh;
-         g_olderBar = base + lastLowPos;  g_olderPrice = curLow;
-      }
-      else
-      {
-         g_newerBar = base + lastLowPos;  g_newerPrice = curLow;
-         g_olderBar = base + lastHighPos; g_olderPrice = curHigh;
-      }
-      g_havePrevZZ = true;
+      g_newerBar = base + bPos; g_newerPrice = bPrice;
+      g_olderBar = base + aPos; g_olderPrice = aPrice;
    }
+   else
+   {
+      g_newerBar = base + aPos; g_newerPrice = aPrice;
+      g_olderBar = base + bPos; g_olderPrice = bPrice;
+   }
+   g_havePrevZZ = true;
+}
+
+// Append one confirmed swing (price + window bar position) to the ordered
+// pivot list. Grows the parallel arrays in lockstep; caller tracks the count.
+void PushSwing(double &price[], int &pos[], int &n, double p, int barPos)
+{
+   ArrayResize(price, n + 1);
+   ArrayResize(pos,   n + 1);
+   price[n] = p;
+   pos[n]   = barPos;
+   n++;
 }
 
 //==================================================================
