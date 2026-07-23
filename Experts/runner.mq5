@@ -37,7 +37,21 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.01"
+#property version   "1.03"
+// v1.03: Pending engine rebuilt clean (lets-go style) to kill the churn — a
+//        resting order is placed once and left untouched intra-candle; when the
+//        candle closes and the pivot has genuinely moved it is MOVED in place
+//        with OrderModify (no delete+replace, no gap, no jumping). Nothing
+//        resting + wanted -> placed instantly (instant re-arm after a fill).
+//        A transient (no level for a tick) never drops a resting order.
+// v1.02: Multi-layer WEB — MaxLayersPerDir (panel 'Lyr' chip, cycles 1..6). A
+//        side accumulates up to N layers while its frontier layer is in profit;
+//        ResolveDoubleLayers peels the OLDEST (deepest-profit) layer once the
+//        count exceeds N (MaxLayersPerDir=1 = the v1.01 single-layer roll). The
+//        pips guard now trips on the WORST layer and closes the whole side.
+//        Manual SL-halt (panel 'SL halt' chip): drag an SL onto a layer; if any
+//        layer's SL hits, the EA flattens ALL and disarms BUY/SELL until you
+//        re-enable them — a manual emergency stop for the whole basket.
 // v1.01: REST-AHEAD engine. Pendings are pre-positioned at the broker so a fast
 //        spike fills them instead of racing a last-millisecond placement (the
 //        v1.00 "bad stops" reject that left a naked, unhedged position).
@@ -80,8 +94,10 @@ input int    PivotRightBars       = 10;     // Pivot right bars (match sr-breaks
 input int    LevelsLookback       = 100;    // Bars scanned for pivots
 input double SrBufferPips          = 100;   // Break: beyond level by this. Reject: within this of level. 0 = exact
 
-input group "===== Runner roll (rest-ahead ladder) ====="
-input double RollMinProfitPips     = 0;     // Min floating profit (pips) to arm a roll pending / bank a roll (0 = any profit)
+input group "===== Runner roll / web ====="
+input double RollMinProfitPips     = 0;     // Min floating profit (pips) to arm a roll / add a web layer (0 = any profit)
+input int    MaxLayersPerDir       = 1;     // Max layers per direction (1 = single roll; >1 = web). Panel Lyr chip cycles 1..6
+input bool   UseManualSLHalt       = false; // Recognize a manually-set position SL: when any layer's SL hits -> close ALL + halt (grey BUY/SELL)
 
 input group "===== Guards (stackable, OR — first to trip wins; all default OFF) ====="
 // DD guards are GLOBAL: measured across BOTH legs' net floating, close everything.
@@ -135,9 +151,13 @@ input bool InpNotifyOnOpen = false; // Push notification on OPEN / ROLL
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
 bool           g_TradeBuy, g_TradeSell;
 bool           g_SrBreakSel = true;   // true=break (stops), false=reject (limits)
+int            g_MaxLayersPerDir = 1; // web depth per direction (chip-cycled 1..6)
+bool           g_UseSLHalt = false;   // manual-SL recognition: SL hit -> close all + halt
 bool           g_UseGuardDDPct, g_UseGuardDDMoney, g_UseGuardPips;
 ENUM_PIP_SCOPE g_GuardPipsScope;
 bool           g_UseSession, g_UseWeekendFilter, g_UseNewsFilter, g_UseBrokerSessionGuard;
+
+#define MAX_LAYERS_CAP 6              // panel Lyr chip cycles 1..this
 
 string g_gvPrefix       = "";
 string g_panelPrefix    = "";
@@ -170,6 +190,7 @@ datetime g_lastCloseFailTime = 0;
 
 bool  g_newsBlackoutCached = false;
 ulong g_newsLastCheckMs    = 0;
+bool  g_slHaltPending      = false;   // a manual SL hit -> flatten + halt on next tick
 
 //====================== LOGGING / PUSH ======================
 string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
@@ -252,9 +273,10 @@ int PanelLoadInt(const string id, const int fallback)
 // Compact fingerprint of every panel-backed INPUT default.
 string PanelInputFingerprint()
 {
-   return "rn100|"
+   return "rn102|"
         + IntegerToString((int)TradeBuy) + IntegerToString((int)TradeSell) + "|"
         + IntegerToString((int)StartBreakMode) + "|"
+        + IntegerToString(MaxLayersPerDir) + IntegerToString((int)UseManualSLHalt) + "|"
         + IntegerToString((int)UseGuardDDPct) + IntegerToString((int)UseGuardDDMoney)
         + IntegerToString((int)UseGuardPips) + IntegerToString((int)GuardPipsScope) + "|"
         + IntegerToString((int)UseSession) + IntegerToString((int)UseWeekendFilter)
@@ -266,6 +288,8 @@ void RuntimeApplyInputDefaults()
    g_TradeBuy = TradeBuy;
    g_TradeSell = TradeSell;
    g_SrBreakSel = StartBreakMode;
+   g_MaxLayersPerDir = (int)MathMax(1, MathMin(MAX_LAYERS_CAP, MaxLayersPerDir));
+   g_UseSLHalt = UseManualSLHalt;
    g_UseGuardDDPct = UseGuardDDPct;
    g_UseGuardDDMoney = UseGuardDDMoney;
    g_UseGuardPips = UseGuardPips;
@@ -282,6 +306,8 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("Buy", g_TradeBuy);
    PanelSaveBool("Sell", g_TradeSell);
    PanelSaveBool("SrBR", g_SrBreakSel);
+   PanelSaveInt("MaxLyr", g_MaxLayersPerDir);
+   PanelSaveBool("SLhalt", g_UseSLHalt);
    PanelSaveBool("gDDp", g_UseGuardDDPct);
    PanelSaveBool("gDDm", g_UseGuardDDMoney);
    PanelSaveBool("gPip", g_UseGuardPips);
@@ -298,6 +324,8 @@ void RuntimeLoadFromGV()
    g_TradeBuy = PanelLoadBool("Buy", g_TradeBuy);
    g_TradeSell = PanelLoadBool("Sell", g_TradeSell);
    g_SrBreakSel = PanelLoadBool("SrBR", g_SrBreakSel);
+   g_MaxLayersPerDir = PanelLoadInt("MaxLyr", g_MaxLayersPerDir);
+   g_UseSLHalt = PanelLoadBool("SLhalt", g_UseSLHalt);
    g_UseGuardDDPct = PanelLoadBool("gDDp", g_UseGuardDDPct);
    g_UseGuardDDMoney = PanelLoadBool("gDDm", g_UseGuardDDMoney);
    g_UseGuardPips = PanelLoadBool("gPip", g_UseGuardPips);
@@ -311,6 +339,7 @@ void RuntimeLoadFromGV()
    // Corrupt GV memory -> fall back to sane values.
    if(g_GuardPipsScope != PIP_PER_DIR && g_GuardPipsScope != PIP_GLOBAL)
       g_GuardPipsScope = PIP_PER_DIR;
+   g_MaxLayersPerDir = (int)MathMax(1, MathMin(MAX_LAYERS_CAP, g_MaxLayersPerDir));
 }
 
 void RuntimeLoadFromInputsThenGV()
@@ -345,7 +374,7 @@ void RuntimeLoadFromInputsThenGV()
 void PanelClearMemory()
 {
    string ids[] = {
-      "INP_FP","Buy","Sell","SrBR","Collapsed",
+      "INP_FP","Buy","Sell","SrBR","MaxLyr","SLhalt","Collapsed",
       "gDDp","gDDm","gPip","gScope",
       "Session","Weekend","News","Broker"
    };
@@ -528,6 +557,14 @@ void PanelPaintState()
    PanelStyleAction(PanelObj("Flat"), "Flat", "Close ALL runner positions now (manual)",
                     GetTickCount64() < g_flatFlashUntilMs);
 
+   // Control row: manual-SL halt toggle + web depth (max layers per direction).
+   PanelStyleChip(PanelObj("SLhalt"), "SL halt",
+      "Manual SL recognition: drag an SL onto a layer (outside the range) — if any layer's SL hits, close ALL + halt BUY/SELL",
+      g_UseSLHalt, false);
+   PanelStyleChip(PanelObj("Lyr"), "Lyr " + IntegerToString(g_MaxLayersPerDir),
+      "Web depth: max layers per direction = " + IntegerToString(g_MaxLayersPerDir)
+      + " (1 = single roll). Click to cycle 1.." + IntegerToString(MAX_LAYERS_CAP), false, true);
+
    // Guards header doubles as the live open/blocked status band.
    long tradeMode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -583,6 +620,13 @@ void PanelBuild()
    y += chipH + gap;
    string modeIds[] = { "BUY", "SELL", "SrBR", "Flat" };
    PanelPlaceEvenRow(modeIds, 4, x0, y, rowW, gap, chipH);
+   y += chipH + gap;
+
+   // Control row (below BUY/SELL, above the guards): SL-halt toggle + web depth.
+   // Two half-width chips.
+   const int halfW = (rowW - gap) / 2;
+   PanelEnsureButton("SLhalt", x0, y, halfW, chipH);
+   PanelEnsureButton("Lyr", x0 + halfW + gap, y, rowW - halfW - gap, chipH);
    y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("LG", x0, y, rowW, chipH); y += chipH + gap;
@@ -595,7 +639,7 @@ void PanelBuild()
    PanelPlaceEvenRow(risk, 4, x0, y, rowW, gap, chipH);
 
    string liveIds[] = {
-      "TTL","BUY","SELL","SrBR","Flat","LG",
+      "TTL","BUY","SELL","SrBR","Flat","SLhalt","Lyr","LG",
       "Session","Weekend","News","Broker","LR",
       "gDDp","gDDm","gPip","gScope"
    };
@@ -672,6 +716,12 @@ bool PanelHandleClick(const string sparam)
       g_flatFlashUntilMs = GetTickCount64() + 300; // green press-flash
       CloseAllEA("panel flat");
       if(g_pendCount > 0) DeleteOurPendings("panel flat");
+   }
+   else if(id == "SLhalt") PanelToggleBool(g_UseSLHalt, "SLhalt");
+   else if(id == "Lyr")
+   {
+      g_MaxLayersPerDir = (g_MaxLayersPerDir >= MAX_LAYERS_CAP) ? 1 : g_MaxLayersPerDir + 1;
+      PanelSaveInt("MaxLyr", g_MaxLayersPerDir);
    }
    else if(id == "Session") PanelToggleBool(g_UseSession, "Session");
    else if(id == "Weekend") PanelToggleBool(g_UseWeekendFilter, "Weekend");
@@ -752,6 +802,8 @@ int OnInit()
    {
       LogInfo("INIT T1=" + EnumToString(g_t1)
               + " mode=" + (g_SrBreakSel ? "break" : "reject")
+              + " layers=" + IntegerToString(g_MaxLayersPerDir)
+              + " SLhalt=" + (g_UseSLHalt ? "ON" : "off")
               + " | Buy=" + (g_TradeBuy ? "ON" : "OFF")
               + " Sell=" + (g_TradeSell ? "ON" : "OFF")
               + " | guards DD%=" + (g_UseGuardDDPct ? "ON" : "off")
@@ -824,9 +876,21 @@ void OnTick()
       return;
    }
 
-   ResolveDoubleLayers(); // collapse any roll double to 1 (bank winner / keep runner)
+   // Manual SL was hit (flagged in the trade-transaction handler): flatten the
+   // rest of the book and latch BUY/SELL off — your dragged SL is the emergency
+   // stop for the whole basket.
+   if(g_slHaltPending)
+   {
+      g_slHaltPending = false;
+      CloseAllEA("manual SL hit");
+      if(g_pendCount > 0) DeleteOurPendings("manual SL hit");
+      LatchHalt("MANUAL SL");
+      return;
+   }
+
+   ResolveDoubleLayers(); // peel the web back to MaxLayersPerDir (bank oldest winner)
    ManageGuards();        // DD% / DD$ / pips backstop — may close
-   ManagePendings();      // rest-ahead broker pendings: entry hedge + roll ladder
+   ManagePendings();      // rest-ahead broker pendings: entry hedge + web ladder
 }
 
 //====================== SESSION (WIB inputs; true Jakarta via GMT) ======================
@@ -1026,24 +1090,6 @@ bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop)
 }
 
 //====================== POSITION / PENDING HELPERS ======================
-// One open position per direction. Returns its ticket (0 if none) + entry.
-ulong DirectionPosition(const bool isBuy, double &entry)
-{
-   entry = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong tk = PositionGetTicket(i);
-      if(tk == 0) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-      bool posBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-      if(posBuy != isBuy) continue;
-      entry = PositionGetDouble(POSITION_PRICE_OPEN);
-      return tk;
-   }
-   return 0;
-}
-
 bool HasEAPositions()
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -1056,14 +1102,60 @@ bool HasEAPositions()
    return false;
 }
 
-// Floating pips of a direction's open position (>=0 profit, <0 loss). 0 if flat.
-double DirectionFloatPips(const bool isBuy)
+// How many layers this direction holds (multi-layer web).
+int DirectionLayerCount(const bool isBuy)
 {
-   double entry = 0;
-   if(DirectionPosition(isBuy, entry) == 0) return 0;
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) == isBuy) count++;
+   }
+   return count;
+}
+
+// Floating pips of the NEWEST (frontier) layer — gates whether the web adds
+// another layer (only extend a side that is pushing into profit).
+double DirectionFrontFloatPips(const bool isBuy)
+{
+   ulong newest = 0; double entry = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) != isBuy) continue;
+      if(tk > newest) { newest = tk; entry = PositionGetDouble(POSITION_PRICE_OPEN); }
+   }
+   if(newest == 0) return 0;
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    return isBuy ? (bid - entry) / g_pip : (entry - ask) / g_pip;
+}
+
+// Worst (most negative) single-layer floating pips on a direction — the pips
+// guard trips on the worst layer of the web. Returns 0 if the side is flat.
+double DirectionWorstLayerPips(const bool isBuy)
+{
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double worst = 0; bool any = false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) != isBuy) continue;
+      double e = PositionGetDouble(POSITION_PRICE_OPEN);
+      double fp = isBuy ? (bid - e) / g_pip : (e - ask) / g_pip;
+      if(!any || fp < worst) { worst = fp; any = true; }
+   }
+   return any ? worst : 0;
 }
 
 int PendFindByOrder(const ulong orderTicket)
@@ -1189,21 +1281,47 @@ void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl)
    }
 }
 
-//====================== PENDING RECONCILE (per direction, never freezes) ======================
-// REST-AHEAD engine. Each tick, every armed direction that should hold a
-// pending has one RESTING at the broker — pre-positioned so a fast spike FILLS
-// it instead of racing a last-millisecond placement (that race is what left a
-// naked position on the "bad stops" reject). Per direction:
-//   - EMPTY slot  -> an ENTRY pending at the nearest valid level (the hedge).
-//                    Always present, so a lone position is never un-hedged.
-//   - OCCUPIED and in profit (>= RollMinProfitPips) -> a ROLL pending resting
-//                    at the next valid level AHEAD. Price reaches it -> fills ->
-//                    momentary 2 layers -> ResolveDoubleLayers banks the older
-//                    (profitable) one. Small distance = small bank; it ladders.
-//   - OCCUPIED and in loss -> no pending (a pending there could only fill and
-//                    immediately abort = pure spread waste). The layer just runs.
-// A resting order only RELOCATES to a new level once the candle closes (anti
-// churn); a direction that currently has NO pending gets one placed immediately.
+// Find this direction's resting pending (-1 if none). One per direction.
+int PendIndexForDir(const bool isBuy)
+{
+   for(int i = 0; i < g_pendCount; i++)
+      if(g_pendIsBuy[i] == isBuy) return i;
+   return -1;
+}
+
+// Move a resting pending to a new level IN PLACE (OrderModify) — no cancel, no
+// gap. Keeps the offline SL aligned to the new level if HardSLPips is set.
+void RelocatePending(const int idx, const double newLvl)
+{
+   double np = NormalizePrice(newLvl);
+   double sl = 0;
+   if(HardSLPips > 0)
+      sl = g_pendIsBuy[idx] ? NormalizePrice(np - HardSLPips * g_pip)
+                            : NormalizePrice(np + HardSLPips * g_pip);
+   if(trade.OrderModify(g_pendTicket[idx], np, sl, 0, ORDER_TIME_GTC, 0))
+   {
+      LogInfo("PEND MOVE " + (g_pendIsBuy[idx] ? "BUY" : "SELL") + " "
+              + DoubleToString(g_pendLevel[idx], _Digits) + " -> " + DoubleToString(np, _Digits));
+      g_pendLevel[idx] = np;
+   }
+   else
+      LogGuardOnce("fail_pend_mod", "FAIL pending modify rc=" + IntegerToString(trade.ResultRetcode())
+                   + " " + trade.ResultRetcodeDescription());
+}
+
+//====================== PENDING ENGINE (lets-go clean: place once, move in place) ======================
+// The rule, per direction — fast and stable, like lets-go's S/R engine:
+//   * Nothing resting and one is wanted -> PLACE it now (instant; so re-arming
+//     after a fill/peel is immediate).
+//   * One already resting -> LEAVE IT untouched intra-candle. No re-place, no
+//     cancel, no jumping. When the candle CLOSES and the pivot has genuinely
+//     moved, MOVE the order in place with OrderModify (never delete+replace).
+//   * A transient (no valid level for a tick, price hugging the level) NEVER
+//     drops a resting order — it just stays.
+//   * Deleted only when the direction stops wanting one: disarmed (now), or its
+//     frontier went to loss / hit the web cap (on the next candle).
+// "Wanted" per direction: EMPTY armed side -> entry/hedge pending; OCCUPIED
+// armed side -> a web/roll pending while its frontier layer is in profit.
 void ManagePendings()
 {
    // sync tracked list with the broker (fills fall out here; also catches
@@ -1219,84 +1337,57 @@ void ManagePendings()
    const bool newBar = (curBar != g_srRecalcBar);
    const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
 
-   // ---- desired pendings, one per direction that should hold one ----
-   double dLvl[PEND_MAX]; bool dBuy[PEND_MAX], dStop[PEND_MAX];
-   int dn = 0;
-   for(int s = 0; s < 2 && dn < PEND_MAX; s++)
+   for(int s = 0; s < 2; s++)
    {
       bool isBuy = (s == 0);
-      if(isBuy ? !g_TradeBuy : !g_TradeSell) continue; // direction disarmed
+      int  ri    = PendIndexForDir(isBuy);
+      bool armed = isBuy ? g_TradeBuy : g_TradeSell;
 
-      double entry = 0;
-      ulong tk = DirectionPosition(isBuy, entry);
-      if(tk != 0)
+      // Does this direction want a pending right now?
+      bool want = false;
+      if(armed)
       {
-         // Occupied: rest a roll pending AHEAD only while in profit; a losing
-         // layer just runs (a pending there would only fill-and-abort).
-         double fp = isBuy ? (SymbolInfoDouble(_Symbol, SYMBOL_BID) - entry) / g_pip
-                           : (entry - SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / g_pip;
-         if(fp < RollMinProfitPips) continue;
+         if(DirectionLayerCount(isBuy) == 0) want = true;                       // entry / hedge
+         else if(DirectionFrontFloatPips(isBuy) >= RollMinProfitPips) want = true; // web / roll
       }
 
-      double price = 0; bool isStop = true;
-      if(!ValidPendingLevel(isBuy, price, isStop)) continue; // no placeable level yet
-      dLvl[dn] = price; dBuy[dn] = isBuy; dStop[dn] = isStop; dn++;
-   }
-
-   // Reconcile tracked vs desired. A desired slot matched by a resting order is
-   // flagged negative so the placement pass skips it.
-   for(int i = g_pendCount - 1; i >= 0; i--)
-   {
-      // exact same-direction, same-level match -> keep as-is
-      bool keep = false;
-      for(int j = 0; j < dn; j++)
-         if(dLvl[j] > 0 && g_pendIsBuy[i] == dBuy[j]
-            && MathAbs(g_pendLevel[i] - dLvl[j]) < point * 0.5)
-         { keep = true; dLvl[j] = -dLvl[j]; break; }
-      if(keep) continue;
-
-      bool sameDirDesired = false;
-      for(int j = 0; j < dn; j++)
-         if(dLvl[j] > 0 && dBuy[j] == g_pendIsBuy[i]) { sameDirDesired = true; break; }
-
-      // Sticky: don't relocate/pull a pending intra-candle if the direction is
-      // still relevant — a still-desired direction (relevel) or an armed
-      // direction that currently holds a position (roll pending rides until the
-      // candle closes, so profit wiggling around the threshold can't churn it).
-      double eDir = 0;
-      bool dirOccupied = (DirectionPosition(g_pendIsBuy[i], eDir) != 0);
-      bool dirArmed = g_pendIsBuy[i] ? g_TradeBuy : g_TradeSell;
-      if((sameDirDesired || (dirOccupied && dirArmed)) && !newBar)
+      if(!want)
       {
-         for(int j = 0; j < dn; j++)
-            if(dLvl[j] > 0 && dBuy[j] == g_pendIsBuy[i]) dLvl[j] = -dLvl[j];
+         // Pull a resting order only on a fresh decision: disarmed = now;
+         // frontier-went-to-loss / cap = on the next candle (no intra-bar churn).
+         if(ri >= 0 && (!armed || newBar))
+            DeleteDirectionPending(isBuy, armed ? "no longer wanted" : "disarmed");
          continue;
       }
 
-      // Stale (disarmed / no longer wanted), or relocation allowed (new candle).
-      if(!trade.OrderDelete(g_pendTicket[i]))
+      double lvl = 0; bool isStop = true;
+      bool haveLvl = ValidPendingLevel(isBuy, lvl, isStop);
+
+      if(ri < 0)
       {
-         LogGuardOnce("fail_pend_del", "FAIL pending delete rc=" + IntegerToString(trade.ResultRetcode())
-                      + " " + trade.ResultRetcodeDescription());
+         // Nothing resting -> place immediately (instant re-arm).
+         if(haveLvl) PlacePendingOrder(isBuy, isStop, lvl);
          continue;
       }
-      LogInfo("PEND DEL " + (g_pendIsBuy[i] ? "BUY" : "SELL") + " @ "
-              + DoubleToString(g_pendLevel[i], _Digits) + (sameDirDesired ? " (relevel)" : " (stale)"));
-      PendUntrackIndex(i);
+
+      // Already resting: leave it be. Only when the candle closes and the level
+      // has actually changed do we MOVE it in place — no delete, no gap.
+      if(newBar && haveLvl && MathAbs(g_pendLevel[ri] - lvl) > point * 0.5)
+         RelocatePending(ri, lvl);
    }
-   for(int j = 0; j < dn && g_pendCount < PEND_MAX; j++)
-      if(dLvl[j] > 0)
-         PlacePendingOrder(dBuy[j], dStop[j], dLvl[j]);
 
    g_srRecalcBar = curBar; // advance the relocation clock once per pass
 }
 
-//====================== ROLL SWAP (collapse a 2-layer to 1) ======================
-// A roll pending filled -> a direction momentarily holds TWO positions. Bank
-// the older one if it is in profit (that IS the roll); otherwise close the
-// just-filled one (abort — never bank a loss, never stack). Runs first each
-// tick so guards/pendings always see a clean one-per-direction book. Ticket
-// order is monotonic, so the smaller ticket is the older layer.
+//====================== ROLL / WEB CAP (peel back to MaxLayersPerDir) ======================
+// A frontier pending filled -> a direction may exceed its web depth. While the
+// layer count is within MaxLayersPerDir the whole web is kept (it runs like a
+// web). Once it EXCEEDS the cap, bank the OLDEST (deepest-profit) layer if it
+// is in profit — that is the "hit level -> profit close"; otherwise close the
+// just-filled one (abort — never bank a loss, never stack past the cap). With
+// MaxLayersPerDir=1 this is the plain single-layer roll. Runs first each tick
+// so guards/pendings see a settled book. Ticket order is monotonic, so the
+// smaller ticket is the older layer.
 void ResolveDoubleLayers()
 {
    for(int s = 0; s < 2; s++)
@@ -1316,11 +1407,13 @@ void ResolveDoubleLayers()
          if(older == 0 || tk < older) older = tk;
          if(newer == 0 || tk > newer) newer = tk;
       }
-      if(cnt < 2) continue; // clean one-per-direction
+      if(cnt <= g_MaxLayersPerDir) continue; // web within its depth — keep all layers
 
       if(!CanAttemptClose())
       { LogGuardOnce("swap_blocked", "BLOCKED roll swap — trade path guard; will retry"); continue; }
 
+      // Over the web cap: bank the OLDEST (deepest-profit) layer if in profit,
+      // else abort the newest. With MaxLayersPerDir=1 this is the plain roll.
       // Older in profit -> bank it (roll). Else close the newer (abort).
       double olderEntry = 0, olderPips = 0, olderPL = 0;
       if(PositionSelectByTicket(older))
@@ -1382,18 +1475,18 @@ double NetFloatingMoney(int &count)
    return net;
 }
 
-// A global DD guard is the DISASTER backstop: after it closes everything it
-// LATCHES the EA off (disarms BUY + SELL) so runner does not walk straight back
-// into the same hole. Click BUY / SELL on the panel to resume. The pips guard
-// does NOT latch — it is a per-layer stop, re-entry at a fresh level is the
-// strategy.
-void LatchHaltAfterDD(const string which)
+// DISASTER halt: after everything is closed, LATCH the EA off (disarm BUY +
+// SELL) so runner does not walk straight back into the same hole. Click BUY /
+// SELL on the panel to resume. Used by the global DD guards and by the manual
+// SL-halt. The pips guard does NOT latch — it is a per-layer stop, re-entry at
+// a fresh level is the strategy.
+void LatchHalt(const string which)
 {
    g_TradeBuy = false;
    g_TradeSell = false;
    PanelSaveBool("Buy", false);
    PanelSaveBool("Sell", false);
-   string msg = "GUARD " + which + " HALT — BUY+SELL disarmed; re-enable on the panel to resume";
+   string msg = which + " HALT — BUY+SELL disarmed; re-enable on the panel to resume";
    LogInfo(msg);
    NotifyPush(msg);
    if(ShowPanel && !g_panelCollapsed) { PanelPaintState(); ChartRedraw(0); }
@@ -1410,7 +1503,7 @@ void ManageGuards()
    {
       CloseAllEA("guard DD$ " + DoubleToString(net, 2) + " <= -" + DoubleToString(GuardDDMoneyValue, 2));
       if(g_pendCount > 0) DeleteOurPendings("guard DD$");
-      LatchHaltAfterDD("DD$");
+      LatchHalt("GUARD DD$");
       return;
    }
 
@@ -1425,7 +1518,7 @@ void ManageGuards()
          {
             CloseAllEA("guard DD% " + DoubleToString(pct, 2) + "% <= -" + DoubleToString(GuardDDPctValue, 2) + "%");
             if(g_pendCount > 0) DeleteOurPendings("guard DD%");
-            LatchHaltAfterDD("DD%");
+            LatchHalt("GUARD DD%");
             return;
          }
       }
@@ -1436,11 +1529,11 @@ void ManageGuards()
    {
       // Guard protects ALL open positions — a disarmed BUY/SELL chip stops new
       // entries, it does not stop guarding a position that is still running.
-      double eB = 0, eS = 0;
-      bool haveBuy  = (DirectionPosition(true,  eB) != 0);
-      bool haveSell = (DirectionPosition(false, eS) != 0);
-      double buyPips  = haveBuy  ? DirectionFloatPips(true)  : 0;
-      double sellPips = haveSell ? DirectionFloatPips(false) : 0;
+      // In a web, the guard trips on the WORST single layer of the direction.
+      bool haveBuy  = (DirectionLayerCount(true)  > 0);
+      bool haveSell = (DirectionLayerCount(false) > 0);
+      double buyPips  = haveBuy  ? DirectionWorstLayerPips(true)  : 0;
+      double sellPips = haveSell ? DirectionWorstLayerPips(false) : 0;
       bool buyHit  = haveBuy  && buyPips  <= -GuardPipsValue;
       bool sellHit = haveSell && sellPips <= -GuardPipsValue;
 
@@ -1494,16 +1587,18 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(InpNotifyOnOpen) NotifyPush(msg);
 }
 
-// Broker-side SL/stop-out fill (only possible when HardSLPips is set): give it
-// a Journal + push line so it is not a silent close.
+// Broker-side SL/stop-out fill (a manually-dragged SL, or HardSLPips): give it
+// a Journal + push line so it is not a silent close. If the SL-halt feature is
+// on, flag a full halt — OnTick flattens the rest + disarms BUY/SELL next tick
+// (trade ops here would be re-entrant).
 void NotifyBrokerClose(const ulong dealTicket)
 {
    ENUM_DEAL_REASON reason = (ENUM_DEAL_REASON)HistoryDealGetInteger(dealTicket, DEAL_REASON);
    string tag;
    switch(reason)
    {
-      case DEAL_REASON_SL: tag = "offline SL"; break;
-      case DEAL_REASON_SO: tag = "stop out";   break;
+      case DEAL_REASON_SL: tag = "SL hit";   break;
+      case DEAL_REASON_SO: tag = "stop out"; break;
       default: return; // EXPERT close is logged where it happens
    }
    double dealPL = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
@@ -1512,6 +1607,9 @@ void NotifyBrokerClose(const ulong dealTicket)
    string msg = "POSITION CLOSED (" + tag + ") | Net P/L: " + DoubleToString(dealPL, 2);
    LogInfo(msg);
    NotifyPush(msg);
+
+   if(g_UseSLHalt && (reason == DEAL_REASON_SL || reason == DEAL_REASON_SO))
+      g_slHaltPending = true; // OnTick flattens all + latches BUY/SELL off
 }
 
 //====================== MARKET GUARD ======================
@@ -1590,30 +1688,40 @@ bool CanAttemptClose()
 }
 
 //====================== CLOSE HELPERS ======================
-// Close one direction's open position (used by per-dir pips guard + rolls).
+// Close ALL layers of one direction (used by the per-dir pips guard). In a web
+// a direction can hold several layers; the guard closes the whole side.
 void CloseDirection(const bool isBuy, const string reason)
 {
-   double entry = 0;
-   ulong tk = DirectionPosition(isBuy, entry);
-   if(tk == 0) return;
+   if(DirectionLayerCount(isBuy) == 0) return;
    if(!CanAttemptClose())
    {
       LogGuardOnce("close_blocked", "BLOCKED close " + (isBuy ? "BUY" : "SELL")
                    + " (" + reason + ") — trade path guard; will retry");
       return;
    }
-   double pl = 0;
-   if(PositionSelectByTicket(tk))
-      pl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-   if(trade.PositionClose(tk))
+   double totalPL = 0; int closed = 0; bool anyFail = false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      LogInfo("CLOSE " + (isBuy ? "BUY" : "SELL") + " (" + reason + ") | P/L " + DoubleToString(pl, 2));
-      NotifyPush((isBuy ? "BUY" : "SELL") + " CLOSED (" + reason + ") | P/L: " + DoubleToString(pl, 2));
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) != isBuy) continue;
+      double pl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      if(trade.PositionClose(tk)) { totalPL += pl; closed++; }
+      else
+      {
+         anyFail = true;
+         LogGuardOnce("fail_close", "FAIL close rc=" + IntegerToString(trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription());
+      }
    }
-   else
+   if(anyFail) g_lastCloseFailTime = TimeCurrent();
+   if(closed > 0)
    {
-      g_lastCloseFailTime = TimeCurrent();
-      LogGuardOnce("fail_close", "FAIL close rc=" + IntegerToString(trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription());
+      LogInfo("CLOSE " + (isBuy ? "BUY" : "SELL") + " x" + IntegerToString(closed)
+              + " (" + reason + ") | P/L " + DoubleToString(totalPL, 2));
+      NotifyPush((isBuy ? "BUY" : "SELL") + " CLOSED x" + IntegerToString(closed)
+                 + " (" + reason + ") | P/L: " + DoubleToString(totalPL, 2));
    }
 }
 
