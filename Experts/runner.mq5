@@ -47,7 +47,12 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.09"
+#property version   "1.10"
+// v1.10: Taken/bind array cleaner. Reconcile every tick + after mass closes:
+//        no open EA layers -> wipe all taken+binds (Flat / manual / DD / schedule
+//        / SL-halt). Dead position ids (deal missed) free their key. Orphan
+//        taken with no bind dropped. Disarming BUY/SELL alone does not wipe —
+//        open layers keep their blocks until those positions actually close.
 // v1.09: Taken clears when THAT layer closes. Each fill binds the new
 //        position id -> (pivot, side, stop/limit). On DEAL_OUT for that id,
 //        forget only that key so the level may re-arm; other open layers keep
@@ -851,6 +856,7 @@ int OnInit()
    trade.SetExpertMagicNumber((ulong)MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
    AdoptOurPendings(); // re-track orders a previous attach left resting
+   ReconcileTakenBinds(); // drop stale taken/binds if flat after restart
 
    if(!g_quietInit)
    {
@@ -917,6 +923,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 void OnTick()
 {
    PanelPollClicks();
+   ReconcileTakenBinds(); // Flat / manual / DD / missed DEAL_OUT — keep arrays honest
 
    // Per-candle clock — DumpLevels cadence + aligns with pending relocate bar.
    bool newBar = false;
@@ -1259,6 +1266,64 @@ void BindReleaseOnClose(const ulong posId)
    }
 }
 
+void TakenClearAll(const string reason)
+{
+   if(g_takenCount == 0 && g_bindCount == 0) return;
+   LogDebug("TAKEN clear all (" + reason + ") taken=" + IntegerToString(g_takenCount)
+            + " binds=" + IntegerToString(g_bindCount));
+   g_takenCount = 0;
+   g_bindCount = 0;
+}
+
+bool PositionIdAlive(const ulong posId)
+{
+   if(posId == 0) return false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((ulong)PositionGetInteger(POSITION_IDENTIFIER) == posId) return true;
+   }
+   return false;
+}
+
+// Keep taken/bind arrays honest after Flat / manual / DD / missed DEAL_OUT.
+// - No EA positions left -> wipe everything (nothing to protect).
+// - Bind whose position id is gone -> free that key (orphan after abnormal close).
+// - Taken with no bind left -> drop (should not block forever).
+// Disarming BUY/SELL alone does NOT call clear — open layers still block.
+void ReconcileTakenBinds()
+{
+   if(!HasEAPositions())
+   {
+      TakenClearAll("no open layers");
+      return;
+   }
+
+   for(int i = g_bindCount - 1; i >= 0; i--)
+   {
+      if(PositionIdAlive(g_bindPosId[i])) continue;
+      TakenForget(g_bindPivot[i], g_bindIsBuy[i], g_bindIsStop[i]);
+      LogInfo("TAKEN freed (reconcile/dead pos) " + (g_bindIsBuy[i] ? "BUY " : "SELL ")
+              + (g_bindIsStop[i] ? "STOP" : "LIMIT")
+              + " pivot " + DoubleToString(g_bindPivot[i], _Digits)
+              + " | pos#" + IntegerToString((long)g_bindPosId[i]));
+      BindForgetAt(i);
+   }
+
+   for(int t = g_takenCount - 1; t >= 0; t--)
+   {
+      bool hasBind = false;
+      for(int b = 0; b < g_bindCount; b++)
+         if(g_bindIsBuy[b] == g_takenIsBuy[t] && g_bindIsStop[b] == g_takenIsStop[t]
+            && TakenSamePivot(g_bindPivot[b], g_takenPivot[t]))
+         { hasBind = true; break; }
+      if(!hasBind) TakenForgetAt(t);
+   }
+}
+
 // Drop taken entries whose pivot no longer appears in the current scan pool
 // AND no open layer still binds them (restart safety / orphan cleanup).
 void TakenPruneToScan(const double &lv[], const int n)
@@ -1570,10 +1635,10 @@ void RelocatePending(const int idx, const double newLvl, const double newPivot)
 // "Wanted" per direction: keep ONE pending resting ahead of the open layers
 // while the side holds fewer than MaxLayersPerDir layers — regardless of P/L
 // (a losing side still webs; that is the range accumulation). The pending sits
-// at the NEAREST free level (ValidPendingLevel skips taken same-type pivots).
-// When it fills, that pivot+type is remembered for the scan lifetime, the
-// dynamic bank sweep closes every layer in profit, and a freed slot re-arms
-// on a different (or opposite-type) level.
+// at the NEAREST free level (ValidPendingLevel skips pivots still held by an
+// open layer of the same type). When it fills, that pivot+type is bound to the
+// new position id; when THAT layer closes, the key frees and may re-arm.
+// Dynamic bank sweep closes profit layers (each close frees its own key).
 void ManagePendings()
 {
    // sync tracked list with the broker (fills fall out here; also catches
@@ -1964,11 +2029,16 @@ void CloseDirection(const bool isBuy, const string reason)
       NotifyPush((isBuy ? "BUY" : "SELL") + " CLOSED x" + IntegerToString(closed)
                  + " (" + reason + ") | P/L: " + DoubleToString(totalPL, 2));
    }
+   ReconcileTakenBinds(); // free keys if DEAL_OUT was missed / side now flat
 }
 
 void CloseAllEA(const string reason = "")
 {
-   if(!HasEAPositions()) return;
+   if(!HasEAPositions())
+   {
+      TakenClearAll("already flat");
+      return;
+   }
    if(!CanAttemptClose())
    {
       LogGuardOnce("close_blocked", "BLOCKED close" + (reason != "" ? " (" + reason + ")" : "")
@@ -2007,6 +2077,7 @@ void CloseAllEA(const string reason = "")
       LogInfo("CLOSE ALL" + (reason != "" ? " (" + reason + ")" : "") + " | net P/L " + DoubleToString(totalPL, 2));
       NotifyPush("CLOSED ALL" + (reason != "" ? " (" + reason + ")" : "") + " | Net P/L: " + DoubleToString(totalPL, 2));
    }
+   ReconcileTakenBinds(); // Flat / DD / schedule / SL-halt — wipe if nothing left
 }
 
 //====================== PRICE / LOT HELPERS ======================
