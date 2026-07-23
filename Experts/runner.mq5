@@ -76,40 +76,40 @@ enum ENUM_PIP_SCOPE
 
 //====================== INPUTS ======================
 input group "===== Timeframe / Direction ====="
-input ENUM_TIMEFRAMES InpT1       = PERIOD_CURRENT; // Signal timeframe (levels + roll clock)
-input bool   TradeBuy             = true;   // Allow BUY slot
-input bool   TradeSell            = true;   // Allow SELL slot
+input ENUM_TIMEFRAMES InpT1        = PERIOD_M1; // Signal timeframe (levels + roll clock)
+input bool   TradeBuy              = true;      // Allow BUY slot
+input bool   TradeSell             = true;      // Allow SELL slot
 
 input group "===== Orders ====="
-input double LotSize              = 0.01;   // Lots per layer
-input long   MagicNumber          = 556677; // EA id (own history on a shared account)
-input int    MaxSpreadPips        = 0;      // Skip new pendings above this spread (0 = ignore)
-input int    SlippagePoints       = 20;     // Max deviation for market closes (points)
-input int    HardSLPips           = 0;      // Optional OFFLINE broker SL, pips (0 = none; guards are the SL)
+input double LotSize               = 0.01;      // Lots per layer
+input long   MagicNumber           = 556677;    // EA id (own history on a shared account)
+input int    MaxSpreadPips         = 0;         // Skip new pendings above this spread (0 = ignore)
+input int    SlippagePoints        = 20;        // Max deviation for market closes (points)
+input int    HardSLPips            = 0;         // Optional OFFLINE broker SL, pips (0 = none; guards are the SL)
 
 input group "===== S/R Pivot Levels ====="
-input bool   StartBreakMode       = true;   // Panel mode default: true=break (stops), false=reject (limits)
-input int    PivotLeftBars        = 10;     // Pivot left bars (match sr-breaks indicator)
-input int    PivotRightBars       = 10;     // Pivot right bars (match sr-breaks indicator)
-input int    LevelsLookback       = 100;    // Bars scanned for pivots
-input double SrBufferPips          = 100;   // Break: beyond level by this. Reject: within this of level. 0 = exact
+input bool   StartBreakMode        = true;      // Panel mode default: true=break (stops), false=reject (limits)
+input int    PivotLeftBars         = 10;        // Pivot left bars (match sr-breaks indicator)
+input int    PivotRightBars        = 10;        // Pivot right bars (match sr-breaks indicator)
+input int    LevelsLookback        = 100;       // Bars scanned for pivots
+input double SrBufferPips          = 0;         // Break: beyond level by this. Reject: within this of level. 0 = exact
 
 input group "===== Runner roll / web ====="
-input double RollMinProfitPips     = 0;     // Min floating profit (pips) to arm a roll / add a web layer (0 = any profit)
-input int    MaxLayersPerDir       = 1;     // Max layers per direction (1 = single roll; >1 = web). Panel Lyr chip cycles 1..6
-input bool   UseManualSLHalt       = false; // Recognize a manually-set position SL: when any layer's SL hits -> close ALL + halt (grey BUY/SELL)
+input double RollMinProfitPips     = 0;         // Min floating profit (pips) to arm a roll / add a web layer (0 = any profit)
+input int    MaxLayersPerDir       = 1;         // Max layers per direction (1 = single roll; >1 = web). Panel Lyr chip cycles 1..6
+input bool   UseManualSLHalt       = false;     // Recognize a manually-set position SL: when any layer's SL hits -> close ALL + halt (grey BUY/SELL)
 
 input group "===== Guards (stackable, OR — first to trip wins; all default OFF) ====="
 // DD guards are GLOBAL: measured across BOTH legs' net floating, close everything.
 // Pips guard: per-direction (close only the losing side) or global (close both).
-input bool   UseGuardDDPct         = false; // Global drawdown-% guard
-input double GuardDDPctValue       = 20;    // Close all when net floating <= -this % of base
-input double AccountRiskBase       = 0;     // DD% base (0 = live account balance; else your allocation)
-input bool   UseGuardDDMoney       = false; // Global drawdown-money guard
-input double GuardDDMoneyValue     = 20;    // Close all when net floating <= -this (account currency)
-input bool   UseGuardPips          = false; // Pips-per-layer guard
-input double GuardPipsValue        = 1000;  // Close when a layer's floating <= -this (pips)
-input ENUM_PIP_SCOPE GuardPipsScope = PIP_PER_DIR; // pips guard: per-dir (loss side) or global (both)
+input bool   UseGuardDDPct          = false;        // Global drawdown-% guard
+input double GuardDDPctValue        = 20;           // Close all when net floating <= -this % of base
+input double AccountRiskBase        = 0;            // DD% base (0 = live account balance; else your allocation)
+input bool   UseGuardDDMoney        = false;        // Global drawdown-money guard
+input double GuardDDMoneyValue      = 20;           // Close all when net floating <= -this (account currency)
+input bool   UseGuardPips           = false;        // Pips-per-layer guard
+input double GuardPipsValue         = 1000;         // Close when a layer's floating <= -this (pips)
+input ENUM_PIP_SCOPE GuardPipsScope = PIP_PER_DIR;  // pips guard: per-dir (loss side) or global (both)
 
 input group "===== Session Filter (WIB / Jakarta time) ====="
 input bool UseSession          = true; // Enable daily trading-hours window
