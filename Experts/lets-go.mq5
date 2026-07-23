@@ -33,7 +33,12 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.64"
+#property version   "5.65"
+// v5.65: Fib zone leg age — the 'fibo' chip now cycles fibo->fib1->fib2->fib3,
+//        anchoring the zone to an older ZigZag leg (1=newest, 2/3 legs behind)
+//        while the swing SL keeps tracking the newest swing. Input
+//        FiboStructureShift sets the default; GV-persisted. ScanZigZagCore
+//        gained a shift arg (default 1, so the SL path is byte-identical).
 // v5.64: Fib golden-zone T1 entry — sticky retracement AREA off the latest
 //        plain-ZigZag leg (shares the swing-SL zigzag params, no ATR, no
 //        iCustom; leg rebuilt once per bar to match the fibo.mq5 indicator).
@@ -220,6 +225,7 @@ input group "===== Fib Golden Zone (T1 entry; shares the SwSL ZigZag) ====="
 // zone is a fixed area that only moves on a new bar. Entry = live price inside
 // the zone, ANDed into the T1 gate like the other modules.
 input bool   UseFibZone    = false;  // Fib golden-zone entry ON/OFF
+input int    FiboStructureShift = 1; // Fib zone leg age (1=newest, 2/3=legs behind)
 input double ZoneLevelMin  = 0.5;    // Shallow edge of zone (fib ratio)
 input double ZoneLevelMax  = 0.618;  // Deep edge of zone (fib ratio)
 
@@ -309,6 +315,7 @@ bool g_T1_UseStochCross, g_T1_UseStochClassic, g_T1_UseSrBounce, g_T1_UseSrBreak
 bool g_StCrossSel = false, g_StClassicSel = false;
 bool g_SrOn = false, g_SrBreakSel = true; // g_SrBreakSel: true=break, false=reject
 bool g_T1_UseFibZone = false;             // Fib golden-zone entry (own ON/OFF chip)
+int  g_T1_FibShift   = 1;                 // Fib zone leg age, cycled fibo->fib1..3 on the chip
 bool g_T1_UseMacdBias, g_T1_UseRsiBias;
 bool g_T2_UseStoch, g_T2_StochObOs;
 bool g_T2_UseMacdBias, g_T2_UseRsiBias;
@@ -623,6 +630,7 @@ void RuntimeApplyInputDefaults()
    g_SrBreakSel   = (T1_UseSrBreak || !T1_UseSrBounce); // break wins ties; default break
    ApplyFamilyMasters();
    g_T1_UseFibZone = UseFibZone;
+   g_T1_FibShift   = (int)MathMax(1, MathMin(3, FiboStructureShift)); // chip range 1..3
    g_T1_UseMacdBias = T1_UseMacdBias;
    g_T1_UseRsiBias = T1_UseRsiBias;
    g_T1_MaOn  = T1_UseMA;
@@ -674,6 +682,7 @@ void RuntimeSaveAllToGV()
    PanelSaveBool("T1_srOn", g_SrOn);
    PanelSaveBool("T1_srR", g_SrBreakSel);
    PanelSaveBool("T1_fib", g_T1_UseFibZone);
+   PanelSaveInt("T1_fibS", g_T1_FibShift);
    PanelSaveBool("T1_macd", g_T1_UseMacdBias);
    PanelSaveBool("T1_rsi", g_T1_UseRsiBias);
    PanelSaveBool("T1_maOn", g_T1_MaOn);
@@ -724,6 +733,7 @@ void RuntimeLoadFromGV()
    g_SrOn         = PanelLoadBool("T1_srOn", g_SrOn);
    g_SrBreakSel   = PanelLoadBool("T1_srR", g_SrBreakSel);
    g_T1_UseFibZone = PanelLoadBool("T1_fib", g_T1_UseFibZone);
+   g_T1_FibShift   = (int)MathMax(1, MathMin(3, PanelLoadInt("T1_fibS", g_T1_FibShift)));
    ApplyFamilyMasters();
    g_T1_UseMacdBias = PanelLoadBool("T1_macd", g_T1_UseMacdBias);
    g_T1_UseRsiBias = PanelLoadBool("T1_rsi", g_T1_UseRsiBias);
@@ -833,7 +843,7 @@ void PanelClearMemory()
    string ids[] = {
       "INP_FP","Conf","Buy","Sell","Grid","Collapsed","SrLv",
       "StXMode","StCMode","T1_stXt","T1_stCt","T2_stT","T1_rsiT","T2_rsiT","T1_macdT","T2_macdT","T1_MaDir","T1_MaChk",
-      "T1_stX","T1_stC","T1_srOn","T1_srR","T1_macd","T1_rsi","T1_maOn","T1_ma",
+      "T1_stX","T1_stC","T1_fib","T1_fibS","T1_srOn","T1_srR","T1_macd","T1_rsi","T1_maOn","T1_ma",
       "T2_stoch","T2_stOb","T2_stDir","T2_macd","T2_rsi","T2_maOn","T2_maT1","T2_MaDir","T2_MaChk",
       "MaSL","MaLn","SwSL","Trail","Session","Weekend","News","Broker"
    };
@@ -1111,6 +1121,21 @@ string SrLvChipTip()
    return "S/R level source: " + SourceText(g_SrSource) + " (own / T2)";
 }
 
+// Fib chip merges on/off with the leg-age lag: fibo (off) -> fib1 -> fib2 ->
+// fib3 -> fibo. The number is the lag readout (1=newest leg, 2/3 legs behind).
+string FibChipText()
+{
+   return g_T1_UseFibZone ? ("fib" + IntegerToString(g_T1_FibShift)) : "fibo";
+}
+
+string FibChipTip()
+{
+   return g_T1_UseFibZone
+      ? "T1 Fib golden zone ON, leg lag " + IntegerToString(g_T1_FibShift)
+        + " (1=newest). Click to step lag / turn off"
+      : "T1 Fib golden zone OFF (sticky area off the swing-SL zigzag leg). Click to turn on";
+}
+
 string MaDirText(const ENUM_MA_TREND_MODE mode) { return mode == MA_TREND_FOLLOW ? "follow" : "reversal"; }
 // Two timings only: live (tick) / closed (candle arms it).
 string MaCheckText(const ENUM_MA_CHECK mode)
@@ -1178,6 +1203,17 @@ void PanelCycleSource(ENUM_TF_SOURCE &source, const string gvId)
    PanelSaveInt(gvId, (int)source);
 }
 
+void PanelCycleFib()
+{
+   // fibo (off) -> fib1 -> fib2 -> fib3 -> fibo
+   if(!g_T1_UseFibZone)       { g_T1_UseFibZone = true;  g_T1_FibShift = 1; }
+   else if(g_T1_FibShift < 3) { g_T1_FibShift++; }
+   else                       { g_T1_UseFibZone = false; g_T1_FibShift = 1; }
+   PanelSaveBool("T1_fib", g_T1_UseFibZone);
+   PanelSaveInt("T1_fibS", g_T1_FibShift);
+   g_fibLegBar = 0; // rebuild the zone leg next tick with the new shift
+}
+
 void PanelPaintState()
 {
    if(!ShowPanel) return;
@@ -1235,7 +1271,7 @@ void PanelPaintState()
       PanelStyleDisabled(PanelObj("T1_maChk"), MaCheckText(g_T1_MACheckMode), "MA family OFF");
    }
 
-   PanelStyleChip(PanelObj("T1_fib"), "fibo", "T1 entry: Fib golden zone — sticky area off the latest ZigZag leg (shares the swing-SL zigzag)", g_T1_UseFibZone, false);
+   PanelStyleChip(PanelObj("T1_fib"), FibChipText(), FibChipTip(), g_T1_UseFibZone, false);
    PanelStyleChip(PanelObj("T1_sr"), "S/R", "T1 S/R family ON/OFF: one-shot trigger at the pivot level (break or reject), re-arms when price leaves", g_SrOn, false);
    if(g_SrOn)
    {
@@ -1544,7 +1580,7 @@ bool PanelHandleClick(const string sparam)
       PanelSaveBool("T1_srR", g_SrBreakSel);
       ApplyFamilyMasters();
    }
-   else if(id == "T1_fib") PanelToggleBool(g_T1_UseFibZone, "T1_fib");
+   else if(id == "T1_fib") PanelCycleFib();
    else if(id == "T1_rsi") PanelToggleBool(g_T1_UseRsiBias, "T1_rsi");
    else if(id == "T1_rsiTm")
    {
@@ -3441,15 +3477,16 @@ int RangeHighest(const double &arr[], int from, int to)
 }
 
 // Plain ZigZag — a faithful port of the standard MetaQuotes ZigZag indicator
-// (Depth / Deviation / Backstep, NO ATR). Returns the most recent swing high
-// and swing low prices over the lookback window, plus their bar positions
-// (0 = oldest .. total-1 = forming) so a caller can tell which swing is newer.
-// Drop a ZigZag indicator with the same three params on the chart and the
-// pivots line up exactly.
+// (Depth / Deviation / Backstep, NO ATR). Returns one leg's swing high and low
+// prices over the lookback window, plus their bar positions (0 = oldest ..
+// total-1 = forming) so a caller can tell which swing is newer. `shift` picks
+// the leg age: 1 = newest (the swing SL always uses this), 2/3 = one/two
+// confirmed swings behind (the Fib zone lag). Drop a ZigZag indicator with the
+// same three params on the chart and the pivots line up exactly.
 bool ScanZigZagCore(const ENUM_TIMEFRAMES tf, const int inpDepth, const int inpDeviation,
                     const int inpBackstep, const int lookback,
                     double &lastHigh, double &lastLow,
-                    int &outHighPos, int &outLowPos)
+                    int &outHighPos, int &outLowPos, const int shift = 1)
 {
    lastHigh = 0; lastLow = 0; outHighPos = -1; outLowPos = -1;
    const int    depth    = MathMax(1, inpDepth);
@@ -3511,7 +3548,13 @@ bool ScanZigZagCore(const ENUM_TIMEFRAMES tf, const int inpDepth, const int inpD
       highMap[i] = (high[i] == ext) ? ext : 0.0;
    }
 
-   // ---- pass 2: keep only alternating pivots; track the latest of each ----
+   // ---- pass 2: record every confirmed alternating pivot, oldest -> newest.
+   // A pivot is only final once the OPPOSITE extreme confirms (until then it can
+   // still relocate), so we push it at each state flip; the last running pivot
+   // is pushed after the loop. `shift` then picks which leg to return; shift 1
+   // = the two newest pivots, byte-identical to the old latest-of-each output.
+   double swPrice[]; int swPos[]; bool swHigh[];
+   int    swN = 0;
    int    whatlookfor = 0;      // 0 = first pivot, 1 = expecting a high, -1 = expecting a low
    int    lastHighPos = -1, lastLowPos = -1;
    double curHigh = 0.0, curLow = 0.0;
@@ -3527,22 +3570,45 @@ bool ScanZigZagCore(const ENUM_TIMEFRAMES tf, const int inpDepth, const int inpD
             if(lowMap[i] != 0.0 && lowMap[i] < curLow && highMap[i] == 0.0)
             { lastLowPos = i; curLow = lowMap[i]; }
             if(highMap[i] != 0.0 && lowMap[i] == 0.0)
-            { curHigh = highMap[i]; lastHighPos = i; whatlookfor = -1; }
+            { ZZPushSwing(swPrice, swPos, swHigh, swN, curLow, lastLowPos, false); // low final
+              curHigh = highMap[i]; lastHighPos = i; whatlookfor = -1; }
             break;
          case -1: // expecting a low; a higher high relocates the last high
             if(highMap[i] != 0.0 && highMap[i] > curHigh && lowMap[i] == 0.0)
             { lastHighPos = i; curHigh = highMap[i]; }
             if(lowMap[i] != 0.0 && highMap[i] == 0.0)
-            { curLow = lowMap[i]; lastLowPos = i; whatlookfor = 1; }
+            { ZZPushSwing(swPrice, swPos, swHigh, swN, curHigh, lastHighPos, true); // high final
+              curLow = lowMap[i]; lastLowPos = i; whatlookfor = 1; }
             break;
       }
    }
+   // last running pivot (the newest, still-relocatable one)
+   if(whatlookfor == 1)       ZZPushSwing(swPrice, swPos, swHigh, swN, curLow,  lastLowPos,  false);
+   else if(whatlookfor == -1) ZZPushSwing(swPrice, swPos, swHigh, swN, curHigh, lastHighPos, true);
 
-   lastHigh = (lastHighPos >= 0) ? curHigh : 0.0;
-   lastLow  = (lastLowPos  >= 0) ? curLow  : 0.0;
-   outHighPos = lastHighPos;
-   outLowPos  = lastLowPos;
+   if(swN < 2) return true; // no full leg -> outputs stay empty, caller rejects
+
+   // step back by whole pivots; clamp to the oldest available leg
+   int s = MathMax(1, shift);
+   if(s > swN - 1) s = swN - 1;
+   int iA = swN - 1 - s, iB = swN - s;   // the chosen leg's two pivots (one high, one low)
+   if(swHigh[iA]) { lastHigh = swPrice[iA]; outHighPos = swPos[iA]; lastLow = swPrice[iB]; outLowPos = swPos[iB]; }
+   else           { lastHigh = swPrice[iB]; outHighPos = swPos[iB]; lastLow = swPrice[iA]; outLowPos = swPos[iA]; }
    return true;
+}
+
+// Append one confirmed ZigZag swing (price / bar position / high-or-low) to the
+// ordered pivot list. Parallel arrays grow in lockstep; caller tracks the count.
+void ZZPushSwing(double &price[], int &pos[], bool &isHigh[], int &n,
+                 double p, int barPos, bool high)
+{
+   ArrayResize(price,  n + 1);
+   ArrayResize(pos,    n + 1);
+   ArrayResize(isHigh, n + 1);
+   price[n]  = p;
+   pos[n]    = barPos;
+   isHigh[n] = high;
+   n++;
 }
 
 // SwSL-facing wrapper: unchanged signature (latest swing high/low only),
@@ -3556,17 +3622,18 @@ bool ScanZigZag(const ENUM_TIMEFRAMES tf, const int inpDepth, const int inpDevia
                          lastHigh, lastLow, hp, lp);
 }
 
-// Fib golden-zone leg: the latest ZigZag leg (older -> newer swing) + its
-// direction, from the SAME plain ZigZag the swing SL uses (SwingZZ* params).
-// The two most recent alternating pivots ARE the current leg; newer = the one
-// with the larger bar position. bullish = up leg (low -> high).
+// Fib golden-zone leg: a ZigZag leg (older -> newer swing) + its direction,
+// from the SAME plain ZigZag the swing SL uses (SwingZZ* params). g_T1_FibShift
+// picks the leg age (1 = newest, 2/3 legs behind) so the zone can hold an older
+// structure while the SL keeps tracking the newest swing. newer = the pivot with
+// the larger bar position. bullish = up leg (low -> high).
 bool GetFibLeg(bool &haveLeg, bool &bullish, double &olderP, double &newerP)
 {
    haveLeg = false; bullish = false; olderP = 0; newerP = 0;
 
    double zzHigh = 0, zzLow = 0; int hp = -1, lp = -1;
    if(!ScanZigZagCore(g_t1, SwingZZDepth, SwingZZDeviation, SwingZZBackstep,
-                      SwingZZLookback, zzHigh, zzLow, hp, lp))
+                      SwingZZLookback, zzHigh, zzLow, hp, lp, g_T1_FibShift))
       return false;
    if(hp < 0 || lp < 0 || zzHigh <= 0 || zzLow <= 0) return false; // need both swings
 
