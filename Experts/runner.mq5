@@ -597,8 +597,8 @@ void PanelPaintState()
       + ". Click to collapse", true, true);
 
    // Mode row: BUY / SELL / break / Flat.
-   PanelStyleChip(PanelObj("BUY"),  "BUY",  "BUY slot ON/OFF (arms buy pendings)",  g_TradeBuy,  false);
-   PanelStyleChip(PanelObj("SELL"), "SELL", "SELL slot ON/OFF (arms sell pendings)", g_TradeSell, false);
+   PanelStyleChip(PanelObj("BUY"),  "buy",  "BUY slot ON/OFF (arms buy pendings)",  g_TradeBuy,  false);
+   PanelStyleChip(PanelObj("SELL"), "sell", "SELL slot ON/OFF (arms sell pendings)", g_TradeSell, false);
    PanelStyleChip(PanelObj("SrBR"), SrBrChipText(), SrBrChipTip(), false, true);
    PanelStyleAction(PanelObj("Flat"), "Flat", "Close ALL runner positions now (manual)",
                     GetTickCount64() < g_flatFlashUntilMs);
