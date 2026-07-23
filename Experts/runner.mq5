@@ -17,12 +17,12 @@
 //|         Pre-positioned so a fast spike FILLS it (no race, no      |
 //|         naked gap); a freed slot re-arms instantly.               |
 //|                                                                  |
-//|  Bank : each layer opens with a TAKE-PROFIT at ITS next level    |
-//|         (the pivot beyond entry). Price gets there -> broker      |
-//|         banks the small profit -> slot frees -> pending re-arms   |
-//|         (re-firing the level). Small-bank accumulation. A layer   |
-//|         with no pivot on its profit side yet runs until one       |
-//|         forms (EnsureLayerTPs sets its TP then).                  |
+//|  Bank : DYNAMIC — no fixed take-profit. When a pending fills      |
+//|         (price reached a level), EVERY layer in profit is closed  |
+//|         by MARKET order. Market close has no broker minimum-       |
+//|         distance, so banking always happens AT the level (a fixed |
+//|         TP would get pushed off by the stops-level). Losers run;  |
+//|         the freed slots re-arm -> small-bank accumulation.        |
 //|                                                                  |
 //|  Exits: NO per-trade SL. The backstop is a set of stackable      |
 //|         guards (OR — first to trip wins): global DD%, global     |
@@ -42,7 +42,16 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.05"
+#property version   "1.06"
+// v1.06: Match lets-go exactly + dynamic banking. (1) Level pick = the NEAREST
+//        level only, no walking to a farther one (my walk-outward is why the
+//        stop landed at 4085 instead of the nearer 4074); if the nearest is too
+//        close for the broker it waits, like lets-go. (2) Ripped the broker
+//        take-profit — the broker stops-level was pushing the TP off its level
+//        (4086 instead of 4071). Banking is now DYNAMIC: a pending fill (price
+//        hit a level) closes EVERY layer in profit via market order, so there
+//        is no minimum-distance constraint. Removed NextLevelTP / EnsureLayerTPs.
+//        Added a DumpLevels diagnostic (InpDebugLog).
 // v1.05: Web fixed to actually accumulate + bank. The old "only add a layer
 //        while the frontier is in profit" gate blocked a losing side from
 //        webbing (and churned SET/DEL as price crossed entry) — removed: a side
@@ -207,6 +216,7 @@ datetime g_lastCloseFailTime = 0;
 bool  g_newsBlackoutCached = false;
 ulong g_newsLastCheckMs    = 0;
 bool  g_slHaltPending      = false;   // a manual SL hit -> flatten + halt on next tick
+bool  g_bankSweep          = false;   // a pending filled -> bank all profit layers next tick
 
 //====================== LOGGING / PUSH ======================
 string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
@@ -906,9 +916,16 @@ void OnTick()
       return;
    }
 
-   if(newBar) EnsureLayerTPs(); // give any TP-less layer its bank level once a pivot forms
-   ManageGuards();              // DD% / DD$ / pips backstop — may close
-   ManagePendings();            // one pending ahead per side, each carries its bank-TP
+   // A pending just filled (price hit a level) -> bank every layer in profit.
+   if(g_bankSweep)
+   {
+      g_bankSweep = false;
+      CloseAllProfitLayers();
+   }
+
+   if(newBar && InpDebugLog) DumpLevels(); // diagnostic: what levels runner sees
+   ManageGuards();    // DD% / DD$ / pips backstop — may close
+   ManagePendings();  // one pending ahead per side at the NEAREST level, no broker TP
 }
 
 //====================== SESSION (WIB inputs; true Jakarta via GMT) ======================
@@ -1062,22 +1079,42 @@ int CollectPivots(double &lv[])
    return n;
 }
 
-// The broker-VALID pending ENTRY price a direction wants right now (given the
-// mode), plus the TAKE-PROFIT for the layer it would open (the next pivot in the
-// profit direction beyond the entry level — that is the "hit level, bank small"
-// exit). Walks OUTWARD from price to the first pivot whose order price clears the
-// broker stops-level, so a breached/too-close nearest level never produces a
-// "bad stops" reject.
-//   break  buy : level ABOVE  -> buy  STOP  at level + buf ; TP = next pivot up
-//   break  sell: level BELOW  -> sell STOP  at level - buf ; TP = next pivot dn
-//   reject buy : level BELOW  -> buy  LIMIT at level + buf ; TP = next pivot up
-//   reject sell: level ABOVE  -> sell LIMIT at level - buf ; TP = next pivot dn
-// tpPrice = 0 when no pivot exists yet on the profit side (EnsureLayerTPs sets
-// it once one forms). Fetch the pivot margin above LevelsLookback so the oldest
-// pivot still confirms (matches the sr-breaks indicator — same fix as lets-go).
-bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop, double &tpPrice)
+// DIAGNOSTIC (InpDebugLog only, once per bar): print every level runner
+// detected within LevelsLookback and the 3 nearest each side of price — so you
+// can compare directly to the sr-breaks indicator and see whether a level is
+// missing (scan depth) or present-but-not-picked (selection). No trading effect.
+void DumpLevels()
 {
-   price = 0; tpPrice = 0; isStop = g_SrBreakSel;
+   double lv[];
+   int n = CollectPivots(lv);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double px  = 0.5 * (bid + ask);
+   string below = "", above = "";
+   int bc = 0, ac = 0;
+   for(int k = n - 1; k >= 0 && bc < 3; k--)      // 3 nearest below (descending)
+      if(lv[k] < px) { below += DoubleToString(lv[k], _Digits) + " "; bc++; }
+   for(int k = 0; k < n && ac < 3; k++)           // 3 nearest above (ascending)
+      if(lv[k] > px) { above += DoubleToString(lv[k], _Digits) + " "; ac++; }
+   LogInfo("LEVELS lookback=" + IntegerToString(LevelsLookback) + " found=" + IntegerToString(n)
+           + " | px=" + DoubleToString(px, _Digits)
+           + " | below(near->far): " + (below == "" ? "-" : below)
+           + " | above(near->far): " + (above == "" ? "-" : above));
+}
+
+// The pending ENTRY price a direction wants right now — the NEAREST level only,
+// exactly like lets-go. It does NOT walk to a farther level: if the nearest
+// level's order price is too close for the broker's stops-level, it returns
+// false and waits (rather than parking an order at a far level). No take-profit
+// — banking is dynamic (close on a fill), so the broker stops-level never
+// pushes a target off its level.
+//   break  buy : nearest level ABOVE -> buy  STOP  at level + buf
+//   break  sell: nearest level BELOW -> sell STOP  at level - buf
+//   reject buy : nearest level BELOW -> buy  LIMIT at level + buf
+//   reject sell: nearest level ABOVE -> sell LIMIT at level - buf
+bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop)
+{
+   price = 0; isStop = g_SrBreakSel;
    const double buf   = MathMax(0.0, SrBufferPips) * g_pip;
    const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -1089,55 +1126,22 @@ bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop, double &tp
    int n = CollectPivots(lv);
    if(n == 0) return false; // no pivots yet
 
-   // wantAbove: break buy / reject sell -> levels above; else levels below.
+   // break buy / reject sell want the nearest level ABOVE; else the nearest BELOW.
    const bool wantAbove = (g_SrBreakSel == isBuy);
-   int kEntry = -1;
-   if(wantAbove)
-   {
-      for(int k = 0; k < n && kEntry < 0; k++) // ascending: nearest above first
-      {
-         if(lv[k] <= px) continue;
-         double cand = NormalizePrice(isBuy ? lv[k] + buf : lv[k] - buf);
-         bool ok = isStop ? (cand - ask > minStop)   // break  buy  stop  (above market)
-                          : (cand - bid > minStop);  // reject sell limit (above market)
-         if(ok) { price = cand; kEntry = k; }
-      }
-   }
-   else
-   {
-      for(int k = n - 1; k >= 0 && kEntry < 0; k--) // descending: nearest below first
-      {
-         if(lv[k] >= px) continue;
-         double cand = NormalizePrice(isBuy ? lv[k] + buf : lv[k] - buf);
-         bool ok = isStop ? (bid - cand > minStop)   // break  sell stop  (below market)
-                          : (ask - cand > minStop);  // reject buy  limit (below market)
-         if(ok) { price = cand; kEntry = k; }
-      }
-   }
-   if(kEntry < 0) return false; // no placeable entry level on that side yet
+   double lvl = 0; bool have = false;
+   if(wantAbove) { for(int k = 0; k < n; k++)      if(lv[k] > px) { lvl = lv[k]; have = true; break; } }
+   else          { for(int k = n - 1; k >= 0; k--) if(lv[k] < px) { lvl = lv[k]; have = true; break; } }
+   if(!have) return false; // no level on that side yet
 
-   // TP = next pivot in the PROFIT direction beyond the entry level, clearing
-   // stops-level from the entry price. buy -> next pivot up; sell -> next down.
-   tpPrice = NextLevelTP(isBuy, lv, n, kEntry, price, minStop);
+   double cand = NormalizePrice(isBuy ? lvl + buf : lvl - buf);
+   bool ok;
+   if(isBuy) ok = isStop ? (cand - ask > minStop)   // break  buy  stop
+                         : (ask - cand > minStop);  // reject buy  limit
+   else      ok = isStop ? (bid - cand > minStop)   // break  sell stop
+                         : (cand - bid > minStop);  // reject sell limit
+   if(!ok) return false; // nearest level too close for the broker right now — wait, don't skip out
+   price = cand;
    return true;
-}
-
-// Next pivot in the profit direction beyond entry level index kEntry (lv sorted
-// ascending), that clears minStop from the entry order price. 0 if none yet.
-double NextLevelTP(const bool isBuy, const double &lv[], const int n,
-                   const int kEntry, const double entryPrice, const double minStop)
-{
-   if(isBuy)
-   {
-      for(int m = kEntry + 1; m < n; m++)
-         if(lv[m] - entryPrice > minStop) return NormalizePrice(lv[m]);
-   }
-   else
-   {
-      for(int m = kEntry - 1; m >= 0; m--)
-         if(entryPrice - lv[m] > minStop) return NormalizePrice(lv[m]);
-   }
-   return 0.0; // no pivot on the profit side yet
 }
 
 //====================== POSITION / PENDING HELPERS ======================
@@ -1272,7 +1276,7 @@ void AdoptOurPendings()
       LogInfo("PEND adopted " + IntegerToString(g_pendCount) + " resting order(s) from previous attach");
 }
 
-void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl, const double tp)
+void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl)
 {
    if(g_pendCount >= PEND_MAX) return; // never overflow the tracking arrays
    double lots = NormalizeLots(LotSize);
@@ -1282,20 +1286,18 @@ void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl, co
                    DoubleToString(LotSize, 2) + ") = 0 (check LotSize vs broker min/max/step)");
       return;
    }
-   // TP = the layer's bank level (next pivot in the profit direction; 0 = none
-   // yet, EnsureLayerTPs sets it later). SL only if HardSLPips (offline safety).
+   // No broker TP — banking is dynamic (close on a fill). SL only if HardSLPips.
    double sl = 0;
    if(HardSLPips > 0)
       sl = isBuy ? NormalizePrice(lvl - HardSLPips * g_pip)
                  : NormalizePrice(lvl + HardSLPips * g_pip);
-   double tpN = (tp > 0) ? NormalizePrice(tp) : 0.0;
 
    const string cm = "runner pend sr";
    bool ok;
-   if(isBuy)  ok = isStop ? trade.BuyStop(lots, lvl, _Symbol, sl, tpN, ORDER_TIME_GTC, 0, cm)
-                          : trade.BuyLimit(lots, lvl, _Symbol, sl, tpN, ORDER_TIME_GTC, 0, cm);
-   else       ok = isStop ? trade.SellStop(lots, lvl, _Symbol, sl, tpN, ORDER_TIME_GTC, 0, cm)
-                          : trade.SellLimit(lots, lvl, _Symbol, sl, tpN, ORDER_TIME_GTC, 0, cm);
+   if(isBuy)  ok = isStop ? trade.BuyStop(lots, lvl, _Symbol, sl, 0, ORDER_TIME_GTC, 0, cm)
+                          : trade.BuyLimit(lots, lvl, _Symbol, sl, 0, ORDER_TIME_GTC, 0, cm);
+   else       ok = isStop ? trade.SellStop(lots, lvl, _Symbol, sl, 0, ORDER_TIME_GTC, 0, cm)
+                          : trade.SellLimit(lots, lvl, _Symbol, sl, 0, ORDER_TIME_GTC, 0, cm);
    if(ok && trade.ResultOrder() > 0)
    {
       g_pendTicket[g_pendCount] = trade.ResultOrder();
@@ -1304,7 +1306,6 @@ void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl, co
       g_pendCount++;
       LogInfo("PEND SET " + (isBuy ? "BUY " : "SELL ") + (isStop ? "STOP" : "LIMIT")
               + " @ " + DoubleToString(lvl, _Digits)
-              + (tpN > 0 ? " TP " + DoubleToString(tpN, _Digits) : " TP -")
               + (sl > 0 ? " | offline SL " + DoubleToString(sl, _Digits) : ""));
    }
    else
@@ -1323,17 +1324,16 @@ int PendIndexForDir(const bool isBuy)
    return -1;
 }
 
-// Move a resting pending to a new level + TP IN PLACE (OrderModify) — no cancel,
-// no gap. Keeps the offline SL aligned to the new level if HardSLPips is set.
-void RelocatePending(const int idx, const double newLvl, const double newTP)
+// Move a resting pending to a new level IN PLACE (OrderModify) — no cancel, no
+// gap. Keeps the offline SL aligned to the new level if HardSLPips is set.
+void RelocatePending(const int idx, const double newLvl)
 {
    double np = NormalizePrice(newLvl);
    double sl = 0;
    if(HardSLPips > 0)
       sl = g_pendIsBuy[idx] ? NormalizePrice(np - HardSLPips * g_pip)
                             : NormalizePrice(np + HardSLPips * g_pip);
-   double tpN = (newTP > 0) ? NormalizePrice(newTP) : 0.0;
-   if(trade.OrderModify(g_pendTicket[idx], np, sl, tpN, ORDER_TIME_GTC, 0))
+   if(trade.OrderModify(g_pendTicket[idx], np, sl, 0, ORDER_TIME_GTC, 0))
    {
       LogInfo("PEND MOVE " + (g_pendIsBuy[idx] ? "BUY" : "SELL") + " "
               + DoubleToString(g_pendLevel[idx], _Digits) + " -> " + DoubleToString(np, _Digits));
@@ -1357,9 +1357,10 @@ void RelocatePending(const int idx, const double newLvl, const double newTP)
 //     frontier went to loss / hit the web cap (on the next candle).
 // "Wanted" per direction: keep ONE pending resting ahead of the open layers
 // while the side holds fewer than MaxLayersPerDir layers — regardless of P/L
-// (a losing side still webs; that is the range accumulation). Each pending
-// carries its bank-TP, so a filled layer takes its small profit at the next
-// level, frees the slot, and the pending re-arms (re-firing the level).
+// (a losing side still webs; that is the range accumulation). The pending sits
+// at the NEAREST level (ValidPendingLevel, no walk). When it fills, the dynamic
+// bank sweep (CloseAllProfitLayers) closes every layer in profit, freeing slots
+// so the pending re-arms and re-fires the level.
 void ManagePendings()
 {
    // sync tracked list with the broker (fills fall out here; also catches
@@ -1393,42 +1394,35 @@ void ManagePendings()
          continue;
       }
 
-      double lvl = 0, tp = 0; bool isStop = true;
-      bool haveLvl = ValidPendingLevel(isBuy, lvl, isStop, tp);
+      double lvl = 0; bool isStop = true;
+      bool haveLvl = ValidPendingLevel(isBuy, lvl, isStop);
 
       if(ri < 0)
       {
          // Nothing resting -> place immediately (instant re-arm).
-         if(haveLvl) PlacePendingOrder(isBuy, isStop, lvl, tp);
+         if(haveLvl) PlacePendingOrder(isBuy, isStop, lvl);
          continue;
       }
 
       // Already resting: leave it be. Only when the candle closes and the level
-      // has actually changed do we MOVE it (and its TP) in place — no gap.
+      // has actually changed do we MOVE it in place — no gap.
       if(newBar && haveLvl && MathAbs(g_pendLevel[ri] - lvl) > point * 0.5)
-         RelocatePending(ri, lvl, tp);
+         RelocatePending(ri, lvl);
    }
 
    g_srRecalcBar = curBar; // advance the relocation clock once per pass
 }
 
-//====================== BANK-TP REPAIR ======================
-// Each layer normally opens with a take-profit at its next level (set on the
-// pending). But a layer that filled when NO pivot existed on its profit side
-// (a fresh high/low) opens with TP=0 and would just run. Once per candle, give
-// any such layer a TP at the nearest pivot on its profit side, so it banks its
-// small profit when price gets there. Only ADDS a missing TP — never moves an
-// existing one.
-void EnsureLayerTPs()
+//====================== DYNAMIC BANK (close all profit on a level hit) ======================
+// A pending filled -> price just reached a level. Bank it: close EVERY open
+// layer that is in profit (both directions). Market close, so the broker
+// stops-level never applies (that is why there is no fixed TP). The just-filled
+// layer is ~breakeven and survives; losers survive and run. Called from OnTick
+// when the fill handler flags g_bankSweep (no trade ops inside OnTradeTransaction).
+void CloseAllProfitLayers()
 {
-   double lv[];
-   int n = CollectPivots(lv);
-   if(n == 0) return;
-
-   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   const double minStop = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
+   if(!CanAttemptClose())
+   { LogGuardOnce("bank_blocked", "BLOCKED bank sweep — trade path guard; will retry"); return; }
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -1436,29 +1430,19 @@ void EnsureLayerTPs()
       if(tk == 0) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-      if(PositionGetDouble(POSITION_TP) != 0.0) continue; // already has a bank level
+
+      double pl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      if(pl <= 0) continue; // only bank winners; losers run
 
       bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
-      double tp = 0;
-      if(isBuy)
-      {
-         for(int m = 0; m < n; m++)
-            if(lv[m] > entry && lv[m] - bid > minStop) { tp = NormalizePrice(lv[m]); break; }
-      }
+      if(trade.PositionClose(tk))
+         LogInfo("BANK " + (isBuy ? "BUY" : "SELL") + " layer | P/L " + DoubleToString(pl, 2));
       else
       {
-         for(int m = n - 1; m >= 0; m--)
-            if(lv[m] < entry && ask - lv[m] > minStop) { tp = NormalizePrice(lv[m]); break; }
-      }
-      if(tp <= 0) continue; // still no pivot on the profit side — let it run
-
-      if(trade.PositionModify(tk, PositionGetDouble(POSITION_SL), tp))
-         LogInfo("TP SET " + (isBuy ? "BUY" : "SELL") + " layer @ " + DoubleToString(entry, _Digits)
-                 + " -> bank " + DoubleToString(tp, _Digits));
-      else
-         LogGuardOnce("fail_tp", "FAIL layer TP rc=" + IntegerToString(trade.ResultRetcode())
+         g_lastCloseFailTime = TimeCurrent();
+         LogGuardOnce("fail_bank", "FAIL bank close rc=" + IntegerToString(trade.ResultRetcode())
                       + " " + trade.ResultRetcodeDescription());
+      }
    }
 }
 
@@ -1576,15 +1560,15 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    { NotifyBrokerClose(trans.deal); return; }
    if(dealEntry != DEAL_ENTRY_IN) return;
 
-   // A pending of ours filled: untrack it and log the open. The new layer
-   // already carries its bank-TP (set on the pending), so it self-closes at its
-   // next level; ManagePendings re-arms the freed slot. No trade ops here
-   // (trading from inside OnTradeTransaction is re-entrant/unsafe).
+   // A pending of ours filled: untrack it, log the open, and flag a bank sweep.
+   // Price just reached a level, so OnTick closes every layer now in profit
+   // (dynamic bank). No trade ops here (re-entrant/unsafe inside this handler).
    int idx = PendFindByOrder((ulong)HistoryDealGetInteger(trans.deal, DEAL_ORDER));
    if(idx < 0) return; // not one of ours (all entries are pendings)
    const bool isBuy = g_pendIsBuy[idx];
    const double lvl = g_pendLevel[idx];
    PendUntrackIndex(idx);
+   g_bankSweep = true;
    string msg = "OPEN " + (isBuy ? "BUY" : "SELL") + " "
               + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2)
               + " @ " + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_PRICE), _Digits)
