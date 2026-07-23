@@ -40,7 +40,7 @@ input int    BackgroundTransparencyPct = 85; // Fill transparency (0=solid,100=i
 input bool   EnableAlerts       = false;  // Alert on level cross
 
 input int    InpRefreshSeconds  = 30;     // Force refresh interval in seconds (missing-object recovery)
-input int    LookbackBars       = 100;    // Bars scanned for the current leg (MATCH THE EA)
+input int    LookbackBars       = 200;    // Bars scanned for the current leg (MATCH THE EA)
 
 input bool   Show_neg_0_65   = false; input double Val_neg_0_65   = -0.65;  input color Col_neg_0_65   = clrTeal;
 input bool   Show_neg_0_618  = false; input double Val_neg_0_618  = -0.618; input color Col_neg_0_618  = clrTeal;

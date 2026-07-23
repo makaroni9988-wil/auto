@@ -54,7 +54,7 @@ input int    FiboStructureShift = 1;      // Fib leg age (1=newest, 2=one leg be
 input bool   Reverse            = false;  // Reverse anchor direction
 input int    BackgroundTransparencyPct = 85; // Fill transparency (0=solid,100=invisible)
 input bool   EnableAlerts       = false;  // Alert on level cross
-input int    LookbackBars       = 100;    // Bars scanned for the current leg (MATCH THE EA)
+input int    LookbackBars       = 200;    // Bars scanned for the current leg (MATCH THE EA)
 // (No ExtendLeft/Right, label, or refresh inputs in this build: buffers
 // cannot extend past the data or carry text, and they survive delete-all
 // so no missing-object recovery is needed. See the header.)

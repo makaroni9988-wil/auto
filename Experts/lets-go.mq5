@@ -156,8 +156,8 @@ input int                     StochDPeriod         = 3;                 // Stoch
 input int                     StochSlowing         = 3;                 // Stochastic slowing
 input ENUM_MA_METHOD          StochMAMethod        = MODE_SMA;          // Stochastic MA method
 input ENUM_STO_PRICE          StochPriceField      = STO_LOWHIGH;       // Stochastic price field
-input double                  StochOverboughtLevel = 80;                // GLOBAL OB level
-input double                  StochOversoldLevel   = 20;                // GLOBAL OS level
+input double                  StochOverboughtLevel = 70;                // GLOBAL OB level
+input double                  StochOversoldLevel   = 30;                // GLOBAL OS level
 input double                  StochMidLevel        = 50;                // GLOBAL MID level (cross pullback + T2 mid)
 input ENUM_STOCH_CROSS_MODE   StochCrossMode       = STOCH_CROSS_OBOS;  // T1 cross mode (pullback / any / OB-OS)
 input ENUM_SIG_TIMING         StochCrossTiming     = SIG_CLOSED;        // T1 cross: closed / live (panel x.closed / x.live)
@@ -192,7 +192,7 @@ input int                MaShift        = 0;           // MA horizontal shift
 
 input ENUM_MA_STYLE MaStyle        = MA_STYLE_DOUBLE;  // Default when T1/T2 UseMA is ON
 input ENUM_MA_CHECK T1_MACheckMode = MA_CHECK_CLOSED;  // T1 Live / Closed (m1 / m2)
-input double        MABufferPips   = 100;              // T1 m1 buffer (pips)
+input double        MABufferPips   = 50;               // T1 m1 buffer (pips)
 
 input int MaPeriod     = 34; // Single line (m1)
 input int MaFastPeriod = 13; // m2 fast
@@ -200,7 +200,7 @@ input int MaSlowPeriod = 34; // m2 slow
 
 // m1 / m2 entry direction.
 input ENUM_MA_TREND_MODE T1_MaTrendMode  = MA_TREND_FOLLOW;    // T1 m1 / m2 direction
-input double             MaMinDiffPips   = 100;                // T1 m2: 0 = any separation
+input double             MaMinDiffPips   = 50;                 // T1 m2: 0 = any separation
 
 input group "===== T2 MA (single line; independent when panel source = own) ====="
 input ENUM_MA_METHOD     T2_MaMethod       = MODE_EMA;         // T2 own MA method
@@ -208,7 +208,7 @@ input ENUM_APPLIED_PRICE T2_MaAppliedPrice = PRICE_CLOSE;      // T2 own applied
 input int                T2_MaShift        = 0;                // T2 own horizontal shift
 input ENUM_MA_CHECK      T2_MACheckMode    = MA_CHECK_CLOSED;  // T2 own Live / Closed
 input ENUM_MA_TREND_MODE T2_MaTrendMode    = MA_TREND_FOLLOW;  // T2 own Follow or Reversal
-input double             T2_MABufferPips   = 100;              // T2 own buffer (pips)
+input double             T2_MABufferPips   = 50;               // T2 own buffer (pips)
 input int                T2_MaPeriod       = 200;              // T2 own single line
 
 input group "===== S/R Pivot Entry (T1 entry; levels own or T2) ====="
