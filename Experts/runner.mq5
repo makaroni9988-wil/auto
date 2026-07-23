@@ -5,17 +5,18 @@
 //|  Idea : one timeframe, S/R break OR reject (chip toggle, dynamic |
 //|         mid-trade). Rests REAL broker stop/limit orders at the   |
 //|         nearest pivot level, per direction. HEDGING account:     |
-//|         one BUY slot + one SELL slot, both can be live at once,  |
-//|         max 1 layer each.                                        |
+//|         a BUY side + a SELL side, both live at once, each up to  |
+//|         MaxLayersPerDir layers (1 = single roll, >1 = a web).    |
 //|                                                                  |
-//|  Runner: REST-AHEAD. A pending is always pre-positioned at the   |
-//|         broker for every direction that should hold one — empty  |
-//|         slot = entry/hedge pending, profitable open layer = roll |
-//|         pending resting at the next level ahead. A fast spike    |
-//|         FILLS it (no race, no naked gap). On a roll fill the     |
-//|         direction briefly holds 2 layers; the older/profitable   |
-//|         one is banked, the runner kept — so it ladders and banks |
-//|         (small or large) while staying 1 layer per direction.    |
+//|  Runner: a resting order is placed ONCE and left alone within    |
+//|         the candle; when the candle closes and the pivot has     |
+//|         genuinely moved it is MOVED in place (OrderModify) — no   |
+//|         delete, no gap, no jumping. Nothing resting + wanted ->   |
+//|         placed instantly (instant re-arm). Pre-positioned so a    |
+//|         fast spike FILLS it (no race, no naked gap). A side       |
+//|         accumulates layers while its frontier is in profit; once  |
+//|         it exceeds MaxLayersPerDir the oldest (deepest-profit)    |
+//|         layer is banked — it ladders and banks, small or large.   |
 //|         The LOSING side just runs; the banked winner cycles net  |
 //|         against its floating loss.                               |
 //|                                                                  |
@@ -37,14 +38,17 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.03"
+#property version   "1.04"
+// v1.04: Panel tidy — title arrow matches lets-go (▾ open / ▸ closed); the web
+//        control is now a wide 'SL halt' toggle + a "max layer" label + a value
+//        chip; layer cap 6 -> 5. Doc/comment audit (no behaviour change).
 // v1.03: Pending engine rebuilt clean (lets-go style) to kill the churn — a
 //        resting order is placed once and left untouched intra-candle; when the
 //        candle closes and the pivot has genuinely moved it is MOVED in place
 //        with OrderModify (no delete+replace, no gap, no jumping). Nothing
 //        resting + wanted -> placed instantly (instant re-arm after a fill).
 //        A transient (no level for a tick) never drops a resting order.
-// v1.02: Multi-layer WEB — MaxLayersPerDir (panel 'Lyr' chip, cycles 1..6). A
+// v1.02: Multi-layer WEB — MaxLayersPerDir (panel 'Lyr' chip, cycles 1..5). A
 //        side accumulates up to N layers while its frontier layer is in profit;
 //        ResolveDoubleLayers peels the OLDEST (deepest-profit) layer once the
 //        count exceeds N (MaxLayersPerDir=1 = the v1.01 single-layer roll). The
@@ -96,7 +100,7 @@ input double SrBufferPips          = 0;         // Break: beyond level by this. 
 
 input group "===== Runner roll / web ====="
 input double RollMinProfitPips     = 0;         // Min floating profit (pips) to arm a roll / add a web layer (0 = any profit)
-input int    MaxLayersPerDir       = 1;         // Max layers per direction (1 = single roll; >1 = web). Panel Lyr chip cycles 1..6
+input int    MaxLayersPerDir       = 1;         // Max layers per direction (1 = single roll; >1 = web). Panel Lyr chip cycles 1..5
 input bool   UseManualSLHalt       = false;     // Recognize a manually-set position SL: when any layer's SL hits -> close ALL + halt (grey BUY/SELL)
 
 input group "===== Guards (stackable, OR — first to trip wins; all default OFF) ====="
@@ -151,13 +155,13 @@ input bool InpNotifyOnOpen = false; // Push notification on OPEN / ROLL
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
 bool           g_TradeBuy, g_TradeSell;
 bool           g_SrBreakSel = true;   // true=break (stops), false=reject (limits)
-int            g_MaxLayersPerDir = 1; // web depth per direction (chip-cycled 1..6)
+int            g_MaxLayersPerDir = 1; // web depth per direction (chip-cycled 1..5)
 bool           g_UseSLHalt = false;   // manual-SL recognition: SL hit -> close all + halt
 bool           g_UseGuardDDPct, g_UseGuardDDMoney, g_UseGuardPips;
 ENUM_PIP_SCOPE g_GuardPipsScope;
 bool           g_UseSession, g_UseWeekendFilter, g_UseNewsFilter, g_UseBrokerSessionGuard;
 
-#define MAX_LAYERS_CAP 6              // panel Lyr chip cycles 1..this
+#define MAX_LAYERS_CAP 5              // panel Lyr chip cycles 1..this
 
 string g_gvPrefix       = "";
 string g_panelPrefix    = "";
@@ -387,7 +391,7 @@ string PanelObj(const string id) { return g_panelPrefix + id; }
 
 bool PanelIsNonInteractiveId(const string id)
 {
-   return (id == "LG" || id == "LR");
+   return (id == "LG" || id == "LR" || id == "LyrLbl");
 }
 
 void PanelDeleteAll()
@@ -536,17 +540,15 @@ string PipScopeChipTip()
 void PanelPaintState()
 {
    if(!ShowPanel) return;
+   // Title: name / timeframe / lot. Arrow shows collapse state (▸ closed, ▾ open).
+   string ttl = " " + EA_LABEL + "  " + TfText(g_t1) + "  " + DoubleToString(LotSize, 2)
+              + (g_panelCollapsed ? "  ▸" : "  ▾");
    if(g_panelCollapsed)
    {
-      PanelStyleChip(PanelObj("TTL"),
-         EA_LABEL + "  " + TfText(g_t1) + "  " + DoubleToString(LotSize, 2) + "  <",
-         "Click to expand panel", true, true);
+      PanelStyleChip(PanelObj("TTL"), ttl, "Click to expand panel", true, true);
       return;
    }
-
-   // Title: name / timeframe / lot. Doubles as collapse toggle.
-   PanelStyleChip(PanelObj("TTL"),
-      EA_LABEL + "  " + TfText(g_t1) + "  " + DoubleToString(LotSize, 2) + "  v",
+   PanelStyleChip(PanelObj("TTL"), ttl,
       "runner — timeframe " + TfText(g_t1) + ", lot " + DoubleToString(LotSize, 2)
       + ". Click to collapse", true, true);
 
@@ -557,12 +559,14 @@ void PanelPaintState()
    PanelStyleAction(PanelObj("Flat"), "Flat", "Close ALL runner positions now (manual)",
                     GetTickCount64() < g_flatFlashUntilMs);
 
-   // Control row: manual-SL halt toggle + web depth (max layers per direction).
+   // Control row: wide SL-halt toggle, then "max layer" label + value chip.
    PanelStyleChip(PanelObj("SLhalt"), "SL halt",
       "Manual SL recognition: drag an SL onto a layer (outside the range) — if any layer's SL hits, close ALL + halt BUY/SELL",
       g_UseSLHalt, false);
-   PanelStyleChip(PanelObj("Lyr"), "Lyr " + IntegerToString(g_MaxLayersPerDir),
-      "Web depth: max layers per direction = " + IntegerToString(g_MaxLayersPerDir)
+   PanelStyleChip(PanelObj("LyrLbl"), "max layer",
+      "Web depth: max layers per direction. Set with the number chip", true, true);
+   PanelStyleChip(PanelObj("Lyr"), IntegerToString(g_MaxLayersPerDir),
+      "Max layers per direction = " + IntegerToString(g_MaxLayersPerDir)
       + " (1 = single roll). Click to cycle 1.." + IntegerToString(MAX_LAYERS_CAP), false, true);
 
    // Guards header doubles as the live open/blocked status band.
@@ -622,11 +626,12 @@ void PanelBuild()
    PanelPlaceEvenRow(modeIds, 4, x0, y, rowW, gap, chipH);
    y += chipH + gap;
 
-   // Control row (below BUY/SELL, above the guards): SL-halt toggle + web depth.
-   // Two half-width chips.
-   const int halfW = (rowW - gap) / 2;
-   PanelEnsureButton("SLhalt", x0, y, halfW, chipH);
-   PanelEnsureButton("Lyr", x0 + halfW + gap, y, rowW - halfW - gap, chipH);
+   // Control row (below BUY/SELL, above the guards), on the 4-column grid:
+   // SL halt spans 2 columns (it matters), then "max layer" label + value chip.
+   const int col = chipW + gap;
+   PanelEnsureButton("SLhalt", x0,           y, 2 * chipW + gap, chipH);
+   PanelEnsureLabel ("LyrLbl", x0 + 2 * col, y, chipW,           chipH);
+   PanelEnsureButton("Lyr",    x0 + 3 * col, y, rowW - 3 * col,  chipH);
    y += chipH + gap + sectionGap;
 
    PanelEnsureLabel("LG", x0, y, rowW, chipH); y += chipH + gap;
@@ -639,7 +644,7 @@ void PanelBuild()
    PanelPlaceEvenRow(risk, 4, x0, y, rowW, gap, chipH);
 
    string liveIds[] = {
-      "TTL","BUY","SELL","SrBR","Flat","SLhalt","Lyr","LG",
+      "TTL","BUY","SELL","SrBR","Flat","SLhalt","LyrLbl","Lyr","LG",
       "Session","Weekend","News","Broker","LR",
       "gDDp","gDDm","gPip","gScope"
    };
@@ -890,7 +895,7 @@ void OnTick()
 
    ResolveDoubleLayers(); // peel the web back to MaxLayersPerDir (bank oldest winner)
    ManageGuards();        // DD% / DD$ / pips backstop — may close
-   ManagePendings();      // rest-ahead broker pendings: entry hedge + web ladder
+   ManagePendings();      // place-once / move-in-place pendings: entry hedge + web ladder
 }
 
 //====================== SESSION (WIB inputs; true Jakarta via GMT) ======================
@@ -1243,6 +1248,7 @@ void AdoptOurPendings()
 
 void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl)
 {
+   if(g_pendCount >= PEND_MAX) return; // one pending per direction; never overflow the arrays
    double lots = NormalizeLots(LotSize);
    if(lots <= 0)
    {
