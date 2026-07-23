@@ -16,6 +16,10 @@
 //|         place (OrderModify) — no delete, no gap, no jumping.     |
 //|         Pre-positioned so a fast spike FILLS it (no race, no     |
 //|         naked gap); a freed slot re-arms instantly.              |
+//|         TAKEN MEMORY: a fill consumes that pivot for that side + |
+//|         stop/limit type while the pivot stays in the lookback    |
+//|         scan — a retrace will not re-arm the same order type on  |
+//|         the same level (opposite side / mode-flip type still OK).|
 //|                                                                  |
 //|  Bank : DYNAMIC — no fixed take-profit. When a pending fills     |
 //|         (price reached a level), EVERY layer in profit is closed |
@@ -42,7 +46,14 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.07"
+#property version   "1.08"
+// v1.08: Taken-level memory. After a pending FILLS, that (pivot + side +
+//        stop/limit) is consumed for as long as the pivot still appears in the
+//        LevelsLookback scan — so a retrace cannot re-arm the SAME order type
+//        on the same level (stops the 4-layers-on-1-level stack). Opposite
+//        side (e.g. sell stop after buy stop) and a mid-trade mode flip
+//        (stop <-> limit) are different keys and may still arm. Nearest pick
+//        skips consumed pivots only (not a general walk for stops-level).
 // v1.07: Audit fixes. (1) MaxSpreadPips now gates NEW pending placement (panel
 //        BLOCK already showed it; ManagePendings ignored it — resting orders
 //        stay). (2) Bank sweep retries when CanAttemptClose blocks instead of
@@ -187,10 +198,21 @@ datetime g_lastBarTime = 0;           // per-candle latch clock (log cadence onl
 // tracked — reconcile never touches others.
 #define PEND_MAX 2
 ulong  g_pendTicket[PEND_MAX];
-double g_pendLevel[PEND_MAX];
+double g_pendLevel[PEND_MAX];   // broker order price (pivot ± buf)
+double g_pendPivot[PEND_MAX];   // raw pivot (taken-memory key)
 bool   g_pendIsBuy[PEND_MAX];
+bool   g_pendIsStop[PEND_MAX];  // stop vs limit at place-time (mode may flip later)
 int    g_pendCount = 0;
 datetime g_srRecalcBar = 0;           // levels-TF bar of the last relocate while orders rest
+
+// Taken memory: filled (pivot + side + stop/limit). Lives while that pivot
+// still appears in CollectPivots (LevelsLookback scan). Blocks same-type
+// re-arm on retrace; opposite side / mode-flip type are different keys.
+#define TAKEN_MAX 64
+double g_takenPivot[TAKEN_MAX];
+bool   g_takenIsBuy[TAKEN_MAX];
+bool   g_takenIsStop[TAKEN_MAX];
+int    g_takenCount = 0;
 
 datetime g_lastEntryFailTime = 0;
 datetime g_lastCloseFailTime = 0;
@@ -1100,19 +1122,82 @@ void DumpLevels()
            + " | above(near->far): " + (above == "" ? "-" : above));
 }
 
-// The pending ENTRY price a direction wants right now — the NEAREST level only,
-// exactly like lets-go. It does NOT walk to a farther level: if the nearest
-// level's order price is too close for the broker's stops-level, it returns
-// false and waits (rather than parking an order at a far level). No take-profit
-// — banking is dynamic (close on a fill), so the broker stops-level never
-// pushes a target off its level.
-//   break  buy : nearest level ABOVE -> buy  STOP  at level + buf
-//   break  sell: nearest level BELOW -> sell STOP  at level - buf
-//   reject buy : nearest level BELOW -> buy  LIMIT at level + buf
-//   reject sell: nearest level ABOVE -> sell LIMIT at level - buf
-bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop)
+//====================== TAKEN-LEVEL MEMORY ======================
+// Key = raw pivot + side + stop/limit. Same buy-stop cannot re-arm on a
+// retrace while the pivot is still in the lookback scan; sell-stop / mode-flip
+// limit at that pivot is a different key and may arm.
+bool TakenSamePivot(const double a, const double b)
 {
-   price = 0; isStop = g_SrBreakSel;
+   const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   return (MathAbs(a - b) <= point * 0.5);
+}
+
+bool TakenIs(const double pivot, const bool isBuy, const bool isStop)
+{
+   for(int i = 0; i < g_takenCount; i++)
+      if(g_takenIsBuy[i] == isBuy && g_takenIsStop[i] == isStop && TakenSamePivot(g_takenPivot[i], pivot))
+         return true;
+   return false;
+}
+
+void TakenRemember(const double pivot, const bool isBuy, const bool isStop)
+{
+   if(pivot <= 0) return;
+   if(TakenIs(pivot, isBuy, isStop)) return;
+   if(g_takenCount >= TAKEN_MAX)
+   {
+      // Ring: drop oldest so a long session cannot grow forever.
+      for(int i = 1; i < g_takenCount; i++)
+      {
+         g_takenPivot[i - 1]  = g_takenPivot[i];
+         g_takenIsBuy[i - 1]  = g_takenIsBuy[i];
+         g_takenIsStop[i - 1] = g_takenIsStop[i];
+      }
+      g_takenCount--;
+   }
+   g_takenPivot[g_takenCount]  = pivot;
+   g_takenIsBuy[g_takenCount]  = isBuy;
+   g_takenIsStop[g_takenCount] = isStop;
+   g_takenCount++;
+   LogDebug("TAKEN remember " + (isBuy ? "BUY " : "SELL ") + (isStop ? "STOP" : "LIMIT")
+            + " pivot " + DoubleToString(pivot, _Digits)
+            + " (n=" + IntegerToString(g_takenCount) + ")");
+}
+
+// Drop taken entries whose pivot no longer appears in the current scan pool.
+void TakenPruneToScan(const double &lv[], const int n)
+{
+   for(int i = g_takenCount - 1; i >= 0; i--)
+   {
+      bool alive = false;
+      for(int k = 0; k < n; k++)
+         if(TakenSamePivot(lv[k], g_takenPivot[i])) { alive = true; break; }
+      if(alive) continue;
+      LogDebug("TAKEN forget " + (g_takenIsBuy[i] ? "BUY " : "SELL ")
+               + (g_takenIsStop[i] ? "STOP" : "LIMIT")
+               + " pivot " + DoubleToString(g_takenPivot[i], _Digits) + " (left scan)");
+      for(int j = i; j < g_takenCount - 1; j++)
+      {
+         g_takenPivot[j]  = g_takenPivot[j + 1];
+         g_takenIsBuy[j]  = g_takenIsBuy[j + 1];
+         g_takenIsStop[j] = g_takenIsStop[j + 1];
+      }
+      g_takenCount--;
+   }
+}
+
+// The pending ENTRY price a direction wants right now — the NEAREST *eligible*
+// level (skips pivots already taken for this side+stop/limit). If the nearest
+// free level's order price is too close for the broker's stops-level, it
+// returns false and waits (rather than parking an order at a far level). No
+// take-profit — banking is dynamic (close on a fill).
+//   break  buy : nearest free level ABOVE -> buy  STOP  at level + buf
+//   break  sell: nearest free level BELOW -> sell STOP  at level - buf
+//   reject buy : nearest free level BELOW -> buy  LIMIT at level + buf
+//   reject sell: nearest free level ABOVE -> sell LIMIT at level - buf
+bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop, double &pivotOut)
+{
+   price = 0; pivotOut = 0; isStop = g_SrBreakSel;
    const double buf   = MathMax(0.0, SrBufferPips) * g_pip;
    const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -1123,13 +1208,30 @@ bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop)
    double lv[];
    int n = CollectPivots(lv);
    if(n == 0) return false; // no pivots yet
+   TakenPruneToScan(lv, n);
 
-   // break buy / reject sell want the nearest level ABOVE; else the nearest BELOW.
+   // break buy / reject sell want the nearest free level ABOVE; else BELOW.
    const bool wantAbove = (g_SrBreakSel == isBuy);
    double lvl = 0; bool have = false;
-   if(wantAbove) { for(int k = 0; k < n; k++)      if(lv[k] > px) { lvl = lv[k]; have = true; break; } }
-   else          { for(int k = n - 1; k >= 0; k--) if(lv[k] < px) { lvl = lv[k]; have = true; break; } }
-   if(!have) return false; // no level on that side yet
+   if(wantAbove)
+   {
+      for(int k = 0; k < n; k++)
+      {
+         if(lv[k] <= px) continue;
+         if(TakenIs(lv[k], isBuy, isStop)) continue; // same type already filled here
+         lvl = lv[k]; have = true; break;
+      }
+   }
+   else
+   {
+      for(int k = n - 1; k >= 0; k--)
+      {
+         if(lv[k] >= px) continue;
+         if(TakenIs(lv[k], isBuy, isStop)) continue;
+         lvl = lv[k]; have = true; break;
+      }
+   }
+   if(!have) return false; // no free level on that side yet
 
    double cand = NormalizePrice(isBuy ? lvl + buf : lvl - buf);
    bool ok;
@@ -1137,8 +1239,9 @@ bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop)
                          : (ask - cand > minStop);  // reject buy  limit
    else      ok = isStop ? (bid - cand > minStop)   // break  sell stop
                          : (cand - bid > minStop);  // reject sell limit
-   if(!ok) return false; // nearest level too close for the broker right now — wait, don't skip out
+   if(!ok) return false; // nearest free level too close for the broker — wait
    price = cand;
+   pivotOut = lvl;
    return true;
 }
 
@@ -1205,7 +1308,9 @@ void PendUntrackIndex(const int idx)
    {
       g_pendTicket[i] = g_pendTicket[i + 1];
       g_pendLevel[i]  = g_pendLevel[i + 1];
+      g_pendPivot[i]  = g_pendPivot[i + 1];
       g_pendIsBuy[i]  = g_pendIsBuy[i + 1];
+      g_pendIsStop[i] = g_pendIsStop[i + 1];
    }
    g_pendCount--;
 }
@@ -1254,6 +1359,7 @@ void DeleteDirectionPending(const bool isBuy, const string reason)
 void AdoptOurPendings()
 {
    g_pendCount = 0;
+   const double buf = MathMax(0.0, SrBufferPips) * g_pip;
    for(int i = OrdersTotal() - 1; i >= 0 && g_pendCount < PEND_MAX; i--)
    {
       ulong tk = OrderGetTicket(i);
@@ -1265,16 +1371,23 @@ void AdoptOurPendings()
          ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT) continue;
       string cm = OrderGetString(ORDER_COMMENT);
       if(StringFind(cm, "runner pend") < 0) continue;
+      const bool isBuy  = (ot == ORDER_TYPE_BUY_STOP || ot == ORDER_TYPE_BUY_LIMIT);
+      const bool isStop = (ot == ORDER_TYPE_BUY_STOP || ot == ORDER_TYPE_SELL_STOP);
+      const double price = OrderGetDouble(ORDER_PRICE_OPEN);
+      // Best-effort pivot from order price (buf may have changed since place).
+      const double pivot = isBuy ? (price - buf) : (price + buf);
       g_pendTicket[g_pendCount] = tk;
-      g_pendLevel[g_pendCount]  = OrderGetDouble(ORDER_PRICE_OPEN);
-      g_pendIsBuy[g_pendCount]  = (ot == ORDER_TYPE_BUY_STOP || ot == ORDER_TYPE_BUY_LIMIT);
+      g_pendLevel[g_pendCount]  = price;
+      g_pendPivot[g_pendCount]  = pivot;
+      g_pendIsBuy[g_pendCount]  = isBuy;
+      g_pendIsStop[g_pendCount] = isStop;
       g_pendCount++;
    }
    if(g_pendCount > 0)
       LogInfo("PEND adopted " + IntegerToString(g_pendCount) + " resting order(s) from previous attach");
 }
 
-void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl)
+void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl, const double pivot)
 {
    if(g_pendCount >= PEND_MAX) return; // never overflow the tracking arrays
    double lots = NormalizeLots(LotSize);
@@ -1300,10 +1413,13 @@ void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl)
    {
       g_pendTicket[g_pendCount] = trade.ResultOrder();
       g_pendLevel[g_pendCount]  = lvl;
+      g_pendPivot[g_pendCount]  = pivot;
       g_pendIsBuy[g_pendCount]  = isBuy;
+      g_pendIsStop[g_pendCount] = isStop;
       g_pendCount++;
       LogInfo("PEND SET " + (isBuy ? "BUY " : "SELL ") + (isStop ? "STOP" : "LIMIT")
               + " @ " + DoubleToString(lvl, _Digits)
+              + " | pivot " + DoubleToString(pivot, _Digits)
               + (sl > 0 ? " | offline SL " + DoubleToString(sl, _Digits) : ""));
    }
    else
@@ -1324,7 +1440,7 @@ int PendIndexForDir(const bool isBuy)
 
 // Move a resting pending to a new level IN PLACE (OrderModify) — no cancel, no
 // gap. Keeps the offline SL aligned to the new level if HardSLPips is set.
-void RelocatePending(const int idx, const double newLvl)
+void RelocatePending(const int idx, const double newLvl, const double newPivot)
 {
    double np = NormalizePrice(newLvl);
    double sl = 0;
@@ -1334,8 +1450,10 @@ void RelocatePending(const int idx, const double newLvl)
    if(trade.OrderModify(g_pendTicket[idx], np, sl, 0, ORDER_TIME_GTC, 0))
    {
       LogInfo("PEND MOVE " + (g_pendIsBuy[idx] ? "BUY" : "SELL") + " "
-              + DoubleToString(g_pendLevel[idx], _Digits) + " -> " + DoubleToString(np, _Digits));
+              + DoubleToString(g_pendLevel[idx], _Digits) + " -> " + DoubleToString(np, _Digits)
+              + " | pivot " + DoubleToString(newPivot, _Digits));
       g_pendLevel[idx] = np;
+      g_pendPivot[idx] = newPivot;
    }
    else
       LogGuardOnce("fail_pend_mod", "FAIL pending modify rc=" + IntegerToString(trade.ResultRetcode())
@@ -1358,9 +1476,10 @@ void RelocatePending(const int idx, const double newLvl)
 // "Wanted" per direction: keep ONE pending resting ahead of the open layers
 // while the side holds fewer than MaxLayersPerDir layers — regardless of P/L
 // (a losing side still webs; that is the range accumulation). The pending sits
-// at the NEAREST level (ValidPendingLevel, no walk). When it fills, the dynamic
-// bank sweep (CloseAllProfitLayers) closes every layer in profit, freeing slots
-// so the pending re-arms and re-fires the level.
+// at the NEAREST free level (ValidPendingLevel skips taken same-type pivots).
+// When it fills, that pivot+type is remembered for the scan lifetime, the
+// dynamic bank sweep closes every layer in profit, and a freed slot re-arms
+// on a different (or opposite-type) level.
 void ManagePendings()
 {
    // sync tracked list with the broker (fills fall out here; also catches
@@ -1395,8 +1514,8 @@ void ManagePendings()
          continue;
       }
 
-      double lvl = 0; bool isStop = true;
-      bool haveLvl = ValidPendingLevel(isBuy, lvl, isStop);
+      double lvl = 0, pivot = 0; bool isStop = true;
+      bool haveLvl = ValidPendingLevel(isBuy, lvl, isStop, pivot);
 
       if(ri < 0)
       {
@@ -1407,7 +1526,7 @@ void ManagePendings()
             if(!spreadOk)
                LogGuardOnce("spread", "BLOCKED pend — spread > " + IntegerToString(MaxSpreadPips) + " pips");
             else
-               PlacePendingOrder(isBuy, isStop, lvl);
+               PlacePendingOrder(isBuy, isStop, lvl, pivot);
          }
          continue;
       }
@@ -1415,7 +1534,7 @@ void ManagePendings()
       // Already resting: leave it be. Only when the candle closes and the level
       // has actually changed do we MOVE it in place — no gap.
       if(newBar && haveLvl && MathAbs(g_pendLevel[ri] - lvl) > point * 0.5)
-         RelocatePending(ri, lvl);
+         RelocatePending(ri, lvl, pivot);
    }
 
    g_srRecalcBar = curBar; // advance the relocation clock once per pass
@@ -1576,19 +1695,24 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    { NotifyBrokerClose(trans.deal); return; }
    if(dealEntry != DEAL_ENTRY_IN) return;
 
-   // A pending of ours filled: untrack it, log the open, and flag a bank sweep.
-   // Price just reached a level, so OnTick closes every layer now in profit
-   // (dynamic bank). No trade ops here (re-entrant/unsafe inside this handler).
+   // A pending of ours filled: untrack it, mark the pivot+type taken (blocks
+   // same-type re-arm on retrace while the pivot stays in the lookback scan),
+   // log the open, and flag a bank sweep. No trade ops here (re-entrant).
    int idx = PendFindByOrder((ulong)HistoryDealGetInteger(trans.deal, DEAL_ORDER));
    if(idx < 0) return; // not one of ours (all entries are pendings)
-   const bool isBuy = g_pendIsBuy[idx];
-   const double lvl = g_pendLevel[idx];
+   const bool isBuy  = g_pendIsBuy[idx];
+   const bool isStop = g_pendIsStop[idx];
+   const double lvl  = g_pendLevel[idx];
+   const double piv  = g_pendPivot[idx];
    PendUntrackIndex(idx);
+   TakenRemember(piv, isBuy, isStop);
    g_bankSweep = true;
    string msg = "OPEN " + (isBuy ? "BUY" : "SELL") + " "
               + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2)
               + " @ " + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_PRICE), _Digits)
-              + " | pending fill at level " + DoubleToString(lvl, _Digits);
+              + " | pending fill at level " + DoubleToString(lvl, _Digits)
+              + " | pivot taken " + DoubleToString(piv, _Digits)
+              + " " + (isStop ? "STOP" : "LIMIT");
    LogInfo(msg);
    if(InpNotifyOnOpen) NotifyPush(msg);
 }
