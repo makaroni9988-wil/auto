@@ -17,9 +17,10 @@
 //|         Pre-positioned so a fast spike FILLS it (no race, no     |
 //|         naked gap); a freed slot re-arms instantly.              |
 //|         TAKEN MEMORY: a fill consumes that pivot for that side + |
-//|         stop/limit type while the pivot stays in the lookback    |
-//|         scan — a retrace will not re-arm the same order type on  |
-//|         the same level (opposite side / mode-flip type still OK).|
+//|         stop/limit type while the layer is still open (bound by  |
+//|         position id). When THAT layer closes, the key is freed   |
+//|         and may re-arm; other open layers keep their pivots.     |
+//|         Opposite side / mode-flip type are different keys.       |
 //|                                                                  |
 //|  Bank : DYNAMIC — no fixed take-profit. When a pending fills     |
 //|         (price reached a level), EVERY layer in profit is closed |
@@ -46,7 +47,11 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.08"
+#property version   "1.09"
+// v1.09: Taken clears when THAT layer closes. Each fill binds the new
+//        position id -> (pivot, side, stop/limit). On DEAL_OUT for that id,
+//        forget only that key so the level may re-arm; other open layers keep
+//        their pivots blocked. Scan-prune remains as a safety net.
 // v1.08: Taken-level memory. After a pending FILLS, that (pivot + side +
 //        stop/limit) is consumed for as long as the pivot still appears in the
 //        LevelsLookback scan — so a retrace cannot re-arm the SAME order type
@@ -205,14 +210,22 @@ bool   g_pendIsStop[PEND_MAX];  // stop vs limit at place-time (mode may flip la
 int    g_pendCount = 0;
 datetime g_srRecalcBar = 0;           // levels-TF bar of the last relocate while orders rest
 
-// Taken memory: filled (pivot + side + stop/limit). Lives while that pivot
-// still appears in CollectPivots (LevelsLookback scan). Blocks same-type
-// re-arm on retrace; opposite side / mode-flip type are different keys.
+// Taken memory: filled (pivot + side + stop/limit) while that LAYER is open.
+// Bound to the position id at fill; cleared when that position closes so the
+// same type may re-arm. Opposite side / mode-flip type are different keys.
+// Scan-prune is a safety net if a bind is lost (restart mid-trade, etc.).
 #define TAKEN_MAX 64
 double g_takenPivot[TAKEN_MAX];
 bool   g_takenIsBuy[TAKEN_MAX];
 bool   g_takenIsStop[TAKEN_MAX];
 int    g_takenCount = 0;
+
+// Which open layer owns which taken key (3 layers = 3 binds).
+ulong  g_bindPosId[TAKEN_MAX];
+double g_bindPivot[TAKEN_MAX];
+bool   g_bindIsBuy[TAKEN_MAX];
+bool   g_bindIsStop[TAKEN_MAX];
+int    g_bindCount = 0;
 
 datetime g_lastEntryFailTime = 0;
 datetime g_lastCloseFailTime = 0;
@@ -1123,21 +1136,46 @@ void DumpLevels()
 }
 
 //====================== TAKEN-LEVEL MEMORY ======================
-// Key = raw pivot + side + stop/limit. Same buy-stop cannot re-arm on a
-// retrace while the pivot is still in the lookback scan; sell-stop / mode-flip
-// limit at that pivot is a different key and may arm.
+// Key = raw pivot + side + stop/limit. Bound to the open position id so that
+// when THAT layer closes, only that key frees (other layers stay blocked).
 bool TakenSamePivot(const double a, const double b)
 {
    const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    return (MathAbs(a - b) <= point * 0.5);
 }
 
-bool TakenIs(const double pivot, const bool isBuy, const bool isStop)
+int TakenFindIndex(const double pivot, const bool isBuy, const bool isStop)
 {
    for(int i = 0; i < g_takenCount; i++)
       if(g_takenIsBuy[i] == isBuy && g_takenIsStop[i] == isStop && TakenSamePivot(g_takenPivot[i], pivot))
-         return true;
-   return false;
+         return i;
+   return -1;
+}
+
+bool TakenIs(const double pivot, const bool isBuy, const bool isStop)
+{
+   return (TakenFindIndex(pivot, isBuy, isStop) >= 0);
+}
+
+void TakenForgetAt(const int idx)
+{
+   if(idx < 0 || idx >= g_takenCount) return;
+   LogDebug("TAKEN forget " + (g_takenIsBuy[idx] ? "BUY " : "SELL ")
+            + (g_takenIsStop[idx] ? "STOP" : "LIMIT")
+            + " pivot " + DoubleToString(g_takenPivot[idx], _Digits));
+   for(int j = idx; j < g_takenCount - 1; j++)
+   {
+      g_takenPivot[j]  = g_takenPivot[j + 1];
+      g_takenIsBuy[j]  = g_takenIsBuy[j + 1];
+      g_takenIsStop[j] = g_takenIsStop[j + 1];
+   }
+   g_takenCount--;
+}
+
+void TakenForget(const double pivot, const bool isBuy, const bool isStop)
+{
+   int idx = TakenFindIndex(pivot, isBuy, isStop);
+   if(idx >= 0) TakenForgetAt(idx);
 }
 
 void TakenRemember(const double pivot, const bool isBuy, const bool isStop)
@@ -1164,7 +1202,65 @@ void TakenRemember(const double pivot, const bool isBuy, const bool isStop)
             + " (n=" + IntegerToString(g_takenCount) + ")");
 }
 
-// Drop taken entries whose pivot no longer appears in the current scan pool.
+void BindForgetAt(const int idx)
+{
+   if(idx < 0 || idx >= g_bindCount) return;
+   for(int j = idx; j < g_bindCount - 1; j++)
+   {
+      g_bindPosId[j]  = g_bindPosId[j + 1];
+      g_bindPivot[j]  = g_bindPivot[j + 1];
+      g_bindIsBuy[j]  = g_bindIsBuy[j + 1];
+      g_bindIsStop[j] = g_bindIsStop[j + 1];
+   }
+   g_bindCount--;
+}
+
+// Tie this open layer to its taken key. Cleared in OnTradeTransaction OUT.
+void BindLayer(const ulong posId, const double pivot, const bool isBuy, const bool isStop)
+{
+   if(posId == 0 || pivot <= 0) return;
+   for(int i = 0; i < g_bindCount; i++)
+      if(g_bindPosId[i] == posId) return; // already bound
+   if(g_bindCount >= TAKEN_MAX)
+   {
+      for(int i = 1; i < g_bindCount; i++)
+      {
+         g_bindPosId[i - 1]  = g_bindPosId[i];
+         g_bindPivot[i - 1]  = g_bindPivot[i];
+         g_bindIsBuy[i - 1]  = g_bindIsBuy[i];
+         g_bindIsStop[i - 1] = g_bindIsStop[i];
+      }
+      g_bindCount--;
+   }
+   g_bindPosId[g_bindCount]  = posId;
+   g_bindPivot[g_bindCount]  = pivot;
+   g_bindIsBuy[g_bindCount]  = isBuy;
+   g_bindIsStop[g_bindCount] = isStop;
+   g_bindCount++;
+   LogDebug("BIND pos#" + IntegerToString((long)posId)
+            + " -> " + (isBuy ? "BUY " : "SELL ") + (isStop ? "STOP" : "LIMIT")
+            + " pivot " + DoubleToString(pivot, _Digits));
+}
+
+// Layer closed -> free only that pivot+type; other open layers untouched.
+void BindReleaseOnClose(const ulong posId)
+{
+   if(posId == 0) return;
+   for(int i = 0; i < g_bindCount; i++)
+   {
+      if(g_bindPosId[i] != posId) continue;
+      TakenForget(g_bindPivot[i], g_bindIsBuy[i], g_bindIsStop[i]);
+      LogInfo("TAKEN freed (layer closed) " + (g_bindIsBuy[i] ? "BUY " : "SELL ")
+              + (g_bindIsStop[i] ? "STOP" : "LIMIT")
+              + " pivot " + DoubleToString(g_bindPivot[i], _Digits)
+              + " | pos#" + IntegerToString((long)posId));
+      BindForgetAt(i);
+      return;
+   }
+}
+
+// Drop taken entries whose pivot no longer appears in the current scan pool
+// AND no open layer still binds them (restart safety / orphan cleanup).
 void TakenPruneToScan(const double &lv[], const int n)
 {
    for(int i = g_takenCount - 1; i >= 0; i--)
@@ -1173,16 +1269,14 @@ void TakenPruneToScan(const double &lv[], const int n)
       for(int k = 0; k < n; k++)
          if(TakenSamePivot(lv[k], g_takenPivot[i])) { alive = true; break; }
       if(alive) continue;
-      LogDebug("TAKEN forget " + (g_takenIsBuy[i] ? "BUY " : "SELL ")
-               + (g_takenIsStop[i] ? "STOP" : "LIMIT")
-               + " pivot " + DoubleToString(g_takenPivot[i], _Digits) + " (left scan)");
-      for(int j = i; j < g_takenCount - 1; j++)
-      {
-         g_takenPivot[j]  = g_takenPivot[j + 1];
-         g_takenIsBuy[j]  = g_takenIsBuy[j + 1];
-         g_takenIsStop[j] = g_takenIsStop[j + 1];
-      }
-      g_takenCount--;
+      // Still bound to an open layer? keep until that layer closes.
+      bool bound = false;
+      for(int b = 0; b < g_bindCount; b++)
+         if(g_bindIsBuy[b] == g_takenIsBuy[i] && g_bindIsStop[b] == g_takenIsStop[i]
+            && TakenSamePivot(g_bindPivot[b], g_takenPivot[i]))
+         { bound = true; break; }
+      if(bound) continue;
+      TakenForgetAt(i);
    }
 }
 
@@ -1692,27 +1786,34 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
    if(dealEntry == DEAL_ENTRY_OUT || dealEntry == DEAL_ENTRY_OUT_BY)
-   { NotifyBrokerClose(trans.deal); return; }
+   {
+      // Free taken for THIS layer only (matched by position id from the fill).
+      BindReleaseOnClose((ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID));
+      NotifyBrokerClose(trans.deal);
+      return;
+   }
    if(dealEntry != DEAL_ENTRY_IN) return;
 
-   // A pending of ours filled: untrack it, mark the pivot+type taken (blocks
-   // same-type re-arm on retrace while the pivot stays in the lookback scan),
-   // log the open, and flag a bank sweep. No trade ops here (re-entrant).
+   // A pending of ours filled: untrack it, mark pivot+type taken, bind the new
+   // position id so a later close frees only that key, then flag bank sweep.
    int idx = PendFindByOrder((ulong)HistoryDealGetInteger(trans.deal, DEAL_ORDER));
    if(idx < 0) return; // not one of ours (all entries are pendings)
    const bool isBuy  = g_pendIsBuy[idx];
    const bool isStop = g_pendIsStop[idx];
    const double lvl  = g_pendLevel[idx];
    const double piv  = g_pendPivot[idx];
+   const ulong posId = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
    PendUntrackIndex(idx);
    TakenRemember(piv, isBuy, isStop);
+   BindLayer(posId, piv, isBuy, isStop);
    g_bankSweep = true;
    string msg = "OPEN " + (isBuy ? "BUY" : "SELL") + " "
               + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2)
               + " @ " + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_PRICE), _Digits)
               + " | pending fill at level " + DoubleToString(lvl, _Digits)
               + " | pivot taken " + DoubleToString(piv, _Digits)
-              + " " + (isStop ? "STOP" : "LIMIT");
+              + " " + (isStop ? "STOP" : "LIMIT")
+              + " | pos#" + IntegerToString((long)posId);
    LogInfo(msg);
    if(InpNotifyOnOpen) NotifyPush(msg);
 }
