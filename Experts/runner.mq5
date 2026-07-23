@@ -42,51 +42,33 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.06"
+#property version   "1.07"
+// v1.07: Audit fixes. (1) MaxSpreadPips now gates NEW pending placement (panel
+//        BLOCK already showed it; ManagePendings ignored it — resting orders
+//        stay). (2) Bank sweep retries when CanAttemptClose blocks instead of
+//        dropping the flag. (3) break/reject chip flip deletes resting pendings
+//        so the next tick re-arms with the correct stop/limit type (OrderModify
+//        cannot change type). (4) OnInit refuses non-hedging accounts. Comment
+//        hygiene for stale TP-repair / frontier-loss notes.
 // v1.06: Match lets-go exactly + dynamic banking. (1) Level pick = the NEAREST
-//        level only, no walking to a farther one (my walk-outward is why the
-//        stop landed at 4085 instead of the nearer 4074); if the nearest is too
-//        close for the broker it waits, like lets-go. (2) Ripped the broker
-//        take-profit — the broker stops-level was pushing the TP off its level
-//        (4086 instead of 4071). Banking is now DYNAMIC: a pending fill (price
-//        hit a level) closes EVERY layer in profit via market order, so there
-//        is no minimum-distance constraint. Removed NextLevelTP / EnsureLayerTPs.
-//        Added a DumpLevels diagnostic (InpDebugLog).
-// v1.05: Web fixed to actually accumulate + bank. The old "only add a layer
-//        while the frontier is in profit" gate blocked a losing side from
-//        webbing (and churned SET/DEL as price crossed entry) — removed: a side
-//        now webs up to MaxLayersPerDir regardless of P/L. Each layer opens with
-//        a TAKE-PROFIT at its next level, so it banks its small profit on its
-//        own and the freed slot re-arms (small-bank accumulation) — the peel
-//        (ResolveDoubleLayers) is gone. EnsureLayerTPs back-fills a TP for any
-//        layer that opened with no pivot on its profit side. RollMinProfitPips
-//        input retired (unused).
+//        level only (no walk-outward); if the nearest is too close for the
+//        broker it waits, like lets-go. (2) Ripped the broker take-profit —
+//        banking is DYNAMIC: a pending fill closes EVERY layer in profit via
+//        market order. Removed NextLevelTP / EnsureLayerTPs. Added DumpLevels
+//        diagnostic (InpDebugLog).
+// v1.05: Web accumulates regardless of P/L (removed frontier-in-profit gate).
+//        Had per-layer broker TP + EnsureLayerTPs (replaced by dynamic bank in
+//        v1.06). Peel ResolveDoubleLayers retired.
 // v1.04: Panel tidy — title arrow matches lets-go (▾ open / ▸ closed); the web
-//        control is now a wide 'SL halt' toggle + a "max layer" label + a value
+//        control is now a wide 'SL halt' toggle + a "max lyrs" label + a value
 //        chip; layer cap 6 -> 5. Doc/comment audit (no behaviour change).
-// v1.03: Pending engine rebuilt clean (lets-go style) to kill the churn — a
-//        resting order is placed once and left untouched intra-candle; when the
-//        candle closes and the pivot has genuinely moved it is MOVED in place
-//        with OrderModify (no delete+replace, no gap, no jumping). Nothing
-//        resting + wanted -> placed instantly (instant re-arm after a fill).
-//        A transient (no level for a tick) never drops a resting order.
-// v1.02: Multi-layer WEB — MaxLayersPerDir (panel 'Lyr' chip, cycles 1..5). A
-//        side accumulates up to N layers while its frontier layer is in profit;
-//        ResolveDoubleLayers peels the OLDEST (deepest-profit) layer once the
-//        count exceeds N (MaxLayersPerDir=1 = the v1.01 single-layer roll). The
-//        pips guard now trips on the WORST layer and closes the whole side.
-//        Manual SL-halt (panel 'SL halt' chip): drag an SL onto a layer; if any
-//        layer's SL hits, the EA flattens ALL and disarms BUY/SELL until you
-//        re-enable them — a manual emergency stop for the whole basket.
-// v1.01: REST-AHEAD engine. Pendings are pre-positioned at the broker so a fast
-//        spike fills them instead of racing a last-millisecond placement (the
-//        v1.00 "bad stops" reject that left a naked, unhedged position).
-//        ValidPendingLevel walks outward to the first placeable level (never
-//        rejected). A profitable open layer keeps a ROLL pending resting ahead;
-//        on fill the momentary 2-layer is collapsed by ResolveDoubleLayers —
-//        bank the older if in profit, else abort — so it ladders and banks
-//        (small or large) while always staying 1 layer per direction. Replaces
-//        the v1.00 live-detect ManageRolls (which missed fast moves).
+// v1.03: Pending engine rebuilt clean (lets-go style) — place once, leave
+//        intra-candle, OrderModify on bar close when the pivot moved.
+// v1.02: Multi-layer WEB — MaxLayersPerDir (panel 'Lyr' chip, cycles 1..5).
+//        Pips guard trips on the WORST layer. Manual SL-halt chip added.
+// v1.01: REST-AHEAD engine (pre-positioned pendings). Early builds walked
+//        outward for a placeable level and peeled via ResolveDoubleLayers;
+//        both retired by v1.05/v1.06 (nearest-only + dynamic bank).
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -121,7 +103,7 @@ input int    LevelsLookback        = 100;       // Bars scanned for pivots
 input double SrBufferPips          = 0;         // Break: beyond level by this. Reject: within this of level. 0 = exact
 
 input group "===== Web (layers) ====="
-input int    MaxLayersPerDir       = 1;         // Max layers per direction (1 = single, >1 = web). Panel 'max layer' chip cycles 1..5
+input int    MaxLayersPerDir       = 1;         // Max layers per direction (1 = single, >1 = web). Panel 'max lyrs' chip cycles 1..5
 input bool   UseManualSLHalt       = false;     // Recognize a manually-set position SL: when any layer's SL hits -> close ALL + halt (grey BUY/SELL)
 
 input group "===== Guards (stackable, OR — first to trip wins; all default OFF) ====="
@@ -581,7 +563,7 @@ void PanelPaintState()
    PanelStyleAction(PanelObj("Flat"), "Flat", "Close ALL runner positions now (manual)",
                     GetTickCount64() < g_flatFlashUntilMs);
 
-   // Control row: wide SL-halt toggle, then "max layer" label + value chip.
+   // Control row: wide SL-halt toggle, then "max lyrs" label + value chip.
    PanelStyleChip(PanelObj("SLhalt"), "SL halt",
       "Manual SL recognition: drag an SL onto a layer (outside the range) — if any layer's SL hits, close ALL + halt BUY/SELL",
       g_UseSLHalt, false);
@@ -593,10 +575,8 @@ void PanelPaintState()
 
    // Guards header doubles as the live open/blocked status band.
    long tradeMode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    bool cooldown = OrderRetryCooldownSec > 0 && (TimeCurrent() - g_lastEntryFailTime) < OrderRetryCooldownSec;
-   bool spreadBlocked = MaxSpreadPips > 0 && g_pip > 0 && (ask - bid) / g_pip > MaxSpreadPips;
+   bool spreadBlocked = !IsSpreadOk();
    bool blocked = InWeekendBlock() || !InDailySession() || InNewsBlackout() ||
                   !IsBrokerTradeSessionOpen() || !IsExpertTradingEnabled() ||
                   tradeMode != SYMBOL_TRADE_MODE_FULL || !IsTickFresh() ||
@@ -649,7 +629,7 @@ void PanelBuild()
    y += chipH + gap;
 
    // Control row (below BUY/SELL, above the guards), on the 4-column grid:
-   // SL halt spans 2 columns (it matters), then "max layer" label + value chip.
+   // SL halt spans 2 columns (it matters), then "max lyrs" label + value chip.
    const int col = chipW + gap;
    PanelEnsureButton("SLhalt", x0,           y, 2 * chipW + gap, chipH);
    PanelEnsureLabel ("LyrLbl", x0 + 2 * col, y, chipW,           chipH);
@@ -737,6 +717,9 @@ bool PanelHandleClick(const string sparam)
    {
       g_SrBreakSel = !g_SrBreakSel; // break <-> reject, dynamic mid-trade
       PanelSaveBool("SrBR", g_SrBreakSel);
+      // OrderModify cannot change stop <-> limit (or side of price). Pull
+      // resting pendings; ManagePendings re-arms with the correct type next tick.
+      if(g_pendCount > 0) DeleteOurPendings("mode flip break/reject");
    }
    else if(id == "Flat")
    {
@@ -810,6 +793,15 @@ int OnInit()
    RuntimeLoadFromInputsThenGV();
 
    g_t1 = (InpT1 == PERIOD_CURRENT) ? (ENUM_TIMEFRAMES)_Period : InpT1;
+
+   // Hedging only: BUY + SELL sides run live together (one pending each).
+   if((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE)
+      != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   {
+      LogInfo("INIT FAILED - runner needs a hedging account (BUY+SELL live together)");
+      NotifyPush("INIT FAILED - runner needs a hedging account");
+      return(INIT_FAILED);
+   }
 
    if(PivotLeftBars < 1 || PivotRightBars < 1)
    {
@@ -891,7 +883,7 @@ void OnTick()
 {
    PanelPollClicks();
 
-   // Per-candle clock — drives the once-per-bar TP-repair pass.
+   // Per-candle clock — DumpLevels cadence + aligns with pending relocate bar.
    bool newBar = false;
    datetime bt[];
    if(CopyTime(_Symbol, g_t1, 0, 1, bt) == 1 && bt[0] != g_lastBarTime)
@@ -917,10 +909,16 @@ void OnTick()
    }
 
    // A pending just filled (price hit a level) -> bank every layer in profit.
+   // Keep the flag if the trade path is blocked so the next tick retries.
    if(g_bankSweep)
    {
-      g_bankSweep = false;
-      CloseAllProfitLayers();
+      if(!CanAttemptClose())
+         LogGuardOnce("bank_blocked", "BLOCKED bank sweep — trade path guard; will retry");
+      else
+      {
+         g_bankSweep = false;
+         CloseAllProfitLayers();
+      }
    }
 
    if(newBar && InpDebugLog) DumpLevels(); // diagnostic: what levels runner sees
@@ -1347,14 +1345,16 @@ void RelocatePending(const int idx, const double newLvl)
 //====================== PENDING ENGINE (lets-go clean: place once, move in place) ======================
 // The rule, per direction — fast and stable, like lets-go's S/R engine:
 //   * Nothing resting and one is wanted -> PLACE it now (instant; so re-arming
-//     after a fill/peel is immediate).
+//     after a fill is immediate). Spread above MaxSpreadPips skips PLACE only
+//     (resting orders stay — no churn on a brief spike).
 //   * One already resting -> LEAVE IT untouched intra-candle. No re-place, no
 //     cancel, no jumping. When the candle CLOSES and the pivot has genuinely
 //     moved, MOVE the order in place with OrderModify (never delete+replace).
 //   * A transient (no valid level for a tick, price hugging the level) NEVER
 //     drops a resting order — it just stays.
-//   * Deleted only when the direction stops wanting one: disarmed (now), or its
-//     frontier went to loss / hit the web cap (on the next candle).
+//   * Deleted only when the direction stops wanting one: disarmed (now), or
+//     the web is full (on the next candle). Mode flip (break/reject) also
+//     deletes so the correct stop/limit type can be re-armed.
 // "Wanted" per direction: keep ONE pending resting ahead of the open layers
 // while the side holds fewer than MaxLayersPerDir layers — regardless of P/L
 // (a losing side still webs; that is the range accumulation). The pending sits
@@ -1375,6 +1375,7 @@ void ManagePendings()
    const datetime curBar = iTime(_Symbol, g_t1, 0);
    const bool newBar = (curBar != g_srRecalcBar);
    const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   const bool spreadOk = IsSpreadOk();
 
    for(int s = 0; s < 2; s++)
    {
@@ -1400,7 +1401,14 @@ void ManagePendings()
       if(ri < 0)
       {
          // Nothing resting -> place immediately (instant re-arm).
-         if(haveLvl) PlacePendingOrder(isBuy, isStop, lvl);
+         // Wide spread: skip PLACE only; do not pull anything that already rests.
+         if(haveLvl)
+         {
+            if(!spreadOk)
+               LogGuardOnce("spread", "BLOCKED pend — spread > " + IntegerToString(MaxSpreadPips) + " pips");
+            else
+               PlacePendingOrder(isBuy, isStop, lvl);
+         }
          continue;
       }
 
@@ -1422,8 +1430,13 @@ void ManagePendings()
 void CloseAllProfitLayers()
 {
    if(!CanAttemptClose())
-   { LogGuardOnce("bank_blocked", "BLOCKED bank sweep — trade path guard; will retry"); return; }
+   {
+      g_bankSweep = true; // keep / re-arm — OnTick may have cleared it already
+      LogGuardOnce("bank_blocked", "BLOCKED bank sweep — trade path guard; will retry");
+      return;
+   }
 
+   bool anyFail = false;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong tk = PositionGetTicket(i);
@@ -1439,11 +1452,14 @@ void CloseAllProfitLayers()
          LogInfo("BANK " + (isBuy ? "BUY" : "SELL") + " layer | P/L " + DoubleToString(pl, 2));
       else
       {
+         anyFail = true;
          g_lastCloseFailTime = TimeCurrent();
          LogGuardOnce("fail_bank", "FAIL bank close rc=" + IntegerToString(trade.ResultRetcode())
                       + " " + trade.ResultRetcodeDescription());
       }
    }
+   // Partial fail: re-arm so the next tick retries remaining winners.
+   if(anyFail) g_bankSweep = true;
 }
 
 //====================== GUARDS (DD% / DD$ / pips — OR, first to trip) ======================
@@ -1675,6 +1691,16 @@ bool CanAttemptClose()
    if(OrderRetryCooldownSec > 0 && (TimeCurrent() - g_lastCloseFailTime) < OrderRetryCooldownSec)
       return false;
    return IsTradePathOpen(true);
+}
+
+// MaxSpreadPips gate for NEW pending placement only (0 = ignore). Panel BLOCK
+// status uses the same rule; resting orders are left alone on a brief spike.
+bool IsSpreadOk()
+{
+   if(MaxSpreadPips <= 0 || g_pip <= 0) return true;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   return ((ask - bid) / g_pip <= MaxSpreadPips);
 }
 
 //====================== CLOSE HELPERS ======================
