@@ -16,6 +16,11 @@
 //|         place (OrderModify) — no delete, no gap, no jumping.     |
 //|         Pre-positioned so a fast spike FILLS it (no race, no     |
 //|         naked gap); a freed slot re-arms instantly.              |
+//|         TAKEN MEMORY: a fill consumes that pivot for that side + |
+//|         stop/limit type while the layer is still open (bound by  |
+//|         position id). When THAT layer closes, the key is freed   |
+//|         and may re-arm; other open layers keep their pivots.     |
+//|         Opposite side / mode-flip type are different keys.       |
 //|                                                                  |
 //|  Bank : DYNAMIC — no fixed take-profit. When a pending fills     |
 //|         (price reached a level), EVERY layer in profit is closed |
@@ -42,51 +47,49 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.06"
+#property version   "1.10"
+// v1.10: Taken/bind array cleaner. Reconcile every tick + after mass closes:
+//        no open EA layers -> wipe all taken+binds (Flat / manual / DD / schedule
+//        / SL-halt). Dead position ids (deal missed) free their key. Orphan
+//        taken with no bind dropped. Disarming BUY/SELL alone does not wipe —
+//        open layers keep their blocks until those positions actually close.
+// v1.09: Taken clears when THAT layer closes. Each fill binds the new
+//        position id -> (pivot, side, stop/limit). On DEAL_OUT for that id,
+//        forget only that key so the level may re-arm; other open layers keep
+//        their pivots blocked. Scan-prune remains as a safety net.
+// v1.08: Taken-level memory. After a pending FILLS, that (pivot + side +
+//        stop/limit) is consumed for as long as the pivot still appears in the
+//        LevelsLookback scan — so a retrace cannot re-arm the SAME order type
+//        on the same level (stops the 4-layers-on-1-level stack). Opposite
+//        side (e.g. sell stop after buy stop) and a mid-trade mode flip
+//        (stop <-> limit) are different keys and may still arm. Nearest pick
+//        skips consumed pivots only (not a general walk for stops-level).
+// v1.07: Audit fixes. (1) MaxSpreadPips now gates NEW pending placement (panel
+//        BLOCK already showed it; ManagePendings ignored it — resting orders
+//        stay). (2) Bank sweep retries when CanAttemptClose blocks instead of
+//        dropping the flag. (3) break/reject chip flip deletes resting pendings
+//        so the next tick re-arms with the correct stop/limit type (OrderModify
+//        cannot change type). (4) OnInit refuses non-hedging accounts. Comment
+//        hygiene for stale TP-repair / frontier-loss notes.
 // v1.06: Match lets-go exactly + dynamic banking. (1) Level pick = the NEAREST
-//        level only, no walking to a farther one (my walk-outward is why the
-//        stop landed at 4085 instead of the nearer 4074); if the nearest is too
-//        close for the broker it waits, like lets-go. (2) Ripped the broker
-//        take-profit — the broker stops-level was pushing the TP off its level
-//        (4086 instead of 4071). Banking is now DYNAMIC: a pending fill (price
-//        hit a level) closes EVERY layer in profit via market order, so there
-//        is no minimum-distance constraint. Removed NextLevelTP / EnsureLayerTPs.
-//        Added a DumpLevels diagnostic (InpDebugLog).
-// v1.05: Web fixed to actually accumulate + bank. The old "only add a layer
-//        while the frontier is in profit" gate blocked a losing side from
-//        webbing (and churned SET/DEL as price crossed entry) — removed: a side
-//        now webs up to MaxLayersPerDir regardless of P/L. Each layer opens with
-//        a TAKE-PROFIT at its next level, so it banks its small profit on its
-//        own and the freed slot re-arms (small-bank accumulation) — the peel
-//        (ResolveDoubleLayers) is gone. EnsureLayerTPs back-fills a TP for any
-//        layer that opened with no pivot on its profit side. RollMinProfitPips
-//        input retired (unused).
+//        level only (no walk-outward); if the nearest is too close for the
+//        broker it waits, like lets-go. (2) Ripped the broker take-profit —
+//        banking is DYNAMIC: a pending fill closes EVERY layer in profit via
+//        market order. Removed NextLevelTP / EnsureLayerTPs. Added DumpLevels
+//        diagnostic (InpDebugLog).
+// v1.05: Web accumulates regardless of P/L (removed frontier-in-profit gate).
+//        Had per-layer broker TP + EnsureLayerTPs (replaced by dynamic bank in
+//        v1.06). Peel ResolveDoubleLayers retired.
 // v1.04: Panel tidy — title arrow matches lets-go (▾ open / ▸ closed); the web
-//        control is now a wide 'SL halt' toggle + a "max layer" label + a value
+//        control is now a wide 'SL halt' toggle + a "max lyrs" label + a value
 //        chip; layer cap 6 -> 5. Doc/comment audit (no behaviour change).
-// v1.03: Pending engine rebuilt clean (lets-go style) to kill the churn — a
-//        resting order is placed once and left untouched intra-candle; when the
-//        candle closes and the pivot has genuinely moved it is MOVED in place
-//        with OrderModify (no delete+replace, no gap, no jumping). Nothing
-//        resting + wanted -> placed instantly (instant re-arm after a fill).
-//        A transient (no level for a tick) never drops a resting order.
-// v1.02: Multi-layer WEB — MaxLayersPerDir (panel 'Lyr' chip, cycles 1..5). A
-//        side accumulates up to N layers while its frontier layer is in profit;
-//        ResolveDoubleLayers peels the OLDEST (deepest-profit) layer once the
-//        count exceeds N (MaxLayersPerDir=1 = the v1.01 single-layer roll). The
-//        pips guard now trips on the WORST layer and closes the whole side.
-//        Manual SL-halt (panel 'SL halt' chip): drag an SL onto a layer; if any
-//        layer's SL hits, the EA flattens ALL and disarms BUY/SELL until you
-//        re-enable them — a manual emergency stop for the whole basket.
-// v1.01: REST-AHEAD engine. Pendings are pre-positioned at the broker so a fast
-//        spike fills them instead of racing a last-millisecond placement (the
-//        v1.00 "bad stops" reject that left a naked, unhedged position).
-//        ValidPendingLevel walks outward to the first placeable level (never
-//        rejected). A profitable open layer keeps a ROLL pending resting ahead;
-//        on fill the momentary 2-layer is collapsed by ResolveDoubleLayers —
-//        bank the older if in profit, else abort — so it ladders and banks
-//        (small or large) while always staying 1 layer per direction. Replaces
-//        the v1.00 live-detect ManageRolls (which missed fast moves).
+// v1.03: Pending engine rebuilt clean (lets-go style) — place once, leave
+//        intra-candle, OrderModify on bar close when the pivot moved.
+// v1.02: Multi-layer WEB — MaxLayersPerDir (panel 'Lyr' chip, cycles 1..5).
+//        Pips guard trips on the WORST layer. Manual SL-halt chip added.
+// v1.01: REST-AHEAD engine (pre-positioned pendings). Early builds walked
+//        outward for a placeable level and peeled via ResolveDoubleLayers;
+//        both retired by v1.05/v1.06 (nearest-only + dynamic bank).
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -121,7 +124,7 @@ input int    LevelsLookback        = 100;       // Bars scanned for pivots
 input double SrBufferPips          = 0;         // Break: beyond level by this. Reject: within this of level. 0 = exact
 
 input group "===== Web (layers) ====="
-input int    MaxLayersPerDir       = 1;         // Max layers per direction (1 = single, >1 = web). Panel 'max layer' chip cycles 1..5
+input int    MaxLayersPerDir       = 1;         // Max layers per direction (1 = single, >1 = web). Panel 'max lyrs' chip cycles 1..5
 input bool   UseManualSLHalt       = false;     // Recognize a manually-set position SL: when any layer's SL hits -> close ALL + halt (grey BUY/SELL)
 
 input group "===== Guards (stackable, OR — first to trip wins; all default OFF) ====="
@@ -205,10 +208,29 @@ datetime g_lastBarTime = 0;           // per-candle latch clock (log cadence onl
 // tracked — reconcile never touches others.
 #define PEND_MAX 2
 ulong  g_pendTicket[PEND_MAX];
-double g_pendLevel[PEND_MAX];
+double g_pendLevel[PEND_MAX];   // broker order price (pivot ± buf)
+double g_pendPivot[PEND_MAX];   // raw pivot (taken-memory key)
 bool   g_pendIsBuy[PEND_MAX];
+bool   g_pendIsStop[PEND_MAX];  // stop vs limit at place-time (mode may flip later)
 int    g_pendCount = 0;
 datetime g_srRecalcBar = 0;           // levels-TF bar of the last relocate while orders rest
+
+// Taken memory: filled (pivot + side + stop/limit) while that LAYER is open.
+// Bound to the position id at fill; cleared when that position closes so the
+// same type may re-arm. Opposite side / mode-flip type are different keys.
+// Scan-prune is a safety net if a bind is lost (restart mid-trade, etc.).
+#define TAKEN_MAX 64
+double g_takenPivot[TAKEN_MAX];
+bool   g_takenIsBuy[TAKEN_MAX];
+bool   g_takenIsStop[TAKEN_MAX];
+int    g_takenCount = 0;
+
+// Which open layer owns which taken key (3 layers = 3 binds).
+ulong  g_bindPosId[TAKEN_MAX];
+double g_bindPivot[TAKEN_MAX];
+bool   g_bindIsBuy[TAKEN_MAX];
+bool   g_bindIsStop[TAKEN_MAX];
+int    g_bindCount = 0;
 
 datetime g_lastEntryFailTime = 0;
 datetime g_lastCloseFailTime = 0;
@@ -581,7 +603,7 @@ void PanelPaintState()
    PanelStyleAction(PanelObj("Flat"), "Flat", "Close ALL runner positions now (manual)",
                     GetTickCount64() < g_flatFlashUntilMs);
 
-   // Control row: wide SL-halt toggle, then "max layer" label + value chip.
+   // Control row: wide SL-halt toggle, then "max lyrs" label + value chip.
    PanelStyleChip(PanelObj("SLhalt"), "SL halt",
       "Manual SL recognition: drag an SL onto a layer (outside the range) — if any layer's SL hits, close ALL + halt BUY/SELL",
       g_UseSLHalt, false);
@@ -593,10 +615,8 @@ void PanelPaintState()
 
    // Guards header doubles as the live open/blocked status band.
    long tradeMode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    bool cooldown = OrderRetryCooldownSec > 0 && (TimeCurrent() - g_lastEntryFailTime) < OrderRetryCooldownSec;
-   bool spreadBlocked = MaxSpreadPips > 0 && g_pip > 0 && (ask - bid) / g_pip > MaxSpreadPips;
+   bool spreadBlocked = !IsSpreadOk();
    bool blocked = InWeekendBlock() || !InDailySession() || InNewsBlackout() ||
                   !IsBrokerTradeSessionOpen() || !IsExpertTradingEnabled() ||
                   tradeMode != SYMBOL_TRADE_MODE_FULL || !IsTickFresh() ||
@@ -649,7 +669,7 @@ void PanelBuild()
    y += chipH + gap;
 
    // Control row (below BUY/SELL, above the guards), on the 4-column grid:
-   // SL halt spans 2 columns (it matters), then "max layer" label + value chip.
+   // SL halt spans 2 columns (it matters), then "max lyrs" label + value chip.
    const int col = chipW + gap;
    PanelEnsureButton("SLhalt", x0,           y, 2 * chipW + gap, chipH);
    PanelEnsureLabel ("LyrLbl", x0 + 2 * col, y, chipW,           chipH);
@@ -737,6 +757,9 @@ bool PanelHandleClick(const string sparam)
    {
       g_SrBreakSel = !g_SrBreakSel; // break <-> reject, dynamic mid-trade
       PanelSaveBool("SrBR", g_SrBreakSel);
+      // OrderModify cannot change stop <-> limit (or side of price). Pull
+      // resting pendings; ManagePendings re-arms with the correct type next tick.
+      if(g_pendCount > 0) DeleteOurPendings("mode flip break/reject");
    }
    else if(id == "Flat")
    {
@@ -811,6 +834,15 @@ int OnInit()
 
    g_t1 = (InpT1 == PERIOD_CURRENT) ? (ENUM_TIMEFRAMES)_Period : InpT1;
 
+   // Hedging only: BUY + SELL sides run live together (one pending each).
+   if((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE)
+      != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   {
+      LogInfo("INIT FAILED - runner needs a hedging account (BUY+SELL live together)");
+      NotifyPush("INIT FAILED - runner needs a hedging account");
+      return(INIT_FAILED);
+   }
+
    if(PivotLeftBars < 1 || PivotRightBars < 1)
    {
       LogInfo("INIT FAILED - PivotLeftBars/PivotRightBars must be >= 1");
@@ -824,6 +856,7 @@ int OnInit()
    trade.SetExpertMagicNumber((ulong)MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
    AdoptOurPendings(); // re-track orders a previous attach left resting
+   ReconcileTakenBinds(); // drop stale taken/binds if flat after restart
 
    if(!g_quietInit)
    {
@@ -890,8 +923,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 void OnTick()
 {
    PanelPollClicks();
+   ReconcileTakenBinds(); // Flat / manual / DD / missed DEAL_OUT — keep arrays honest
 
-   // Per-candle clock — drives the once-per-bar TP-repair pass.
+   // Per-candle clock — DumpLevels cadence + aligns with pending relocate bar.
    bool newBar = false;
    datetime bt[];
    if(CopyTime(_Symbol, g_t1, 0, 1, bt) == 1 && bt[0] != g_lastBarTime)
@@ -917,10 +951,16 @@ void OnTick()
    }
 
    // A pending just filled (price hit a level) -> bank every layer in profit.
+   // Keep the flag if the trade path is blocked so the next tick retries.
    if(g_bankSweep)
    {
-      g_bankSweep = false;
-      CloseAllProfitLayers();
+      if(!CanAttemptClose())
+         LogGuardOnce("bank_blocked", "BLOCKED bank sweep — trade path guard; will retry");
+      else
+      {
+         g_bankSweep = false;
+         CloseAllProfitLayers();
+      }
    }
 
    if(newBar && InpDebugLog) DumpLevels(); // diagnostic: what levels runner sees
@@ -1102,19 +1142,221 @@ void DumpLevels()
            + " | above(near->far): " + (above == "" ? "-" : above));
 }
 
-// The pending ENTRY price a direction wants right now — the NEAREST level only,
-// exactly like lets-go. It does NOT walk to a farther level: if the nearest
-// level's order price is too close for the broker's stops-level, it returns
-// false and waits (rather than parking an order at a far level). No take-profit
-// — banking is dynamic (close on a fill), so the broker stops-level never
-// pushes a target off its level.
-//   break  buy : nearest level ABOVE -> buy  STOP  at level + buf
-//   break  sell: nearest level BELOW -> sell STOP  at level - buf
-//   reject buy : nearest level BELOW -> buy  LIMIT at level + buf
-//   reject sell: nearest level ABOVE -> sell LIMIT at level - buf
-bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop)
+//====================== TAKEN-LEVEL MEMORY ======================
+// Key = raw pivot + side + stop/limit. Bound to the open position id so that
+// when THAT layer closes, only that key frees (other layers stay blocked).
+bool TakenSamePivot(const double a, const double b)
 {
-   price = 0; isStop = g_SrBreakSel;
+   const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   return (MathAbs(a - b) <= point * 0.5);
+}
+
+int TakenFindIndex(const double pivot, const bool isBuy, const bool isStop)
+{
+   for(int i = 0; i < g_takenCount; i++)
+      if(g_takenIsBuy[i] == isBuy && g_takenIsStop[i] == isStop && TakenSamePivot(g_takenPivot[i], pivot))
+         return i;
+   return -1;
+}
+
+bool TakenIs(const double pivot, const bool isBuy, const bool isStop)
+{
+   return (TakenFindIndex(pivot, isBuy, isStop) >= 0);
+}
+
+void TakenForgetAt(const int idx)
+{
+   if(idx < 0 || idx >= g_takenCount) return;
+   LogDebug("TAKEN forget " + (g_takenIsBuy[idx] ? "BUY " : "SELL ")
+            + (g_takenIsStop[idx] ? "STOP" : "LIMIT")
+            + " pivot " + DoubleToString(g_takenPivot[idx], _Digits));
+   for(int j = idx; j < g_takenCount - 1; j++)
+   {
+      g_takenPivot[j]  = g_takenPivot[j + 1];
+      g_takenIsBuy[j]  = g_takenIsBuy[j + 1];
+      g_takenIsStop[j] = g_takenIsStop[j + 1];
+   }
+   g_takenCount--;
+}
+
+void TakenForget(const double pivot, const bool isBuy, const bool isStop)
+{
+   int idx = TakenFindIndex(pivot, isBuy, isStop);
+   if(idx >= 0) TakenForgetAt(idx);
+}
+
+void TakenRemember(const double pivot, const bool isBuy, const bool isStop)
+{
+   if(pivot <= 0) return;
+   if(TakenIs(pivot, isBuy, isStop)) return;
+   if(g_takenCount >= TAKEN_MAX)
+   {
+      // Ring: drop oldest so a long session cannot grow forever.
+      for(int i = 1; i < g_takenCount; i++)
+      {
+         g_takenPivot[i - 1]  = g_takenPivot[i];
+         g_takenIsBuy[i - 1]  = g_takenIsBuy[i];
+         g_takenIsStop[i - 1] = g_takenIsStop[i];
+      }
+      g_takenCount--;
+   }
+   g_takenPivot[g_takenCount]  = pivot;
+   g_takenIsBuy[g_takenCount]  = isBuy;
+   g_takenIsStop[g_takenCount] = isStop;
+   g_takenCount++;
+   LogDebug("TAKEN remember " + (isBuy ? "BUY " : "SELL ") + (isStop ? "STOP" : "LIMIT")
+            + " pivot " + DoubleToString(pivot, _Digits)
+            + " (n=" + IntegerToString(g_takenCount) + ")");
+}
+
+void BindForgetAt(const int idx)
+{
+   if(idx < 0 || idx >= g_bindCount) return;
+   for(int j = idx; j < g_bindCount - 1; j++)
+   {
+      g_bindPosId[j]  = g_bindPosId[j + 1];
+      g_bindPivot[j]  = g_bindPivot[j + 1];
+      g_bindIsBuy[j]  = g_bindIsBuy[j + 1];
+      g_bindIsStop[j] = g_bindIsStop[j + 1];
+   }
+   g_bindCount--;
+}
+
+// Tie this open layer to its taken key. Cleared in OnTradeTransaction OUT.
+void BindLayer(const ulong posId, const double pivot, const bool isBuy, const bool isStop)
+{
+   if(posId == 0 || pivot <= 0) return;
+   for(int i = 0; i < g_bindCount; i++)
+      if(g_bindPosId[i] == posId) return; // already bound
+   if(g_bindCount >= TAKEN_MAX)
+   {
+      for(int i = 1; i < g_bindCount; i++)
+      {
+         g_bindPosId[i - 1]  = g_bindPosId[i];
+         g_bindPivot[i - 1]  = g_bindPivot[i];
+         g_bindIsBuy[i - 1]  = g_bindIsBuy[i];
+         g_bindIsStop[i - 1] = g_bindIsStop[i];
+      }
+      g_bindCount--;
+   }
+   g_bindPosId[g_bindCount]  = posId;
+   g_bindPivot[g_bindCount]  = pivot;
+   g_bindIsBuy[g_bindCount]  = isBuy;
+   g_bindIsStop[g_bindCount] = isStop;
+   g_bindCount++;
+   LogDebug("BIND pos#" + IntegerToString((long)posId)
+            + " -> " + (isBuy ? "BUY " : "SELL ") + (isStop ? "STOP" : "LIMIT")
+            + " pivot " + DoubleToString(pivot, _Digits));
+}
+
+// Layer closed -> free only that pivot+type; other open layers untouched.
+void BindReleaseOnClose(const ulong posId)
+{
+   if(posId == 0) return;
+   for(int i = 0; i < g_bindCount; i++)
+   {
+      if(g_bindPosId[i] != posId) continue;
+      TakenForget(g_bindPivot[i], g_bindIsBuy[i], g_bindIsStop[i]);
+      LogInfo("TAKEN freed (layer closed) " + (g_bindIsBuy[i] ? "BUY " : "SELL ")
+              + (g_bindIsStop[i] ? "STOP" : "LIMIT")
+              + " pivot " + DoubleToString(g_bindPivot[i], _Digits)
+              + " | pos#" + IntegerToString((long)posId));
+      BindForgetAt(i);
+      return;
+   }
+}
+
+void TakenClearAll(const string reason)
+{
+   if(g_takenCount == 0 && g_bindCount == 0) return;
+   LogDebug("TAKEN clear all (" + reason + ") taken=" + IntegerToString(g_takenCount)
+            + " binds=" + IntegerToString(g_bindCount));
+   g_takenCount = 0;
+   g_bindCount = 0;
+}
+
+bool PositionIdAlive(const ulong posId)
+{
+   if(posId == 0) return false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((ulong)PositionGetInteger(POSITION_IDENTIFIER) == posId) return true;
+   }
+   return false;
+}
+
+// Keep taken/bind arrays honest after Flat / manual / DD / missed DEAL_OUT.
+// - No EA positions left -> wipe everything (nothing to protect).
+// - Bind whose position id is gone -> free that key (orphan after abnormal close).
+// - Taken with no bind left -> drop (should not block forever).
+// Disarming BUY/SELL alone does NOT call clear — open layers still block.
+void ReconcileTakenBinds()
+{
+   if(!HasEAPositions())
+   {
+      TakenClearAll("no open layers");
+      return;
+   }
+
+   for(int i = g_bindCount - 1; i >= 0; i--)
+   {
+      if(PositionIdAlive(g_bindPosId[i])) continue;
+      TakenForget(g_bindPivot[i], g_bindIsBuy[i], g_bindIsStop[i]);
+      LogInfo("TAKEN freed (reconcile/dead pos) " + (g_bindIsBuy[i] ? "BUY " : "SELL ")
+              + (g_bindIsStop[i] ? "STOP" : "LIMIT")
+              + " pivot " + DoubleToString(g_bindPivot[i], _Digits)
+              + " | pos#" + IntegerToString((long)g_bindPosId[i]));
+      BindForgetAt(i);
+   }
+
+   for(int t = g_takenCount - 1; t >= 0; t--)
+   {
+      bool hasBind = false;
+      for(int b = 0; b < g_bindCount; b++)
+         if(g_bindIsBuy[b] == g_takenIsBuy[t] && g_bindIsStop[b] == g_takenIsStop[t]
+            && TakenSamePivot(g_bindPivot[b], g_takenPivot[t]))
+         { hasBind = true; break; }
+      if(!hasBind) TakenForgetAt(t);
+   }
+}
+
+// Drop taken entries whose pivot no longer appears in the current scan pool
+// AND no open layer still binds them (restart safety / orphan cleanup).
+void TakenPruneToScan(const double &lv[], const int n)
+{
+   for(int i = g_takenCount - 1; i >= 0; i--)
+   {
+      bool alive = false;
+      for(int k = 0; k < n; k++)
+         if(TakenSamePivot(lv[k], g_takenPivot[i])) { alive = true; break; }
+      if(alive) continue;
+      // Still bound to an open layer? keep until that layer closes.
+      bool bound = false;
+      for(int b = 0; b < g_bindCount; b++)
+         if(g_bindIsBuy[b] == g_takenIsBuy[i] && g_bindIsStop[b] == g_takenIsStop[i]
+            && TakenSamePivot(g_bindPivot[b], g_takenPivot[i]))
+         { bound = true; break; }
+      if(bound) continue;
+      TakenForgetAt(i);
+   }
+}
+
+// The pending ENTRY price a direction wants right now — the NEAREST *eligible*
+// level (skips pivots already taken for this side+stop/limit). If the nearest
+// free level's order price is too close for the broker's stops-level, it
+// returns false and waits (rather than parking an order at a far level). No
+// take-profit — banking is dynamic (close on a fill).
+//   break  buy : nearest free level ABOVE -> buy  STOP  at level + buf
+//   break  sell: nearest free level BELOW -> sell STOP  at level - buf
+//   reject buy : nearest free level BELOW -> buy  LIMIT at level + buf
+//   reject sell: nearest free level ABOVE -> sell LIMIT at level - buf
+bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop, double &pivotOut)
+{
+   price = 0; pivotOut = 0; isStop = g_SrBreakSel;
    const double buf   = MathMax(0.0, SrBufferPips) * g_pip;
    const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -1125,13 +1367,30 @@ bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop)
    double lv[];
    int n = CollectPivots(lv);
    if(n == 0) return false; // no pivots yet
+   TakenPruneToScan(lv, n);
 
-   // break buy / reject sell want the nearest level ABOVE; else the nearest BELOW.
+   // break buy / reject sell want the nearest free level ABOVE; else BELOW.
    const bool wantAbove = (g_SrBreakSel == isBuy);
    double lvl = 0; bool have = false;
-   if(wantAbove) { for(int k = 0; k < n; k++)      if(lv[k] > px) { lvl = lv[k]; have = true; break; } }
-   else          { for(int k = n - 1; k >= 0; k--) if(lv[k] < px) { lvl = lv[k]; have = true; break; } }
-   if(!have) return false; // no level on that side yet
+   if(wantAbove)
+   {
+      for(int k = 0; k < n; k++)
+      {
+         if(lv[k] <= px) continue;
+         if(TakenIs(lv[k], isBuy, isStop)) continue; // same type already filled here
+         lvl = lv[k]; have = true; break;
+      }
+   }
+   else
+   {
+      for(int k = n - 1; k >= 0; k--)
+      {
+         if(lv[k] >= px) continue;
+         if(TakenIs(lv[k], isBuy, isStop)) continue;
+         lvl = lv[k]; have = true; break;
+      }
+   }
+   if(!have) return false; // no free level on that side yet
 
    double cand = NormalizePrice(isBuy ? lvl + buf : lvl - buf);
    bool ok;
@@ -1139,8 +1398,9 @@ bool ValidPendingLevel(const bool isBuy, double &price, bool &isStop)
                          : (ask - cand > minStop);  // reject buy  limit
    else      ok = isStop ? (bid - cand > minStop)   // break  sell stop
                          : (cand - bid > minStop);  // reject sell limit
-   if(!ok) return false; // nearest level too close for the broker right now — wait, don't skip out
+   if(!ok) return false; // nearest free level too close for the broker — wait
    price = cand;
+   pivotOut = lvl;
    return true;
 }
 
@@ -1207,7 +1467,9 @@ void PendUntrackIndex(const int idx)
    {
       g_pendTicket[i] = g_pendTicket[i + 1];
       g_pendLevel[i]  = g_pendLevel[i + 1];
+      g_pendPivot[i]  = g_pendPivot[i + 1];
       g_pendIsBuy[i]  = g_pendIsBuy[i + 1];
+      g_pendIsStop[i] = g_pendIsStop[i + 1];
    }
    g_pendCount--;
 }
@@ -1256,6 +1518,7 @@ void DeleteDirectionPending(const bool isBuy, const string reason)
 void AdoptOurPendings()
 {
    g_pendCount = 0;
+   const double buf = MathMax(0.0, SrBufferPips) * g_pip;
    for(int i = OrdersTotal() - 1; i >= 0 && g_pendCount < PEND_MAX; i--)
    {
       ulong tk = OrderGetTicket(i);
@@ -1267,16 +1530,23 @@ void AdoptOurPendings()
          ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT) continue;
       string cm = OrderGetString(ORDER_COMMENT);
       if(StringFind(cm, "runner pend") < 0) continue;
+      const bool isBuy  = (ot == ORDER_TYPE_BUY_STOP || ot == ORDER_TYPE_BUY_LIMIT);
+      const bool isStop = (ot == ORDER_TYPE_BUY_STOP || ot == ORDER_TYPE_SELL_STOP);
+      const double price = OrderGetDouble(ORDER_PRICE_OPEN);
+      // Best-effort pivot from order price (buf may have changed since place).
+      const double pivot = isBuy ? (price - buf) : (price + buf);
       g_pendTicket[g_pendCount] = tk;
-      g_pendLevel[g_pendCount]  = OrderGetDouble(ORDER_PRICE_OPEN);
-      g_pendIsBuy[g_pendCount]  = (ot == ORDER_TYPE_BUY_STOP || ot == ORDER_TYPE_BUY_LIMIT);
+      g_pendLevel[g_pendCount]  = price;
+      g_pendPivot[g_pendCount]  = pivot;
+      g_pendIsBuy[g_pendCount]  = isBuy;
+      g_pendIsStop[g_pendCount] = isStop;
       g_pendCount++;
    }
    if(g_pendCount > 0)
       LogInfo("PEND adopted " + IntegerToString(g_pendCount) + " resting order(s) from previous attach");
 }
 
-void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl)
+void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl, const double pivot)
 {
    if(g_pendCount >= PEND_MAX) return; // never overflow the tracking arrays
    double lots = NormalizeLots(LotSize);
@@ -1302,10 +1572,13 @@ void PlacePendingOrder(const bool isBuy, const bool isStop, const double lvl)
    {
       g_pendTicket[g_pendCount] = trade.ResultOrder();
       g_pendLevel[g_pendCount]  = lvl;
+      g_pendPivot[g_pendCount]  = pivot;
       g_pendIsBuy[g_pendCount]  = isBuy;
+      g_pendIsStop[g_pendCount] = isStop;
       g_pendCount++;
       LogInfo("PEND SET " + (isBuy ? "BUY " : "SELL ") + (isStop ? "STOP" : "LIMIT")
               + " @ " + DoubleToString(lvl, _Digits)
+              + " | pivot " + DoubleToString(pivot, _Digits)
               + (sl > 0 ? " | offline SL " + DoubleToString(sl, _Digits) : ""));
    }
    else
@@ -1326,7 +1599,7 @@ int PendIndexForDir(const bool isBuy)
 
 // Move a resting pending to a new level IN PLACE (OrderModify) — no cancel, no
 // gap. Keeps the offline SL aligned to the new level if HardSLPips is set.
-void RelocatePending(const int idx, const double newLvl)
+void RelocatePending(const int idx, const double newLvl, const double newPivot)
 {
    double np = NormalizePrice(newLvl);
    double sl = 0;
@@ -1336,8 +1609,10 @@ void RelocatePending(const int idx, const double newLvl)
    if(trade.OrderModify(g_pendTicket[idx], np, sl, 0, ORDER_TIME_GTC, 0))
    {
       LogInfo("PEND MOVE " + (g_pendIsBuy[idx] ? "BUY" : "SELL") + " "
-              + DoubleToString(g_pendLevel[idx], _Digits) + " -> " + DoubleToString(np, _Digits));
+              + DoubleToString(g_pendLevel[idx], _Digits) + " -> " + DoubleToString(np, _Digits)
+              + " | pivot " + DoubleToString(newPivot, _Digits));
       g_pendLevel[idx] = np;
+      g_pendPivot[idx] = newPivot;
    }
    else
       LogGuardOnce("fail_pend_mod", "FAIL pending modify rc=" + IntegerToString(trade.ResultRetcode())
@@ -1347,20 +1622,23 @@ void RelocatePending(const int idx, const double newLvl)
 //====================== PENDING ENGINE (lets-go clean: place once, move in place) ======================
 // The rule, per direction — fast and stable, like lets-go's S/R engine:
 //   * Nothing resting and one is wanted -> PLACE it now (instant; so re-arming
-//     after a fill/peel is immediate).
+//     after a fill is immediate). Spread above MaxSpreadPips skips PLACE only
+//     (resting orders stay — no churn on a brief spike).
 //   * One already resting -> LEAVE IT untouched intra-candle. No re-place, no
 //     cancel, no jumping. When the candle CLOSES and the pivot has genuinely
 //     moved, MOVE the order in place with OrderModify (never delete+replace).
 //   * A transient (no valid level for a tick, price hugging the level) NEVER
 //     drops a resting order — it just stays.
-//   * Deleted only when the direction stops wanting one: disarmed (now), or its
-//     frontier went to loss / hit the web cap (on the next candle).
+//   * Deleted only when the direction stops wanting one: disarmed (now), or
+//     the web is full (on the next candle). Mode flip (break/reject) also
+//     deletes so the correct stop/limit type can be re-armed.
 // "Wanted" per direction: keep ONE pending resting ahead of the open layers
 // while the side holds fewer than MaxLayersPerDir layers — regardless of P/L
 // (a losing side still webs; that is the range accumulation). The pending sits
-// at the NEAREST level (ValidPendingLevel, no walk). When it fills, the dynamic
-// bank sweep (CloseAllProfitLayers) closes every layer in profit, freeing slots
-// so the pending re-arms and re-fires the level.
+// at the NEAREST free level (ValidPendingLevel skips pivots still held by an
+// open layer of the same type). When it fills, that pivot+type is bound to the
+// new position id; when THAT layer closes, the key frees and may re-arm.
+// Dynamic bank sweep closes profit layers (each close frees its own key).
 void ManagePendings()
 {
    // sync tracked list with the broker (fills fall out here; also catches
@@ -1375,6 +1653,7 @@ void ManagePendings()
    const datetime curBar = iTime(_Symbol, g_t1, 0);
    const bool newBar = (curBar != g_srRecalcBar);
    const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   const bool spreadOk = IsSpreadOk();
 
    for(int s = 0; s < 2; s++)
    {
@@ -1394,20 +1673,27 @@ void ManagePendings()
          continue;
       }
 
-      double lvl = 0; bool isStop = true;
-      bool haveLvl = ValidPendingLevel(isBuy, lvl, isStop);
+      double lvl = 0, pivot = 0; bool isStop = true;
+      bool haveLvl = ValidPendingLevel(isBuy, lvl, isStop, pivot);
 
       if(ri < 0)
       {
          // Nothing resting -> place immediately (instant re-arm).
-         if(haveLvl) PlacePendingOrder(isBuy, isStop, lvl);
+         // Wide spread: skip PLACE only; do not pull anything that already rests.
+         if(haveLvl)
+         {
+            if(!spreadOk)
+               LogGuardOnce("spread", "BLOCKED pend — spread > " + IntegerToString(MaxSpreadPips) + " pips");
+            else
+               PlacePendingOrder(isBuy, isStop, lvl, pivot);
+         }
          continue;
       }
 
       // Already resting: leave it be. Only when the candle closes and the level
       // has actually changed do we MOVE it in place — no gap.
       if(newBar && haveLvl && MathAbs(g_pendLevel[ri] - lvl) > point * 0.5)
-         RelocatePending(ri, lvl);
+         RelocatePending(ri, lvl, pivot);
    }
 
    g_srRecalcBar = curBar; // advance the relocation clock once per pass
@@ -1422,8 +1708,13 @@ void ManagePendings()
 void CloseAllProfitLayers()
 {
    if(!CanAttemptClose())
-   { LogGuardOnce("bank_blocked", "BLOCKED bank sweep — trade path guard; will retry"); return; }
+   {
+      g_bankSweep = true; // keep / re-arm — OnTick may have cleared it already
+      LogGuardOnce("bank_blocked", "BLOCKED bank sweep — trade path guard; will retry");
+      return;
+   }
 
+   bool anyFail = false;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong tk = PositionGetTicket(i);
@@ -1439,11 +1730,14 @@ void CloseAllProfitLayers()
          LogInfo("BANK " + (isBuy ? "BUY" : "SELL") + " layer | P/L " + DoubleToString(pl, 2));
       else
       {
+         anyFail = true;
          g_lastCloseFailTime = TimeCurrent();
          LogGuardOnce("fail_bank", "FAIL bank close rc=" + IntegerToString(trade.ResultRetcode())
                       + " " + trade.ResultRetcodeDescription());
       }
    }
+   // Partial fail: re-arm so the next tick retries remaining winners.
+   if(anyFail) g_bankSweep = true;
 }
 
 //====================== GUARDS (DD% / DD$ / pips — OR, first to trip) ======================
@@ -1557,22 +1851,34 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
    if(dealEntry == DEAL_ENTRY_OUT || dealEntry == DEAL_ENTRY_OUT_BY)
-   { NotifyBrokerClose(trans.deal); return; }
+   {
+      // Free taken for THIS layer only (matched by position id from the fill).
+      BindReleaseOnClose((ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID));
+      NotifyBrokerClose(trans.deal);
+      return;
+   }
    if(dealEntry != DEAL_ENTRY_IN) return;
 
-   // A pending of ours filled: untrack it, log the open, and flag a bank sweep.
-   // Price just reached a level, so OnTick closes every layer now in profit
-   // (dynamic bank). No trade ops here (re-entrant/unsafe inside this handler).
+   // A pending of ours filled: untrack it, mark pivot+type taken, bind the new
+   // position id so a later close frees only that key, then flag bank sweep.
    int idx = PendFindByOrder((ulong)HistoryDealGetInteger(trans.deal, DEAL_ORDER));
    if(idx < 0) return; // not one of ours (all entries are pendings)
-   const bool isBuy = g_pendIsBuy[idx];
-   const double lvl = g_pendLevel[idx];
+   const bool isBuy  = g_pendIsBuy[idx];
+   const bool isStop = g_pendIsStop[idx];
+   const double lvl  = g_pendLevel[idx];
+   const double piv  = g_pendPivot[idx];
+   const ulong posId = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
    PendUntrackIndex(idx);
+   TakenRemember(piv, isBuy, isStop);
+   BindLayer(posId, piv, isBuy, isStop);
    g_bankSweep = true;
    string msg = "OPEN " + (isBuy ? "BUY" : "SELL") + " "
               + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2)
               + " @ " + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_PRICE), _Digits)
-              + " | pending fill at level " + DoubleToString(lvl, _Digits);
+              + " | pending fill at level " + DoubleToString(lvl, _Digits)
+              + " | pivot taken " + DoubleToString(piv, _Digits)
+              + " " + (isStop ? "STOP" : "LIMIT")
+              + " | pos#" + IntegerToString((long)posId);
    LogInfo(msg);
    if(InpNotifyOnOpen) NotifyPush(msg);
 }
@@ -1677,6 +1983,16 @@ bool CanAttemptClose()
    return IsTradePathOpen(true);
 }
 
+// MaxSpreadPips gate for NEW pending placement only (0 = ignore). Panel BLOCK
+// status uses the same rule; resting orders are left alone on a brief spike.
+bool IsSpreadOk()
+{
+   if(MaxSpreadPips <= 0 || g_pip <= 0) return true;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   return ((ask - bid) / g_pip <= MaxSpreadPips);
+}
+
 //====================== CLOSE HELPERS ======================
 // Close ALL layers of one direction (used by the per-dir pips guard). In a web
 // a direction can hold several layers; the guard closes the whole side.
@@ -1713,11 +2029,16 @@ void CloseDirection(const bool isBuy, const string reason)
       NotifyPush((isBuy ? "BUY" : "SELL") + " CLOSED x" + IntegerToString(closed)
                  + " (" + reason + ") | P/L: " + DoubleToString(totalPL, 2));
    }
+   ReconcileTakenBinds(); // free keys if DEAL_OUT was missed / side now flat
 }
 
 void CloseAllEA(const string reason = "")
 {
-   if(!HasEAPositions()) return;
+   if(!HasEAPositions())
+   {
+      TakenClearAll("already flat");
+      return;
+   }
    if(!CanAttemptClose())
    {
       LogGuardOnce("close_blocked", "BLOCKED close" + (reason != "" ? " (" + reason + ")" : "")
@@ -1756,6 +2077,7 @@ void CloseAllEA(const string reason = "")
       LogInfo("CLOSE ALL" + (reason != "" ? " (" + reason + ")" : "") + " | net P/L " + DoubleToString(totalPL, 2));
       NotifyPush("CLOSED ALL" + (reason != "" ? " (" + reason + ")" : "") + " | Net P/L: " + DoubleToString(totalPL, 2));
    }
+   ReconcileTakenBinds(); // Flat / DD / schedule / SL-halt — wipe if nothing left
 }
 
 //====================== PRICE / LOT HELPERS ======================
