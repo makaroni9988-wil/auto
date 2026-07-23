@@ -287,7 +287,7 @@ input uint PanelClickGuardMs   = 200;   // Double-click guard (ms)
 input group "===== Logging ====="
 input bool InpDetailedBlockedLog = true;  // BLOCKED: list enabled T1 / T2 modules
 input bool InpDebugLog           = false; // Panel clicks + memory notes
-input bool InpNotifyOnOpen       = true;  // Push notification on OPEN (new basket + add layer)
+input bool InpNotifyOnOpen       = false; // Push notification on OPEN (new basket + add layer)
 
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
 // MA module per TF: 0=OFF, 1=m1 (single line), 2=m2 (double line)
