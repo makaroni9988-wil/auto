@@ -6,28 +6,30 @@
 //|         mid-trade). Rests REAL broker stop/limit orders at the   |
 //|         nearest pivot level, per direction. HEDGING account:     |
 //|         a BUY side + a SELL side, both live at once, each up to  |
-//|         MaxLayersPerDir layers (1 = single roll, >1 = a web).    |
+//|         MaxLayersPerDir OPEN layers (1 = single roll, >1 = web). |
 //|                                                                  |
-//|  Runner: one pending rests ahead of each side while it has room  |
-//|         for another layer (< MaxLayersPerDir), REGARDLESS of P/L |
-//|         — a losing side still webs (that is the range grind). The|
-//|         order is placed once and left alone within the candle;   |
-//|         when the candle closes and the pivot moved it is MOVED in|
-//|         place (OrderModify) — no delete, no gap, no jumping.     |
-//|         Pre-positioned so a fast spike FILLS it (no race, no     |
-//|         naked gap); a freed slot re-arms instantly.              |
+//|  Runner: one pending ALWAYS rests ahead of each armed side —     |
+//|         even at MaxLayersPerDir — so a spike to the next level   |
+//|         FILLS instantly (broker-side) and the bank can close     |
+//|         profit on that same fill. Open-layer cap is enforced     |
+//|         AFTER the fill/bank (peel oldest extras); a losing side  |
+//|         still webs up to the cap (range grind). The order is     |
+//|         placed once and left alone within the candle; when the   |
+//|         candle closes and the pivot moved it is MOVED in place   |
+//|         (OrderModify) — no delete, no gap, no jumping.           |
 //|         TAKEN MEMORY: a fill consumes that pivot for that side + |
 //|         stop/limit type while the layer is still open (bound by  |
 //|         position id). When THAT layer closes, the key is freed   |
 //|         and may re-arm; other open layers keep their pivots.     |
 //|         Opposite side / mode-flip type are different keys.       |
 //|                                                                  |
-//|  Bank : DYNAMIC — no fixed take-profit. When a pending fills     |
-//|         (price reached a level), EVERY layer in profit is closed |
-//|         by MARKET order. Market close has no broker minimum-     |
-//|         distance, so banking always happens AT the level (a fixed|
-//|         TP would get pushed off by the stops-level). Losers run; |
-//|         the freed slots re-arm -> small-bank accumulation.       |
+//|  Bank : DYNAMIC — no fixed take-profit. Any open layer already   |
+//|         in profit (even tiny) banks the moment price HITS the    |
+//|         next pivot in its favor (BUY: next above entry, SELL:    |
+//|         next below) — market close, no pending fill required.    |
+//|         Pending fills still bank too. Losers run; extras over    |
+//|         MaxLayersPerDir peel oldest; freed slots keep a pending  |
+//|         ahead -> small-bank / range grind.                       |
 //|                                                                  |
 //|  Exits: NO per-trade SL. The backstop is a set of stackable      |
 //|         guards (OR — first to trip wins): global DD%, global     |
@@ -47,7 +49,30 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "1.10"
+#property version   "1.15"
+// v1.15: GuardPipsValue default changed 2000 -> 500 pips (guard itself still
+//        off by default via UseGuardPips=false; only the value changed).
+// v1.14: Bank/peel push now gated by InpNotifyOnBank (new toggle, default ON —
+//        so it behaves automatic out of the box, same as before, but can be
+//        switched off without a recompile if it gets spammy on a busy grind).
+// v1.13: Bank push. Every layer banked (profit-take — both the pending-fill
+//        sweep and the level-hit bank) sends a phone push with THAT layer's
+//        P/L, matching lets-go's basket-close push. The important events
+//        (INIT / SL / HALT / CLOSE-ALL) were already automatic; OPEN stays
+//        behind InpNotifyOnOpen (default off); pending set/move/del stay
+//        log-only. PEEL (oldest layer cut to hold the cap) ALSO pushes its
+//        P/L — so a push can be profit (bank harvest) or loss (peel), the
+//        whole realized picture, not just winners.
+// v1.12: Level-hit bank (no pending required). If a layer is already in
+//        profit — any size — and price reaches the next pivot in its favor
+//        (BUY: next above entry / SELL: next below), CloseAllProfitLayers
+//        fires immediately. Latch per pivot so a sit-on-level does not spam.
+//        Peel unchanged (test this bank path first).
+// v1.11: Always rest one pending ahead while BUY/SELL armed (even at max
+//        layers). Spike to the next level fills instantly; bank closes profit
+//        on that fill. MaxLayersPerDir is an OPEN-layer cap enforced after
+//        fill/bank (peel oldest extras) — not a "pull pending when full" gate.
+//        Fixes late re-arm after bank with max lyrs = 1.
 // v1.10: Taken/bind array cleaner. Reconcile every tick + after mass closes:
 //        no open EA layers -> wipe all taken+binds (Flat / manual / DD / schedule
 //        / SL-halt). Dead position ids (deal missed) free their key. Orphan
@@ -124,7 +149,7 @@ input int    LevelsLookback        = 100;       // Bars scanned for pivots
 input double SrBufferPips          = 0;         // Break: beyond level by this. Reject: within this of level. 0 = exact
 
 input group "===== Web (layers) ====="
-input int    MaxLayersPerDir       = 1;         // Max layers per direction (1 = single, >1 = web). Panel 'max lyrs' chip cycles 1..5
+input int    MaxLayersPerDir       = 1;         // Max OPEN layers per dir (1 = single roll). Pending still rests ahead. Panel cycles 1..5
 input bool   UseManualSLHalt       = false;     // Recognize a manually-set position SL: when any layer's SL hits -> close ALL + halt (grey BUY/SELL)
 
 input group "===== Guards (stackable, OR — first to trip wins; all default OFF) ====="
@@ -135,8 +160,8 @@ input double GuardDDPctValue        = 10;           // Close all when net floati
 input double AccountRiskBase        = 10000;        // DD% base (0 = live account balance; else your allocation)
 input bool   UseGuardDDMoney        = false;        // Global drawdown-money guard
 input double GuardDDMoneyValue      = 1000;         // Close all when net floating <= -this (account currency)
-input bool   UseGuardPips           = false;        // Pips-per-layer guard
-input double GuardPipsValue         = 2000;         // Close when a layer's floating <= -this (pips)
+input bool   UseGuardPips           = true;         // Pips-per-layer guard
+input double GuardPipsValue         = 500;          // Close when a layer's floating <= -this (pips)
 input ENUM_PIP_SCOPE GuardPipsScope = PIP_PER_DIR;  // pips guard: per-dir (loss side) or global (both)
 
 input group "===== Session Filter (WIB / Jakarta time) ====="
@@ -175,6 +200,7 @@ input uint PanelClickGuardMs   = 200;   // Double-click guard (ms)
 input group "===== Logging ====="
 input bool InpDebugLog     = false; // Panel clicks + memory notes
 input bool InpNotifyOnOpen = false; // Push notification on OPEN / ROLL
+input bool InpNotifyOnBank = true;  // Push notification on BANK/PEEL (profit or loss) — default ON
 
 //====================== RUNTIME TOGGLES (panel + GV; inputs = defaults) ======================
 bool           g_TradeBuy, g_TradeSell;
@@ -239,6 +265,7 @@ bool  g_newsBlackoutCached = false;
 ulong g_newsLastCheckMs    = 0;
 bool  g_slHaltPending      = false;   // a manual SL hit -> flatten + halt on next tick
 bool  g_bankSweep          = false;   // a pending filled -> bank all profit layers next tick
+double g_levelBankLatch    = 0;       // pivot already banked this touch (0 = clear)
 
 //====================== LOGGING / PUSH ======================
 string Tag() { return EA_LABEL + " #" + IntegerToString(MagicNumber) + " " + _Symbol; }
@@ -608,10 +635,10 @@ void PanelPaintState()
       "Manual SL recognition: drag an SL onto a layer (outside the range) — if any layer's SL hits, close ALL + halt BUY/SELL",
       g_UseSLHalt, false);
    PanelStyleChip(PanelObj("LyrLbl"), "max lyrs",
-      "Web depth: max layers per direction. Set with the number chip", true, true);
+      "Max OPEN layers per direction (pending still rests ahead for spike fills). Set with the number chip", true, true);
    PanelStyleChip(PanelObj("Lyr"), IntegerToString(g_MaxLayersPerDir),
-      "Max layers per direction = " + IntegerToString(g_MaxLayersPerDir)
-      + " (1 = single roll). Click to cycle 1.." + IntegerToString(MAX_LAYERS_CAP), false, true);
+      "Max open layers/dir = " + IntegerToString(g_MaxLayersPerDir)
+      + " (1 = single roll; pending always ahead). Click to cycle 1.." + IntegerToString(MAX_LAYERS_CAP), false, true);
 
    // Guards header doubles as the live open/blocked status band.
    long tradeMode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
@@ -950,8 +977,12 @@ void OnTick()
       return;
    }
 
-   // A pending just filled (price hit a level) -> bank every layer in profit.
-   // Keep the flag if the trade path is blocked so the next tick retries.
+   // Profit + next pivot hit -> bank NOW (no pending needed). Pending-fill
+   // bank still runs below. Peel only after a bank path when over max lyrs.
+   BankOnLevelHit();
+
+   // A pending just filled -> bank every layer in profit, then peel extras
+   // over MaxLayersPerDir (oldest first). Keep the flag if blocked to retry.
    if(g_bankSweep)
    {
       if(!CanAttemptClose())
@@ -960,12 +991,16 @@ void OnTick()
       {
          g_bankSweep = false;
          CloseAllProfitLayers();
+         EnforceLayerCaps(); // open-layer cap; pending still rests ahead
       }
    }
+   else if(DirectionLayerCount(true) > g_MaxLayersPerDir
+        || DirectionLayerCount(false) > g_MaxLayersPerDir)
+      EnforceLayerCaps(); // retry a stuck peel (close path was blocked)
 
    if(newBar && InpDebugLog) DumpLevels(); // diagnostic: what levels runner sees
    ManageGuards();    // DD% / DD$ / pips backstop — may close
-   ManagePendings();  // one pending ahead per side at the NEAREST level, no broker TP
+   ManagePendings();  // one pending ahead per armed side at the NEAREST level
 }
 
 //====================== SESSION (WIB inputs; true Jakarta via GMT) ======================
@@ -1629,16 +1664,14 @@ void RelocatePending(const int idx, const double newLvl, const double newPivot)
 //     moved, MOVE the order in place with OrderModify (never delete+replace).
 //   * A transient (no valid level for a tick, price hugging the level) NEVER
 //     drops a resting order — it just stays.
-//   * Deleted only when the direction stops wanting one: disarmed (now), or
-//     the web is full (on the next candle). Mode flip (break/reject) also
-//     deletes so the correct stop/limit type can be re-armed.
-// "Wanted" per direction: keep ONE pending resting ahead of the open layers
-// while the side holds fewer than MaxLayersPerDir layers — regardless of P/L
-// (a losing side still webs; that is the range accumulation). The pending sits
-// at the NEAREST free level (ValidPendingLevel skips pivots still held by an
-// open layer of the same type). When it fills, that pivot+type is bound to the
-// new position id; when THAT layer closes, the key frees and may re-arm.
-// Dynamic bank sweep closes profit layers (each close frees its own key).
+//   * Deleted only when the side is disarmed, entries blocked, or mode flip
+//     (break/reject — OrderModify cannot change type, so re-arm next tick).
+// "Wanted" per direction: keep ONE pending resting ahead WHILE ARMED — even
+// when open layers already sit at MaxLayersPerDir. That is the spike-safe
+// roll: broker fills the next level instantly, bank closes profit, then
+// EnforceLayerCaps peels oldest extras. ValidPendingLevel skips pivots still
+// held by an open layer of the same type. When a fill binds the new position
+// id; when THAT layer closes, the key frees. Only DISARM pulls the pending.
 void ManagePendings()
 {
    // sync tracked list with the broker (fills fall out here; also catches
@@ -1661,15 +1694,10 @@ void ManagePendings()
       int  ri    = PendIndexForDir(isBuy);
       bool armed = isBuy ? g_TradeBuy : g_TradeSell;
 
-      // Want one pending ahead while the side has room for another layer.
-      bool want = armed && (DirectionLayerCount(isBuy) < g_MaxLayersPerDir);
-
-      if(!want)
+      // Always one pending ahead while armed (cap is open layers, not pendings).
+      if(!armed)
       {
-         // Pull a resting order only on a fresh decision: disarmed = now;
-         // web is full = on the next candle (no intra-bar churn).
-         if(ri >= 0 && (!armed || newBar))
-            DeleteDirectionPending(isBuy, armed ? "web full" : "disarmed");
+         if(ri >= 0) DeleteDirectionPending(isBuy, "disarmed");
          continue;
       }
 
@@ -1700,11 +1728,9 @@ void ManagePendings()
 }
 
 //====================== DYNAMIC BANK (close all profit on a level hit) ======================
-// A pending filled -> price just reached a level. Bank it: close EVERY open
-// layer that is in profit (both directions). Market close, so the broker
-// stops-level never applies (that is why there is no fixed TP). The just-filled
-// layer is ~breakeven and survives; losers survive and run. Called from OnTick
-// when the fill handler flags g_bankSweep (no trade ops inside OnTradeTransaction).
+// Close EVERY open layer with floating profit > 0 (both directions). Any size.
+// Market close — broker stops-level never applies. Losers run. Used by pending
+// fill (g_bankSweep) and by BankOnLevelHit (profit + next pivot, no pending).
 void CloseAllProfitLayers()
 {
    if(!CanAttemptClose())
@@ -1727,7 +1753,13 @@ void CloseAllProfitLayers()
 
       bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
       if(trade.PositionClose(tk))
-         LogInfo("BANK " + (isBuy ? "BUY" : "SELL") + " layer | P/L " + DoubleToString(pl, 2));
+      {
+         // Profit-take is runner's "important" event -> push per position with
+         // its P/L, automatic like lets-go's basket close (no toggle).
+         string bankMsg = "BANK " + (isBuy ? "BUY" : "SELL") + " layer | P/L " + DoubleToString(pl, 2);
+         LogInfo(bankMsg);
+         if(InpNotifyOnBank) NotifyPush(bankMsg);
+      }
       else
       {
          anyFail = true;
@@ -1738,6 +1770,154 @@ void CloseAllProfitLayers()
    }
    // Partial fail: re-arm so the next tick retries remaining winners.
    if(anyFail) g_bankSweep = true;
+}
+
+// Next pivot in the profit direction for one open layer.
+// BUY -> nearest pivot strictly ABOVE entry; SELL -> nearest strictly BELOW.
+bool NextFavorLevel(const bool isBuy, const double entry, double &lv[], const int n,
+                    double &lvlOut)
+{
+   lvlOut = 0;
+   if(n <= 0) return false;
+   if(isBuy)
+   {
+      for(int k = 0; k < n; k++)
+         if(lv[k] > entry)
+         { lvlOut = lv[k]; return true; }
+   }
+   else
+   {
+      for(int k = n - 1; k >= 0; k--)
+         if(lv[k] < entry)
+         { lvlOut = lv[k]; return true; }
+   }
+   return false;
+}
+
+// Tick bank: layer already in profit + price at/through its next favor pivot
+// -> CloseAllProfitLayers NOW. No pending fill required. Latch the pivot so
+// sitting on the level does not re-fire every tick; clear when price leaves.
+void BankOnLevelHit()
+{
+   if(!HasEAPositions())
+   {
+      g_levelBankLatch = 0;
+      return;
+   }
+
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   const double px  = 0.5 * (bid + ask);
+   const double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   const double leave = MathMax(g_pip, point * 10); // clear latch once price walks off
+
+   if(g_levelBankLatch > 0 && MathAbs(px - g_levelBankLatch) > leave)
+      g_levelBankLatch = 0;
+
+   double lv[];
+   const int n = CollectPivots(lv);
+   if(n == 0) return;
+
+   double hitLvl = 0;
+   bool haveHit = false;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+      double pl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      if(pl <= 0) continue; // must already be in profit — any size
+
+      const bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      const double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double nextLvl = 0;
+      if(!NextFavorLevel(isBuy, entry, lv, n, nextLvl)) continue;
+
+      // Hit / already through: BUY banks on bid reaching next above; SELL on ask
+      // reaching next below. Already-through covers late attach / missed tick.
+      const bool hit = isBuy ? (bid >= nextLvl) : (ask <= nextLvl);
+      if(!hit) continue;
+      if(!haveHit || (isBuy ? nextLvl < hitLvl : nextLvl > hitLvl))
+      { hitLvl = nextLvl; haveHit = true; }
+   }
+   if(!haveHit) return;
+
+   // Same pivot still latched from the last bank on this touch — wait for leave.
+   if(g_levelBankLatch > 0 && MathAbs(hitLvl - g_levelBankLatch) <= point * 0.5)
+      return;
+
+   if(!CanAttemptClose())
+   {
+      LogGuardOnce("bank_blocked", "BLOCKED level-bank — trade path guard; will retry");
+      return;
+   }
+
+   LogInfo("BANK level " + DoubleToString(hitLvl, _Digits)
+           + " (profit + next pivot — no pending needed)");
+   CloseAllProfitLayers();
+   g_levelBankLatch = hitLvl;
+   ReconcileTakenBinds();
+}
+
+// Close the oldest open layer on one side (by POSITION_TIME). Used to peel
+// extras after a spike fill when open count briefly exceeds MaxLayersPerDir.
+bool CloseOldestLayerInDir(const bool isBuy, const string reason)
+{
+   ulong oldestTk = 0;
+   datetime oldestT = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if((PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) != isBuy) continue;
+      datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+      if(oldestTk == 0 || t < oldestT) { oldestTk = tk; oldestT = t; }
+   }
+   if(oldestTk == 0) return false;
+   if(!CanAttemptClose())
+   {
+      LogGuardOnce("close_blocked", "BLOCKED peel " + (isBuy ? "BUY" : "SELL")
+                   + " (" + reason + ") — trade path guard; will retry");
+      return false;
+   }
+   if(!PositionSelectByTicket(oldestTk)) return false;
+   double pl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+   if(!trade.PositionClose(oldestTk))
+   {
+      g_lastCloseFailTime = TimeCurrent();
+      LogGuardOnce("fail_peel", "FAIL peel close rc=" + IntegerToString(trade.ResultRetcode())
+                   + " " + trade.ResultRetcodeDescription());
+      return false;
+   }
+   // Peel is a realized close too -> push its P/L so the phone shows the whole
+   // picture, not just winners. This one is usually a LOSS (oldest layer cut to
+   // hold the cap), so a "bank" push can be profit (harvest) or loss (peel).
+   string peelMsg = "PEEL " + (isBuy ? "BUY" : "SELL") + " oldest (" + reason + ") | P/L "
+                  + DoubleToString(pl, 2);
+   LogInfo(peelMsg);
+   if(InpNotifyOnBank) NotifyPush(peelMsg);
+   return true;
+}
+
+// Open-layer cap only. Pending still rests ahead while armed; after a fill the
+// book may briefly sit at max+1 until bank + peel bring it back.
+void EnforceLayerCaps()
+{
+   for(int s = 0; s < 2; s++)
+   {
+      bool isBuy = (s == 0);
+      int guard = 0; // hard stop — never loop forever on a stuck close
+      while(DirectionLayerCount(isBuy) > g_MaxLayersPerDir && guard++ < MAX_LAYERS_CAP + 2)
+      {
+         if(!CloseOldestLayerInDir(isBuy, "over max lyrs=" + IntegerToString(g_MaxLayersPerDir)))
+            break; // blocked / failed — retry next bank tick or next fill
+      }
+   }
+   ReconcileTakenBinds();
 }
 
 //====================== GUARDS (DD% / DD$ / pips — OR, first to trip) ======================
