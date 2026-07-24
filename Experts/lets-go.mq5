@@ -33,7 +33,12 @@
 //|  TEST ON DEMO / STRATEGY TESTER FIRST. Not a profit guarantee.   |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "5.65"
+#property version   "5.66"
+// v5.66: Panel clarity — T2 stoch mom/rev chip (T2_stDir) now greys out AND
+//        locks (click no-op) in mid mode; only active in OB/OS mode, where
+//        mom/rev actually applies. Stops the panel implying mid has a
+//        momentum/reversal variant. Display + click-guard only; signal
+//        logic unchanged.
 // v5.65: Fib zone leg age — the 'fibo' chip now cycles fibo->fib1->fib2->fib3,
 //        anchoring the zone to an older ZigZag leg (1=newest, 2/3 legs behind)
 //        while the swing SL keeps tracking the newest swing. Input
@@ -1306,7 +1311,12 @@ void PanelPaintState()
       {
          PanelStyleChip(PanelObj("T2_stTm"), T2StochTimingChipText(), T2StochTimingChipTip(), true, true);
          PanelStyleChip(PanelObj("T2_stMd"), T2StochModeChipText(), T2StochModeChipTip(), true, true);
-         PanelStyleChip(PanelObj("T2_stDir"), T2StochDirChipText(), "T2 OB/OS momentum / reversal (used when mode=OB/OS)", true, true);
+         // mom/rev only means something in OB/OS mode; grey it out in mid mode
+         // so the panel stops implying mid has a momentum/reversal variant.
+         if(g_T2_StochObOs)
+            PanelStyleChip(PanelObj("T2_stDir"), T2StochDirChipText(), "T2 OB/OS momentum / reversal", true, true);
+         else
+            PanelStyleDisabled(PanelObj("T2_stDir"), T2StochDirChipText(), "mom/rev only applies in OB/OS mode (mid has no variant)");
       }
       else
       {
@@ -1639,6 +1649,7 @@ bool PanelHandleClick(const string sparam)
    else if(id == "T2_stDir")
    {
       if(!g_T2_UseStoch) return true;
+      if(!g_T2_StochObOs) return true; // mom/rev locked in mid mode (greyed)
       g_T2_StochObOsMode = (g_T2_StochObOsMode == STOCH_CLASSIC_MOM) ? STOCH_CLASSIC_REV : STOCH_CLASSIC_MOM;
       PanelSaveInt("T2_stDir", (int)g_T2_StochObOsMode);
    }
